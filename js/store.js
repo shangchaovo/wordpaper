@@ -18,12 +18,12 @@
   const timers = new Map();
 
   const DEFAULT_SETTINGS = {
-    uiTheme: 'editorial',      // 'anime' | 'editorial' | 'liquid'（网站界面皮肤）
+    uiTheme: 'liquid',         // 'anime' | 'editorial' | 'liquid'（网站界面皮肤）
     library: 'ielts',          // see LIBRARIES in app.js (chuzhong/gaozhong/cet4/.../custom)
     layout: 'group',           // 唯一版式;旧数据里的 'poster' 会自动落到 group 渲染
     size: 'phone-1080x2400',   // see SIZES in app.js
-    theme: 'cream',            // cream/.../liquid, see THEMES in app.js
-    bgPattern: 'soft',         // 'none'|'soft'|'dots'|'grid'|'diag'|'waves'|'blobs'
+    theme: 'pearl',            // match the default Liquid interface with a clean glass wallpaper
+    bgPattern: 'none',         // 'none'|'soft'|'dots'|'grid'|'diag'|'waves'|'blobs'
     wordsPerGroup: 6,          // words shown in 'group' layout (multi-col wraps 7+)
     wordCols: 0,               // 0 = 自动列数（按词数+宽高比），1-3 = 强制列数
     order: 'sequential',       // 'sequential' | 'random'

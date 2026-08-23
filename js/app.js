@@ -79,7 +79,7 @@
 
   function loadSettings() {
     settings = window.Store.getSettings();
-    settings.uiTheme = UI_THEMES.has(settings.uiTheme) ? settings.uiTheme : 'editorial';
+    settings.uiTheme = UI_THEMES.has(settings.uiTheme) ? settings.uiTheme : 'liquid';
     document.documentElement.dataset.uiTheme = settings.uiTheme;
     // 初中/高中词书已恢复为独立 ECDICT 词库,无需再映射到 JLPT。
   }
@@ -126,7 +126,7 @@
   }
 
   function applyUITheme(theme, persist) {
-    const next = UI_THEMES.has(theme) ? theme : 'editorial';
+    const next = UI_THEMES.has(theme) ? theme : 'liquid';
     const root = document.documentElement;
     settings.uiTheme = next;
     root.dataset.uiTheme = next;

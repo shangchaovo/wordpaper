@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-ui-theme="editorial">
+<html lang="zh-CN" data-ui-theme="liquid">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -12,7 +12,7 @@ try {
   if (!['anime', 'editorial', 'liquid'].includes(saved)) {
     try { saved = JSON.parse(localStorage.getItem('wp:settings') || '{}').uiTheme; } catch (_) {}
   }
-  saved = ['anime', 'editorial', 'liquid'].includes(saved) ? saved : 'editorial';
+  saved = ['anime', 'editorial', 'liquid'].includes(saved) ? saved : 'liquid';
   document.documentElement.dataset.uiTheme = saved;
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
@@ -78,8 +78,8 @@ try {
       <div id="ui-theme-picker" class="ui-theme-picker" role="group" aria-label="界面主题">
         <span class="ui-theme-label">界面</span>
         <button class="ui-theme-option" type="button" aria-label="糖果动漫主题" title="糖果动漫" aria-pressed="false" data-ui-theme="anime"><i class="theme-orb anime" aria-hidden="true"></i>糖果</button>
-        <button class="ui-theme-option" type="button" aria-label="校样工作室主题" title="校样工作室" aria-pressed="true" data-ui-theme="editorial"><i class="theme-orb editorial" aria-hidden="true"></i>校样</button>
-        <button class="ui-theme-option" type="button" aria-label="Liquid Glass 主题" title="Liquid Glass" aria-pressed="false" data-ui-theme="liquid"><i class="theme-orb liquid" aria-hidden="true"></i>Liquid</button>
+        <button class="ui-theme-option" type="button" aria-label="校样工作室主题" title="校样工作室" aria-pressed="false" data-ui-theme="editorial"><i class="theme-orb editorial" aria-hidden="true"></i>校样</button>
+        <button class="ui-theme-option" type="button" aria-label="Liquid Glass 主题" title="Liquid Glass" aria-pressed="true" data-ui-theme="liquid"><i class="theme-orb liquid" aria-hidden="true"></i>Liquid</button>
       </div>
       <button id="btn-open-support" class="btn support-nav" type="button">♡ 支持与反馈</button>
       <button id="btn-layout-edit" class="btn soft small" type="button">↕ 整理模块</button>
@@ -523,7 +523,7 @@ try {
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 <!-- ?v= busts browser cache — bump after any js/ change -->
-<script src="js/store.js?v=20260817b"></script>
+<script src="js/store.js?v=20260820a"></script>
 <script src="js/words.js?v=20260810j"></script>
 <script src="js/importer.js?v=20260810f"></script>
 <script src="js/ocr.js?v=20260810f"></script>
@@ -531,7 +531,7 @@ try {
 <script src="js/review.js?v=20260812a"></script>
 <script src="js/render.js?v=20260816a"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20260817f"></script>
+<script src="js/app.js?v=20260820a"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>
