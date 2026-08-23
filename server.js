@@ -745,13 +745,9 @@ async function proxyToCompanion(req, res) {
   });
 }
 
-async function startCompanion(req, res) {
-  if (req.url.includes('dry=1')) { json(res, 200, { ok: true, dry: true }); return; }
-  const running = await probeCompanion();
-  if (running) { json(res, 200, { ok: true, already: true }); return; }
+function spawnCompanion(extraEnv) {
   const companionJs = path.join(ROOT, 'companion.js');
-  if (!fs.existsSync(companionJs)) { json(res, 500, { ok: false, error: 'companion.js 不存在' }); return; }
-
+  if (!fs.existsSync(companionJs)) return false;
   const logDir = path.join(os.homedir(), 'Library', 'Logs');
   try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
   const logPath = path.join(logDir, 'daily-wallpaper-companion.log');
@@ -764,17 +760,66 @@ async function startCompanion(req, res) {
     env: Object.assign({}, process.env, {
       WORDPAPER_PORT: String(COMPANION_PORT),
       WORDPAPER_WEB_ORIGIN: `http://localhost:${PORT}`,
-    }),
+    }, extraEnv),
   });
   child.unref();
   if (logFd !== 2) { try { fs.closeSync(logFd); } catch {} }
+  return true;
+}
+
+async function startCompanion(req, res) {
+  if (req.url.includes('dry=1')) { json(res, 200, { ok: true, dry: true }); return; }
+  const running = await probeCompanion();
+  if (running) { json(res, 200, { ok: true, already: true }); return; }
+  if (!fs.existsSync(path.join(ROOT, 'companion.js'))) { json(res, 500, { ok: false, error: 'companion.js 不存在' }); return; }
+  spawnCompanion();
 
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 300));
     if (await probeCompanion()) { json(res, 200, { ok: true, spawned: true }); return; }
   }
-  json(res, 504, { ok: false, error: `启动超时，请查看 ${logPath}` });
+  json(res, 504, { ok: false, error: `启动超时，请查看 ${path.join(os.homedir(), 'Library', 'Logs', 'daily-wallpaper-companion.log')}` });
+}
+
+/* ── 开机自启(Wallpaper-Engine 式,仅桌面端)──────────────────────────────
+ * 登录服务(launchd)拉起 server 后,由 server 自动派生 companion——与手动
+ * /companion/start 完全同一条派生链,所以 osascript→System Events 的 TCC
+ * 自动化授权继续有效(千万别改成独立 LaunchAgent,责任进程变了会重新弹授权)。
+ * 闸门:plist 注入 WORDPAPER_COMPANION_AUTOSTART=1 才启用(dev/e2e 无此环境变量,
+ * 不会误起伴侣);companion-config.json 里 "autoStart": false 可整机关停。
+ * 附带看门狗:每 60s 探活,伴侣崩溃/被杀后自动重拉。 */
+const COMPANION_CONFIG_PATH = process.env.WORDPAPER_CONFIG_PATH
+  || path.join(process.env.WORDPAPER_COMPANION_DATA_DIR
+    || path.join(os.homedir(), 'Library', 'Application Support', 'WordPaper', 'companion'), 'companion-config.json');
+
+function companionAutoStartEnabled() {
+  if (!COMPANION_ENABLED || process.env.WORDPAPER_COMPANION_AUTOSTART !== '1') return false;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(COMPANION_CONFIG_PATH, 'utf8'));
+    if (cfg.autoStart === false) return false;
+  } catch {}
+  return true;
+}
+
+let companionSpawnInFlight = false;
+async function ensureCompanionRunning(reason) {
+  if (!companionAutoStartEnabled() || companionSpawnInFlight) return;
+  if (await probeCompanion()) return;
+  companionSpawnInFlight = true;
+  try {
+    console.log(`[companion] autostart: spawning (${reason})`);
+    // SILENT:开机自启不弹浏览器窗口,对应 Wallpaper Engine 的 -silent
+    spawnCompanion({ WORDPAPER_COMPANION_SILENT: '1' });
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (await probeCompanion()) { console.log(`[companion] autostart: up (${reason})`); return; }
+    }
+    console.error('[companion] autostart: spawn timed out, will retry on next watchdog tick');
+  } finally {
+    companionSpawnInFlight = false;
+  }
 }
 
 let companionPackaging = false;
@@ -1077,6 +1122,12 @@ server.on('listening', () => {
   console.log(`WordPaper running at http://${HOST}:${PORT}`);
   console.log(`mode=${MODE} data=${storage.databasePath}`);
   if (MODE === 'public') console.log('desktop companion endpoints are disabled; expose only this app port behind HTTPS');
+  if (COMPANION_ENABLED && process.env.WORDPAPER_COMPANION_AUTOSTART === '1') {
+    console.log('[companion] autostart enabled (silent, Wallpaper-Engine-style)');
+    // 延迟 3s:让桌面会话/网络就绪,也避开登录初期系统繁忙
+    setTimeout(() => { ensureCompanionRunning('boot').catch(error => console.error('[companion] autostart error:', error)); }, 3000).unref();
+    setInterval(() => { ensureCompanionRunning('watchdog').catch(() => {}); }, 60000).unref();
+  }
 });
 
 server.on('error', error => {

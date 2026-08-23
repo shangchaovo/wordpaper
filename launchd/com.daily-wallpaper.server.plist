@@ -18,6 +18,9 @@
         <key>HOST</key><string>127.0.0.1</string>
         <key>WORDPAPER_MODE</key><string>local</string>
         <key>WORDPAPER_DATA_DIR</key><string>__DATA_DIR__</string>
+        <!-- 开机自启伴侣(Wallpaper-Engine 式):server 起来后静默派生 companion 并看门狗守护。
+             不需要就删掉这一行,或在 companion-config.json 里设 "autoStart": false。 -->
+        <key>WORDPAPER_COMPANION_AUTOSTART</key><string>1</string>
         <key>PATH</key><string>__NODE_DIR__:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 

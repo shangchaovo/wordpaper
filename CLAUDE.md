@@ -18,7 +18,9 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 
 - **没有前端构建器，也没有第三方 npm 运行依赖**。`js/` 是浏览器经典脚本（IIFE）；`package.json` 只提供启动/测试入口并约束 Node 22.23.2+ / 24（需要内置 `node:sqlite`）。
 - `scripts/e2e.py` 自包含：在**临时空闲端口**拉起自己的 `server.js`，跑完即杀。首次需 `pip install playwright && playwright install chromium`。末尾断言无 `pageerror` / `console.error`。
-- 常驻（可选）：`cp launchd/com.daily-wallpaper.server.plist ~/Library/LaunchAgents/ && launchctl load -w ...`
+- 常驻（可选）：`cp launchd/com.daily-wallpaper.server.plist ~/Library/LaunchAgents/ && launchctl load -w ...`（推荐直接用 `scripts/install_macos_service.sh`，它从模板生成并注册 `com.wordpaper.server`）
+
+**开机自启（Wallpaper-Engine 式，2026-08-24）**：plist 注入 `WORDPAPER_COMPANION_AUTOSTART=1` 时，server（local 模式）监听后 3s 自动派生 companion，并每 60s 看门狗探活重拉（`ensureCompanionRunning`）。自动派生走与手动 `/companion/start` 完全相同的 server→companion 链，TCC 授权继续有效；**不要给 companion 单独建 LaunchAgent**（责任进程变更会重新弹 TCC 授权）。自启派生带 `WORDPAPER_COMPANION_SILENT=1`，companion 跳过 `open` 浏览器（对应 WE 的 `-silent`）。整机开关：`companion-config.json` 的 `"autoStart": false`（server 每次探活前实时读，无需重启）。dev/e2e 没有该环境变量，不会误起伴侣。
 
 ## Architecture — 跨文件才看得懂的点
 

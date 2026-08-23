@@ -51,6 +51,9 @@ function loadConfig() {
     port: DEFAULT_PORT,
     // which wallpaper to push to the real desktop
     autoSetWallpaper: true,
+    // 开机自启总开关(桌面端, Wallpaper-Engine 式):登录服务拉起 server 后自动派生伴侣。
+    // 改 false 后 companion 不再自动启动(无需动 launchd),手动「启用伴侣」仍可用。
+    autoStart: true,
     intervalMinutes: 30,          // how often the real desktop wallpaper changes
     size: 'desktop-1920x1080',    // match your screen
     theme: 'cream',
@@ -1806,8 +1809,10 @@ server.listen(CFG.port, '127.0.0.1', () => {
   console.log(`  配置：         ${CONFIG_PATH}`);
   console.log('');
   if (isMac) {
-    // open the site in the default browser
-    if (process.env.WORDPAPER_TEST_MODE !== '1') execFile('open', [CFG.webOrigin || `http://localhost:${CFG.port}`], () => {});
+    // open the site in the default browser (skipped on silent/autostart launches,
+    // Wallpaper-Engine-style: boot → wallpaper appears, no windows pop up)
+    if (process.env.WORDPAPER_TEST_MODE !== '1' && process.env.WORDPAPER_COMPANION_SILENT !== '1') execFile('open', [CFG.webOrigin || `http://localhost:${CFG.port}`], () => {});
+    else if (process.env.WORDPAPER_COMPANION_SILENT === '1') console.log('  静默启动（开机自启）：不打开浏览器');
     // push the first wallpaper now, then on the interval
     if (CFG.autoSetWallpaper) {
       pushWallpaper();
