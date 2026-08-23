@@ -84,7 +84,7 @@ function versionNewer(candidate, current) {
 }
 function checkForUpdate() {
   if (!BUNDLED_VERSION || MODE !== 'local') return;
-  const req = https.get('https://raw.githubusercontent.com/shangchaovo/daily-wallpaper/main/VERSION', { timeout: 8000 }, res => {
+  const req = https.get('https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION', { timeout: 8000 }, res => {
     if (res.statusCode !== 200) { res.resume(); return; }
     let body = '';
     res.on('data', c => { body += c; });
