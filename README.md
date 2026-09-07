@@ -1,12 +1,17 @@
 # WordPaper · 把单词做成你的壁纸
 
-背单词老忘，就把今天的词做成壁纸。锁屏抬眼就能看一眼。雅思、四六级、考研、日语词库都有，也可以自己导入。网页里能预览、导出 PNG，或者开 Live 一直转。
+背单词老忘，就把当天要看的词做成壁纸。手机锁屏、电脑桌面抬眼就能扫到，不必专门打开背词 App。
 
-现在开着：[wordpaper.pages.dev](https://wordpaper.pages.dev/)
+**线上：[wordpaper.pages.dev](https://wordpaper.pages.dev/)**  
+另有一份 GitHub Pages 镜像：[shangchaovo.github.io/wordpaper](https://shangchaovo.github.io/wordpaper/)
 
-Mac 上还有个可选的小伴侣，能直接把壁纸设到系统桌面。账号存在服务器上，换电脑登录还能接着背。
+网页打开就能预览。词库有雅思、四六级、考研、JLPT，也可以自己导入一份。复习按艾宾浩斯排，到点会提醒；导出是 PNG，也可以开 Live 模式当动态壁纸一直转。配色、排版、词数都能改。
 
-单入口、多用户，大概是这样：
+Mac 上还有个可选的桌面伴侣：装在自己电脑上，能把壁纸直接设到系统桌面，还有个小词灵窗口。网页主体在 Windows / Linux 浏览器里也能用，自动换系统壁纸和 OCR 是 macOS 专属。
+
+账号存在服务器的 SQLite 里（密码加盐哈希，不存明文）。换电脑登录同一个号，复习进度、自定义词库和布局会跟过来。也可以下载一份 JSON 备份。Google / 微信 / 邮箱都能登，没配的登录按钮会明白写「管理员尚未配置」，不会假装能用。
+
+现在是单入口、多用户，结构大概是这样：
 
 ```text
 浏览器 ── 同源 HTTPS ──> Node Web + API（一个端口） ──> SQLite 持久卷
