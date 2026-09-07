@@ -1,20 +1,12 @@
 # WordPaper · 把单词做成你的壁纸
 
-把每日单词、提醒和艾宾浩斯复习做成手机 / 电脑壁纸。适合 **IELTS、四六级、考研、JLPT**：打开网页就能预览、导出 PNG，或开 Live 模式当动态壁纸。Mac 另有可选桌面伴侣，可直接设到系统桌面。
+背单词老忘，就把今天的词做成壁纸。锁屏抬眼就能看一眼。雅思、四六级、考研、日语词库都有，也可以自己导入。网页里能预览、导出 PNG，或者开 Live 一直转。
 
-**线上站点：[wordpaper.pages.dev](https://wordpaper.pages.dev/)**  
-镜像：[shangchaovo.github.io/wordpaper](https://shangchaovo.github.io/wordpaper/)
+现在开着：[wordpaper.pages.dev](https://wordpaper.pages.dev/)
 
-Daily **vocabulary wallpaper** generator with **spaced repetition** (Ebbinghaus). IELTS / CET-4 / CET-6 / Kaoyan / JLPT word lists. Browser-first; optional macOS companion.
+Mac 上还有个可选的小伴侣，能直接把壁纸设到系统桌面。账号存在服务器上，换电脑登录还能接着背。
 
-## 核心用处
-
-- 把今天要背的词做成一张壁纸，锁屏就能复习
-- 内置 IELTS / CET / 考研 / JLPT 词库，也支持自定义词表
-- 艾宾浩斯复习、提醒、多用户账号；换电脑登录同一账号继续
-- 可选 Mac 伴侣：自动换壁纸、小词灵桌面窗口
-
-当前版本是单入口、多用户架构：
+单入口、多用户，大概是这样：
 
 ```text
 浏览器 ── 同源 HTTPS ──> Node Web + API（一个端口） ──> SQLite 持久卷
