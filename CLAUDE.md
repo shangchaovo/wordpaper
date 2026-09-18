@@ -45,6 +45,7 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 **持久化**：`lib/storage.js` 使用 SQLite 的 `users / sessions / user_state`；`user_state` 主键是 `(user_id, namespace)`，路由只从 session 取 user id。`store.js` 在 `App.init()` 最前面 `await Store.init()`，把服务器状态 hydrate 到内存，随后保持原有同步 getter API；write 乐观更新并带 revision 异步 PUT。localStorage 使用 `wp:user:<id>:<key>`，旧版全局 `wp:*` 仅在首次创建账号时迁入一次。改 namespace 时必须同时改前后端 allowlist，并补 A/B 隔离测试。
 
 **服务边界**：`server.js` 只允许静态访问 `index/login/css/js/data`，源码、`.git`、数据库和伴侣状态绝不能加入白名单。`public` 模式只开放同一个 Web/API 端口并禁用本机 companion 控制；8771 只能是 Mac 用户机器上的 loopback companion。端口占用必须 fail-fast，不能恢复自动 `+1`。
+- **SIGTERM 关停必须走 `hardExit`**（2026-09-18 修复，ADR 0003）：`process.exit` 会等 libuv 线程池排空；`checkForUpdate` 直连 GitHub 的 `getaddrinfo` 在无代理/被污染网络可永不返回（`req.destroy()` 撤不掉线程池任务），会让 exit 永久阻塞、launchd 都杀不动。`hardExit` 等线程池最多 3s，否则自我 `SIGKILL`；勿改回裸 `process.exit`。
 
 **实时壁纸 + 防误触**（`app.js` 的 `enterLive/setupAntiTouch`）：进入后 `body.live` 隐藏控制面板、`#live-overlay` 全屏 cover-fit 画布，并 `setTimeout` 到次日 00:00:05 自动翻页（叠加 `rotateEnabled` 的间隔刷新）。`antiTouch` 开启时按住满 `antiTouchMs` 才唤出 `#live-peek`（带环形进度），短按/抬起即取消。右上角 `#btn-exit-live` 始终可达。
 

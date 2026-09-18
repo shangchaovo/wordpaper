@@ -76,6 +76,7 @@ function mirroring() { return MODE === 'local' && upstream.isPaired(); }
 //    与 GitHub main 的 VERSION 比较,有新版本时在 /api/session 里带给页面。 ──
 const BUNDLED_VERSION = (() => { try { return fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch { return ''; } })();
 let latestVersion = '';
+let updateRequest = null;   // 进行中的版本检查请求;shutdown 时取消,避免卡住退出
 function versionNewer(candidate, current) {
   const a = String(candidate).split('.').map(n => parseInt(n, 10) || 0);
   const b = String(current).split('.').map(n => parseInt(n, 10) || 0);
@@ -90,6 +91,8 @@ function checkForUpdate() {
     res.on('data', c => { body += c; });
     res.on('end', () => { const v = body.trim(); if (/^\d+\.\d+\.\d+$/.test(v)) latestVersion = v; });
   });
+  updateRequest = req;
+  req.on('close', () => { if (updateRequest === req) updateRequest = null; });
   req.on('error', () => {});
   req.on('timeout', () => req.destroy());
 }
@@ -1141,14 +1144,27 @@ server.on('error', error => {
 });
 
 let closing = false;
+// process.exit 会等 libuv 线程池排空才落地;卡死的 getaddrinfo(DNS 查询本身没有
+// 超时,目标域名被污染/断网时可永不返回,req.destroy() 也撤不掉)会让 exit 永久阻塞,
+// launchd kickstart 的 SIGTERM 于是杀不动本进程。最多等 3s 优雅落地,否则硬杀自己。
+function hardExit(code) {
+  const pendingRequests = typeof process._getActiveRequests === 'function' ? () => process._getActiveRequests().length : () => 0;
+  const deadline = Date.now() + 3000;
+  (function drain() {
+    if (pendingRequests() === 0) return process.exit(code);
+    if (Date.now() >= deadline) return process.kill(process.pid, 'SIGKILL');
+    setTimeout(drain, 100);
+  })();
+}
 function shutdown() {
   if (closing) return;
   closing = true;
+  if (updateRequest) updateRequest.destroy();
   server.close(() => {
     storage.close();
-    process.exit(0);
+    hardExit(0);
   });
-  setTimeout(() => process.exit(1), 5000).unref();
+  setTimeout(() => hardExit(1), 6000).unref();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
