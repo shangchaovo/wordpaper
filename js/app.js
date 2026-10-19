@@ -54,7 +54,6 @@
   let settings = null;
   const UI_THEMES = new Set(['anime', 'editorial', 'liquid']);
   let companionAction = 'start'; // 'start' | 'control' | 'download' | 'remote'
-  let currentCanvas = null;
   let liveTimer = null;
   let clockTimer = null;
   let cycleTimer = null;
@@ -62,7 +61,6 @@
   let libCounts = {};
   let bgImageEl = null; // decoded Image for settings.bgImage (dataURL), kept out of the settings object
   let dragHl = null;    // {kind:'words'|'reminders'|'custom', key?} while dragging — render.js draws an outline
-  let dragFrame = null; // rAF handle: coalesce drag re-renders to one per frame
   let selectedWordIndex = null;
   let wordCells = [];   // renderer 返回的精确单词格，用于“点词即编辑”
   let activeLibraryBrowser = null;
@@ -129,10 +127,17 @@
     const next = UI_THEMES.has(theme) ? theme : 'liquid';
     const root = document.documentElement;
     settings.uiTheme = next;
+    // 换主题时几百个控件的背景 / 阴影 / 圆角都配了 transition，会一起逐帧过渡重绘；
+    // 换的这两帧里先关掉过渡，让新主题一步到位。
+    if (root.dataset.uiTheme !== next) {
+      root.classList.add('theme-switching');
+      requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
+    }
     root.dataset.uiTheme = next;
     clearTimeout(liquidTransitionTimer);
     root.classList.remove('liquid-materializing');
-    if (persist && next === 'liquid' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (persist && next === 'liquid' && !themeWashing
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Apple-style materialisation: the edge light resolves into place instead
       // of treating the theme as a flat colour fade.
       void root.offsetWidth;
@@ -160,6 +165,102 @@
       syncCompanionLearningContext();
     }
     document.dispatchEvent(new CustomEvent('wordpaper:ui-theme-change', { detail: { theme: next } }));
+  }
+
+  /* 新主题的底色从点击处圆形铺满屏幕，在它下面换主题，再淡出露出新界面。
+   * 换主题要整页重算样式 + 重新光栅化（100–200ms），这段卡顿被纯色遮住；圆的放大
+   * 和淡出只动 transform / opacity，由合成线程驱动，主线程忙的时候也不掉帧。
+   * （View Transition 要截两张全屏快照、clip-path 还得主线程逐帧算，实测更卡。） */
+  const THEME_WASH = { anime: '#f4effe', editorial: '#efeae0', liquid: '#fbfbfc' };
+  let themeWash = null;
+  let themeWashing = false;
+  function revealUITheme(theme, origin, event) {
+    const root = document.documentElement;
+    if (themeWash) themeWash.finish();
+    if (theme === root.dataset.uiTheme || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      || typeof Element.prototype.animate !== 'function') { applyUITheme(theme, true); return; }
+    const rect = origin.getBoundingClientRect();
+    const x = event && event.detail > 0 ? event.clientX : rect.left + rect.width / 2;
+    const y = event && event.detail > 0 ? event.clientY : rect.top + rect.height / 2;
+    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    const size = 240;
+    const el = document.createElement('div');
+    el.className = 'theme-wash';
+    Object.assign(el.style, {
+      left: (x - size / 2) + 'px', top: (y - size / 2) + 'px',
+      width: size + 'px', height: size + 'px', background: THEME_WASH[theme] || '#fff',
+    });
+    document.body.appendChild(el);
+    let applied = false;
+    const apply = () => {
+      if (applied) return;
+      applied = true;
+      themeWashing = true;
+      applyUITheme(theme, true);
+      themeWashing = false;
+    };
+    const wash = {
+      finish() { clearTimeout(wash.timer); apply(); el.remove(); if (themeWash === wash) themeWash = null; },
+    };
+    themeWash = wash;
+    const grow = el.animate(
+      [{ transform: 'scale(0)' }, { transform: `scale(${(radius * 2) / size + 0.15})` }],
+      { duration: 380, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' },
+    );
+    const reveal = () => {
+      if (themeWash !== wash) return;
+      apply();
+      // 等新主题至少画出两帧再淡出，免得露出还没光栅化完的半成品。
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (themeWash !== wash) return;
+        el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, easing: 'ease-out', fill: 'forwards' })
+          .finished.then(() => wash.finish(), () => wash.finish());
+      }));
+    };
+    grow.finished.then(reveal, reveal);
+    // 后台标签页的动画时间线会被节流，主题本身不能因此迟迟不换。
+    wash.timer = setTimeout(() => { apply(); setTimeout(() => wash.finish(), 800); }, 600);
+  }
+
+  /* 内容真正换掉时（换一组 / 换词库 / 换配色），旧画面留一张快照淡出，新画面从下方浮上来。
+   * 拖拽、滑块等高频重绘不走这里。 */
+  let previewSwapPending = false;
+  function requestPreviewSwap() { previewSwapPending = true; }
+  function startPreviewSwap(disp) {
+    previewSwapPending = false;
+    const stage = $('#preview-stage');
+    if (!stage || !disp.width || !disp.clientWidth || dragHl
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const ghost = document.createElement('canvas');
+    ghost.className = 'preview-ghost';
+    ghost.width = Math.round(disp.clientWidth * ratio);
+    ghost.height = Math.round(disp.clientHeight * ratio);
+    ghost.getContext('2d').drawImage(disp, 0, 0, ghost.width, ghost.height);
+    Object.assign(ghost.style, {
+      left: disp.offsetLeft + 'px', top: disp.offsetTop + 'px',
+      width: disp.clientWidth + 'px', height: disp.clientHeight + 'px',
+      borderRadius: getComputedStyle(disp).borderRadius,
+    });
+    stage.querySelectorAll('.preview-ghost').forEach(old => old.remove());
+    stage.appendChild(ghost);
+    return () => {
+      disp.classList.remove('preview-swap-in');
+      void disp.offsetWidth;
+      disp.classList.add('preview-swap-in');
+      ghost.classList.add('out');
+      const done = () => ghost.remove();
+      ghost.addEventListener('animationend', done, { once: true });
+      setTimeout(done, 900);
+    };
+  }
+
+  function playOnce(el, className) {
+    if (!el) return;
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+    el.addEventListener('animationend', () => el.classList.remove(className), { once: true });
   }
 
   /* Liquid Glass progressive enhancement. The rounded-rect SDF keeps the
@@ -281,7 +382,7 @@
         const entry = opticalState.get(target);
         if (!entry) return;
         clearTimeout(entry.timer);
-        entry.timer = setTimeout(() => rebuildOptic(target, entry), 80);
+        entry.timer = setTimeout(() => rebuildOptic(target, entry), 200);
       });
     }) : null;
 
@@ -338,10 +439,26 @@
       document.querySelectorAll(opticalSelector).forEach(ensureOptic);
     }
 
+    // 指针跟随每帧都要知道面板/按钮的位置；上一帧刚写过 CSS 变量，直接量会强制重算样式。
+    // 位置在滚动、缩放、换主题或指针进入新元素前都不会变，缓存到那时为止。
+    let rectEpoch = 0;
+    const rectCache = new WeakMap();
+    const invalidateRects = () => { rectEpoch++; };
+    function rectOf(el) {
+      const hit = rectCache.get(el);
+      if (hit && hit.epoch === rectEpoch) return hit.rect;
+      const rect = el.getBoundingClientRect();
+      rectCache.set(el, { epoch: rectEpoch, rect });
+      return rect;
+    }
+    window.addEventListener('scroll', invalidateRects, { capture: true, passive: true });
+    window.addEventListener('resize', invalidateRects, { passive: true });
+    document.addEventListener('wordpaper:ui-theme-change', invalidateRects);
+
     function getMotion(surface) {
       let state = motionState.get(surface);
       if (state) return state;
-      const rect = surface.getBoundingClientRect();
+      const rect = rectOf(surface);
       // 大面板静态高光:光标不驱动 --glass-x/y(否则每帧重绘整块大玻璃背景,卡顿),
       // 只在小控件上跟手。大面板仍点亮(illuminated),但高光位置固定。
       const staticSheen = surface.matches('.stage, .modal-card');
@@ -395,7 +512,7 @@
     function resetSurface(surface) {
       const state = motionState.get(surface);
       if (!state) return;
-      const rect = surface.getBoundingClientRect();
+      const rect = rectOf(surface);
       state.active = false;
       state.targetX = rect.width / 2;
       state.targetY = rect.height / 2;
@@ -407,11 +524,13 @@
 
     activateOptics();
     document.addEventListener('wordpaper:ui-theme-change', event => {
-      if (event.detail && event.detail.theme === 'liquid') activateOptics();
+      // 测量光学面板会强制同步布局；放到换完主题后的下一帧，别拖慢切换本身。
+      if (event.detail && event.detail.theme === 'liquid') requestAnimationFrame(() => setTimeout(activateOptics, 0));
       else motionState.forEach((_, surface) => resetSurface(surface));
     });
     document.addEventListener('pointerover', event => {
       if (document.documentElement.dataset.uiTheme !== 'liquid' || reducedMotion.matches || !(event.target instanceof Element)) return;
+      invalidateRects();
       const surface = event.target.closest(opticalSelector);
       if (!surface) return;
       ensureOptic(surface);
@@ -432,7 +551,7 @@
     function processMove(event) {
       const surface = event.target.closest(opticalSelector);
       if (!surface) return;   // 未命中面板:不点亮,空挥鼠标零开销
-      const rect = surface.getBoundingClientRect();
+      const rect = rectOf(surface);
       const state = getMotion(surface);
       state.active = true;
       // 大面板静态高光/不倾斜:不更新 targetX/Y/tilt,只点亮,避免每帧背景重绘。
@@ -449,7 +568,7 @@
       surface.classList.add('liquid-illuminated');
       const control = event.target.closest(interactiveSelector);
       if (control && surface.contains(control)) {
-        const controlRect = control.getBoundingClientRect();
+        const controlRect = rectOf(control);
         control.style.setProperty('--liquid-control-x', `${Math.max(0, Math.min(controlRect.width, event.clientX - controlRect.left)).toFixed(1)}px`);
         control.style.setProperty('--liquid-control-y', `${Math.max(0, Math.min(controlRect.height, event.clientY - controlRect.top)).toFixed(1)}px`);
       }
@@ -497,8 +616,8 @@
   }
 
   function bindControls() {
-    $$('.ui-theme-option').forEach(button => button.addEventListener('click', () => {
-      applyUITheme(button.dataset.uiTheme, true);
+    $$('.ui-theme-option').forEach(button => button.addEventListener('click', e => {
+      revealUITheme(button.dataset.uiTheme, button, e);
       toast(`界面已切换为${button.textContent.trim()}主题`);
     }));
     $('#sel-size').addEventListener('change', e => { settings.size = e.target.value; $('#custom-size-row').hidden = settings.size !== 'custom'; commit(); });
@@ -562,13 +681,18 @@
 
     // （位置布局预设已移除，拖拽即可）
 
-    const refreshTop = $('#btn-refresh'); if (refreshTop) refreshTop.addEventListener('click', async () => { await refresh(true); toast('已换一组新单词'); });
+    const refreshTop = $('#btn-refresh'); if (refreshTop) refreshTop.addEventListener('click', async () => { requestPreviewSwap(); await refresh(true); toast('已换一组新单词'); });
     const downloadTop = $('#btn-download'); if (downloadTop) downloadTop.addEventListener('click', downloadPNG);
-    $('#btn-live').addEventListener('click', enterLive);
+    const liveBtn = $('#btn-live'); if (liveBtn) liveBtn.addEventListener('click', enterLive);
     $('#btn-exit-live').addEventListener('click', exitLive);
     const wallpaperTop = $('#btn-set-wallpaper'); if (wallpaperTop) wallpaperTop.addEventListener('click', setDesktopWallpaper);
     // preview meta-bar duplicates (快速出壁纸，滚到中部也能直接操作)
-    const r2 = $('#btn-refresh2'); if (r2) r2.addEventListener('click', async () => { await refresh(true); toast('已换一组新单词'); });
+    const r2 = $('#btn-refresh2'); if (r2) r2.addEventListener('click', async () => {
+      playOnce(r2, 'is-spinning');
+      requestPreviewSwap();
+      await refresh(true);
+      toast('已换一组新单词');
+    });
     const d2 = $('#btn-download2'); if (d2) d2.addEventListener('click', downloadPNG);
     const w2 = $('#btn-set-wallpaper2'); if (w2) w2.addEventListener('click', setDesktopWallpaper);
     // import modal (button-triggered popup)
@@ -587,7 +711,7 @@
     if (closeMemory) closeMemory.addEventListener('click', closeMemoryNotebook);
     if (memoryModal) memoryModal.addEventListener('click', e => { if (e.target === memoryModal) closeMemoryNotebook(); });
     const librarySearch = $('#library-search');
-    if (librarySearch) librarySearch.addEventListener('input', renderLibraryWordList);
+    if (librarySearch) librarySearch.addEventListener('input', scheduleLibrarySearch);
     const markVisibleKnown = $('#btn-mark-visible-known');
     if (markVisibleKnown) markVisibleKnown.addEventListener('click', markVisibleWordsKnown);
     const clearKnown = $('#btn-clear-known');
@@ -603,7 +727,8 @@
       if (libraryModal && !libraryModal.hidden) closeLibraryBrowser();
       if (memoryModal && !memoryModal.hidden) closeMemoryNotebook();
     });
-    $('#btn-companion').addEventListener('click', handleCompanionAction);
+    const companionBtn = $('#btn-companion');
+    if (companionBtn) companionBtn.addEventListener('click', handleCompanionAction);
     // 换词特效下拉:选中即存 localStorage 并触发 pet-sync,下次换词生效。
     const petFx = $('#sel-pet-transition');
     if (petFx) {
@@ -878,11 +1003,12 @@
   let commitTimer = null;
   function commit(light) {
     saveSettings();
-    if (light) { clearTimeout(commitTimer); commitTimer = setTimeout(() => refresh(false), 200); }
+    if (light) { repaintPreview(); clearTimeout(commitTimer); commitTimer = setTimeout(() => refresh(false), 200); }
     else refresh(false);
   }
 
   /* ---------- library cards ---------- */
+  let justPickedLib = null;
   function renderLibraryCards() {
     const box = $('#library-cards');
     box.innerHTML = '';
@@ -903,15 +1029,17 @@
     visible.forEach(lib => {
       const card = document.createElement('button');
       card.type = 'button';
-      card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '');
+      card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '') + (lib.id === justPickedLib ? ' just-picked' : '');
       const count = lib.id === 'custom' ? window.Store.getCustomWords().length : (libCounts[lib.id] || '…');
       const countTxt = (typeof count === 'number') ? count.toLocaleString() : count;
+      card.title = `${lib.name} · ${lib.desc} · ${countTxt} 词`;
       card.innerHTML = `<span class="lib-icon"><svg class="ic" aria-hidden="true"><use href="#i-${lib.icon}"/></svg></span>
-        <span class="lib-body"><b>${lib.name}</b><i>${lib.desc}</i></span>
-        <span class="lib-count">${countTxt}词</span>`;
+        <span class="lib-body"><b>${lib.name}</b><i><em class="lib-count">${countTxt}词</em>${lib.desc}</i></span>`;
       card.addEventListener('click', () => {
+        if (settings.library !== lib.id) { justPickedLib = lib.id; requestPreviewSwap(); }
         settings.library = lib.id;
         renderLibraryCards();
+        justPickedLib = null;
         syncDependentUI();
         commit();
         syncCompanionLearningContext();
@@ -945,7 +1073,7 @@
     try {
       activeLibraryWords = await window.Words.loadLibrary(lib.id);
       renderLibraryWordList();
-      $('#library-search').focus();
+      $('#library-search').focus({ preventScroll: true });
     } catch (e) {
       $('#library-progress').textContent = '词书加载失败';
       $('#library-word-list').textContent = '请检查网络或刷新页面后重试。';
@@ -966,54 +1094,81 @@
     );
   }
 
+  function updateLibraryProgress(known) {
+    const remaining = Math.max(0, activeLibraryWords.length - known.size);
+    $('#library-progress').textContent = `共 ${activeLibraryWords.length} · 已掌握 ${known.size} · 待学 ${remaining}`;
+  }
+
+  function libraryWordItem(word, known) {
+    const key = window.Words.wordKey(word);
+    const item = document.createElement('article');
+    item.className = 'library-word' + (known.has(key) ? ' known' : '');
+    const main = document.createElement('div');
+    main.className = 'library-word-main';
+    const title = document.createElement('b');
+    title.textContent = [word.word, word.phonetic].filter(Boolean).join(' ');
+    const detail = document.createElement('small');
+    detail.textContent = [word.pos, word.meaning].filter(Boolean).join(' · ');
+    main.append(title, detail);
+    const label = document.createElement('label');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox'; checkbox.checked = known.has(key);
+    checkbox.setAttribute('aria-label', `标记 ${word.word} 为已掌握`);
+    checkbox.addEventListener('change', () => {
+      const next = window.Store.setKnownWord(activeLibraryBrowser.id, key, checkbox.checked);
+      item.classList.toggle('known', checkbox.checked);
+      updateLibraryProgress(next);
+      refresh(false);
+      renderLibraryCards();
+      syncCompanionLearningContext();
+    });
+    label.append(checkbox, document.createTextNode('已掌握'));
+    item.append(main, label);
+    return item;
+  }
+
+  /* 一本词书有几千条：首屏同步画出来，其余分帧补齐，搜索时旧的补齐任务直接作废。 */
+  let libraryRenderToken = 0;
   function renderLibraryWordList() {
     if (!activeLibraryBrowser) return;
+    const token = ++libraryRenderToken;
     const box = $('#library-word-list');
     const visible = visibleLibraryWords();
     const known = window.Store.getKnownWords(activeLibraryBrowser.id);
-    const remaining = Math.max(0, activeLibraryWords.length - known.size);
-    $('#library-progress').textContent = `共 ${activeLibraryWords.length} · 已掌握 ${known.size} · 待学 ${remaining}`;
+    updateLibraryProgress(known);
     box.innerHTML = '';
+    box.scrollTop = 0;
     if (!visible.length) {
       box.innerHTML = '<p class="empty-library">没有匹配的词条，换个关键词试试。</p>';
       return;
     }
-    const fragment = document.createDocumentFragment();
-    visible.forEach(word => {
-      const key = window.Words.wordKey(word);
-      const isKnown = known.has(key);
-      const item = document.createElement('article');
-      item.className = 'library-word' + (isKnown ? ' known' : '');
-      const main = document.createElement('div');
-      main.className = 'library-word-main';
-      const title = document.createElement('b');
-      title.textContent = [word.word, word.phonetic].filter(Boolean).join(' ');
-      const detail = document.createElement('small');
-      detail.textContent = [word.pos, word.meaning].filter(Boolean).join(' · ');
-      main.append(title, detail);
-      const label = document.createElement('label');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox'; checkbox.checked = isKnown;
-      checkbox.setAttribute('aria-label', `标记 ${word.word} 为已掌握`);
-      checkbox.addEventListener('change', () => {
-        window.Store.setKnownWord(activeLibraryBrowser.id, key, checkbox.checked);
-        refresh(false);
-        renderLibraryCards();
-        renderLibraryWordList();
-        syncCompanionLearningContext();
-      });
-      label.append(checkbox, document.createTextNode('已掌握'));
-      item.append(main, label);
-      fragment.appendChild(item);
-    });
-    box.appendChild(fragment);
+    let index = 0;
+    const appendChunk = size => {
+      const fragment = document.createDocumentFragment();
+      const end = Math.min(visible.length, index + size);
+      for (; index < end; index++) fragment.appendChild(libraryWordItem(visible[index], known));
+      box.appendChild(fragment);
+    };
+    appendChunk(150);
+    const pump = () => {
+      if (token !== libraryRenderToken || index >= visible.length) return;
+      appendChunk(400);
+      requestAnimationFrame(pump);
+    };
+    requestAnimationFrame(pump);
+  }
+
+  let librarySearchTimer = 0;
+  function scheduleLibrarySearch() {
+    clearTimeout(librarySearchTimer);
+    librarySearchTimer = setTimeout(renderLibraryWordList, 120);
   }
 
   function markVisibleWordsKnown() {
     if (!activeLibraryBrowser) return;
     const visible = visibleLibraryWords();
     if (!visible.length) return;
-    visible.forEach(word => window.Store.setKnownWord(activeLibraryBrowser.id, window.Words.wordKey(word), true));
+    window.Store.setKnownWords(activeLibraryBrowser.id, visible.map(word => window.Words.wordKey(word)), true);
     refresh(false);
     renderLibraryCards();
     renderLibraryWordList();
@@ -1043,6 +1198,7 @@
       b.style.background = `linear-gradient(135deg, ${t.bg} 0%, ${t.accentSoft} 60%, ${t.accent} 100%)`;
       b.innerHTML = `<span>${t.name}</span>`;
       b.addEventListener('click', () => {
+        if (settings.theme !== key) requestPreviewSwap();
         settings.theme = key;
         // The Liquid wallpaper opens as a clean material. Patterns remain
         // available and can still be deliberately selected afterwards.
@@ -1065,7 +1221,10 @@
       b.type = 'button';
       b.className = 'pattern-chip' + (p.id === settings.bgPattern ? ' on' : '');
       b.innerHTML = `${p.icon} ${p.name}`;
-      b.addEventListener('click', () => { settings.bgPattern = p.id; renderPatternPicker(); commit(); });
+      b.addEventListener('click', () => {
+        if (settings.bgPattern !== p.id) requestPreviewSwap();
+        settings.bgPattern = p.id; renderPatternPicker(); commit();
+      });
       box.appendChild(b);
     });
   }
@@ -1123,10 +1282,48 @@
     });
     $('#btn-bgphoto-clear').addEventListener('click', () => { setBgImage(null); toast('已换回主题背景'); });
   }
+  const BG_MAX_EDGE = 2560;
+  const BG_JPEG_Q = 0.82;
+  function packBgDataUrl(img, dataUrl) {
+    const iw = img.naturalWidth || img.width || 0;
+    const ih = img.naturalHeight || img.height || 0;
+    if (!iw || !ih) return dataUrl;
+    if (Math.max(iw, ih) <= BG_MAX_EDGE) return dataUrl;
+    try {
+      const fit = BG_MAX_EDGE / Math.max(iw, ih);
+      const w = Math.max(1, Math.round(iw * fit));
+      const h = Math.max(1, Math.round(ih * fit));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', BG_JPEG_Q);
+    } catch (e) { return dataUrl; }
+  }
+  function adoptBgImage(img, dataUrl, announce) {
+    const packed = packBgDataUrl(img, dataUrl);
+    settings.bgImage = packed;
+    settings.bgImagePos = { x: 0, y: 0 };
+    settings.bgImageZoom = 1.14;
+    const finish = (decoded) => {
+      bgImageEl = decoded;
+      applyBgPhotoUI();
+      commit();
+      if (announce) toast('背景照片已应用 · 可向任意方向拖动调整取景');
+    };
+    if (packed === dataUrl) { finish(img); return; }
+    const packedImg = new Image();
+    packedImg.onload = () => finish(packedImg);
+    packedImg.onerror = () => finish(img);
+    packedImg.src = packed;
+  }
   function setBgImage(dataUrl) {
     if (!dataUrl) { settings.bgImage = null; bgImageEl = null; settings.bgImagePos = { x: 0, y: 0 }; settings.bgImageZoom = 1.14; applyBgPhotoUI(); commit(); return; }
     const img = new Image();
-    img.onload = () => { settings.bgImage = dataUrl; settings.bgImagePos = { x: 0, y: 0 }; settings.bgImageZoom = 1.14; bgImageEl = img; applyBgPhotoUI(); commit(); toast('背景照片已应用 · 可向任意方向拖动调整取景'); };
+    img.onload = () => adoptBgImage(img, dataUrl, true);
     img.onerror = () => { bgImageEl = null; toast('这张照片读不出来，换一张 PNG、JPG 或 WebP 试试'); };
     img.src = dataUrl;
   }
@@ -1140,9 +1337,18 @@
   function loadBgImage() {
     bgImageEl = null;
     if (!settings.bgImage) return;
+    const original = settings.bgImage;
     const img = new Image();
-    img.onload = () => { bgImageEl = img; refresh(false); };
-    img.src = settings.bgImage;
+    img.onload = () => {
+      const packed = packBgDataUrl(img, original);
+      if (!packed || packed === original) { bgImageEl = img; refresh(false); return; }
+      settings.bgImage = packed;
+      const packedImg = new Image();
+      packedImg.onload = () => { bgImageEl = packedImg; applyBgPhotoUI(); saveSettings(); refresh(false); };
+      packedImg.onerror = () => { settings.bgImage = original; bgImageEl = img; refresh(false); };
+      packedImg.src = packed;
+    };
+    img.src = original;
   }
 
   /* ---------- import ---------- */
@@ -1267,23 +1473,39 @@
     });
   }
 
+  let reminderIdsSeen = null;
+  let reminderJustToggled = null;
   function renderReminderUI() {
     const list = window.Reminders.list();
     const box = $('#reminder-list');
+    const prevIds = reminderIdsSeen;
+    const toggled = reminderJustToggled;
+    reminderIdsSeen = new Set(list.map(r => r.id));
+    reminderJustToggled = null;
     box.innerHTML = '';
     if (!list.length) { box.innerHTML = '<div class="muted">还没有提醒，点上面的常用项加一条吧～</div>'; return; }
     list.forEach(r => {
       const row = document.createElement('div');
-      row.className = 'rem-row' + (r.done ? ' done' : '');
+      row.className = 'rem-row' + (r.done ? ' done' : '')
+        + (prevIds && !prevIds.has(r.id) ? ' rem-enter' : '')
+        + (r.id === toggled && r.done ? ' rem-just-done' : '');
       const cb = document.createElement('input');
       cb.type = 'checkbox'; cb.checked = !!r.done;
-      cb.addEventListener('change', () => { window.Reminders.toggle(r.id); renderReminderUI(); commit(true); });
+      cb.addEventListener('change', () => { reminderJustToggled = r.id; window.Reminders.toggle(r.id); renderReminderUI(); commit(true); });
       const label = document.createElement('span');
       label.className = 'rem-text';
       label.textContent = r.text + (r.time ? ' · ' + r.time : '');
       const del = document.createElement('button');
       del.type = 'button'; del.className = 'rem-del'; del.textContent = '×';
-      del.addEventListener('click', () => { window.Reminders.remove(r.id); renderReminderUI(); commit(true); });
+      del.addEventListener('click', () => {
+        const remove = () => { window.Reminders.remove(r.id); renderReminderUI(); commit(true); };
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { remove(); return; }
+        del.disabled = true;
+        row.style.height = row.offsetHeight + 'px';
+        void row.offsetHeight;
+        row.classList.add('rem-leave');
+        setTimeout(remove, 220);
+      });
       row.appendChild(cb); row.appendChild(label); row.appendChild(del);
       box.appendChild(row);
     });
@@ -1327,12 +1549,13 @@
       if (!hit) return;
       dragHl = { kind: hit.kind, key: hit.key };
       setDragState(hit.kind === 'reminders' ? '正在移动提醒' : hit.kind === 'custom' ? '正在移动自定义文字' : '正在移动单词组');
-      applyDisplaySize(disp, disp, true); // fit the whole wallpaper into view while dragging
+      const { w, h } = getSize();
+      applyDisplaySize(disp, { width: w, height: h }, true); // fit the whole wallpaper into view while dragging
       const rect = disp.getBoundingClientRect();
       drag = { kind: hit.kind, key: hit.key, startX: (e.clientX - rect.left) / rect.width, startY: (e.clientY - rect.top) / rect.height, origX: hit.x, origY: hit.y };
       disp.setPointerCapture(e.pointerId);
       disp.classList.add('grabbing');
-      refresh(false);
+      repaintPreview();
       e.preventDefault();
     });
     disp.addEventListener('pointermove', e => {
@@ -1361,15 +1584,14 @@
         off.x = clamp(drag.origX + dx, -0.5, 0.5);
         off.y = clamp(drag.origY + dy, -1.0, 1.0);
       }
-      // coalesce renders to one per animation frame so the drag stays smooth
-      if (!dragFrame) dragFrame = requestAnimationFrame(() => { dragFrame = null; refresh(false); });
+      repaintPreview();
     });
     const end = () => {
       if (!drag) return;
       const finishedKind = drag.kind;
       drag = null; dragHl = null;
       setDragState('');
-      if (dragFrame) { cancelAnimationFrame(dragFrame); dragFrame = null; }
+      if (repaintFrame) { cancelAnimationFrame(repaintFrame); repaintFrame = 0; }
       disp.classList.remove('grabbing');
       refresh(false);
       saveSettings();
@@ -1564,34 +1786,68 @@
   /* Scale the preview to fill the stage width normally; while dragging, shrink
    * it to fit the viewport so the WHOLE wallpaper stays visible as the block
    * moves anywhere on a tall canvas. */
-  function applyDisplaySize(disp, canvas, fitToScreen) {
+  function applyDisplaySize(disp, size, fitToScreen) {
     const stage = $('#preview-stage');
-    let s = Math.min(1, (stage.clientWidth - 24) / canvas.width);
+    let s = Math.min(1, (stage.clientWidth - 24) / size.width);
     // 也让预览高度适配视口：整页一屏看全，不用上下滚动
     const dock = $('#pet-dock');
-    const dockH = dock && !dock.hidden ? dock.getBoundingClientRect().height + 10 : 0;
+    const dockH = dock && !dock.hidden ? dock.offsetHeight + 10 : 0;
     const availH = window.innerHeight - (fitToScreen ? 150 : 195) - dockH;
-    if (availH > 120) s = Math.min(s, Math.max(0.14, availH / canvas.height));
-    disp.style.width = Math.round(canvas.width * s) + 'px';
-    disp.style.height = Math.round(canvas.height * s) + 'px';
+    if (availH > 120) s = Math.min(s, Math.max(0.14, availH / size.height));
+    // 尺寸没变就不写样式：拖动时逐帧重画，写一次样式就会让下一帧的读取强制重排。
+    const cssW = Math.round(size.width * s) + 'px', cssH = Math.round(size.height * s) + 'px';
+    if (disp.style.width !== cssW) disp.style.width = cssW;
+    if (disp.style.height !== cssH) disp.style.height = cssH;
     return s;
   }
 
-  function paintSelection(sel, page, canvasSel) {
+  function renderOptions(sel, page, extraSettings) {
     const { w, h } = getSize();
-    const theme = THEMES[settings.theme] || THEMES.cream;
-    const renderSettings = Object.assign({}, settings, { bgImage: bgImageEl, hl: dragHl, selectedWordIndex });
-    currentCanvas = window.Render.render({
-      width: w, height: h, layout: settings.layout, page, theme,
-      words: sel.words, reminders: window.Reminders.list(), settings: renderSettings, dateStr: sel.dateStr,
+    return {
+      width: w, height: h, layout: settings.layout, page, theme: THEMES[settings.theme] || THEMES.cream,
+      words: sel.words, reminders: window.Reminders.list(), dateStr: sel.dateStr,
+      settings: Object.assign({}, settings, { bgImage: bgImageEl }, extraSettings),
       minutesUntil: t => window.Reminders.minutesUntil(t),
-    });
-    wordCells = renderSettings.wordCells || [];
+    };
+  }
+
+  /* 预览只按屏幕上实际显示的像素去画（壁纸原尺寸是它的 3–10 倍）；
+   * 下载 / 设为桌面时再用 exportCanvas() 按原尺寸画一张不带选中框的。 */
+  let lastPaint = null;
+  function paintSelection(sel, page, canvasSel) {
+    const opts = renderOptions(sel, page, { hl: dragHl, selectedWordIndex });
     const disp = $(canvasSel);
+    const playSwap = canvasSel === '#preview-canvas' && previewSwapPending ? startPreviewSwap(disp) : null;
+    const cssScale = applyDisplaySize(disp, opts, !!dragHl);
+    const scale = Math.min(1, cssScale * Math.min(2, window.devicePixelRatio || 1));
+    const bw = Math.max(1, Math.round(opts.width * scale));
+    const bh = Math.max(1, Math.round(opts.height * scale));
+    if (disp.width !== bw || disp.height !== bh) { disp.width = bw; disp.height = bh; }
+    disp.dataset.wallpaperW = opts.width;
+    disp.dataset.wallpaperH = opts.height;
     const ctx = disp.getContext('2d');
-    disp.width = currentCanvas.width; disp.height = currentCanvas.height;
-    ctx.drawImage(currentCanvas, 0, 0);
-    applyDisplaySize(disp, currentCanvas, !!dragHl);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, bw, bh);
+    window.Render.draw(ctx, Object.assign(opts, { scale: bw / opts.width }));
+    wordCells = opts.settings.wordCells || [];
+    lastPaint = { sel, page };
+    if (playSwap) playSwap();
+  }
+
+  function exportCanvas() {
+    if (!lastPaint) return null;
+    return window.Render.render(renderOptions(lastPaint.sel, lastPaint.page, { hl: null, selectedWordIndex: null }));
+  }
+
+  /* 只重画当前这组词（拖动、滑块）：不重新选词，也不刷新面板，一帧最多一次。 */
+  let repaintFrame = 0;
+  function repaintPreview() {
+    if (repaintFrame) return;
+    repaintFrame = requestAnimationFrame(() => {
+      repaintFrame = 0;
+      if (lastSel) paintSelection(lastSel, 'words', '#preview-canvas');
+      else refresh(false);
+    });
   }
 
   function updateMeta(sel) {
@@ -1893,11 +2149,12 @@
   }
 
   function downloadPNG() {
-    if (!currentCanvas) return;
+    const canvas = exportCanvas();
+    if (!canvas) return;
     const { w, h } = getSize();
     const a = document.createElement('a');
     a.download = `wallpaper-${settings.layout}-${w}x${h}-${window.Words.dateKey(new Date())}.png`;
-    a.href = window.Render.toPNG(currentCanvas);
+    a.href = window.Render.toPNG(canvas);
     document.body.appendChild(a); a.click(); a.remove();
     toast('PNG 已下载，可以设为壁纸了');
   }
@@ -1931,9 +2188,10 @@
       }
       return;
     }
-    if (!currentCanvas) return;
+    const canvas = exportCanvas();
+    if (!canvas) return;
     toast('正在把当前壁纸设到桌面…');
-    const blob = await new Promise(res => currentCanvas.toBlob(res, 'image/png'));
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
     const fd = new FormData();
     fd.append('image', blob, 'wallpaper.png');
     let ok = false;
@@ -2155,7 +2413,7 @@
 
   function paintLive(page) {
     const live = $('#live-canvas');
-    if (!currentCanvas) { if (!liveActive) return; }
+    if (!lastPaint) { if (!liveActive) return; }
     const { w, h } = getSize();
     const theme = THEMES[settings.theme] || THEMES.cream;
     window.Engine.current(settings).then(sel => {
@@ -2338,8 +2596,8 @@
     }, 60000);
   }
   let resizeT = null;
-  function paintSelectionDebounced() { clearTimeout(resizeT); resizeT = setTimeout(() => refresh(false), 150); }
+  function paintSelectionDebounced() { repaintPreview(); clearTimeout(resizeT); resizeT = setTimeout(() => refresh(false), 150); }
 
-  window.App = { init, refresh, SIZES, THEMES, LIBRARIES };
+  window.App = { init, refresh, exportCanvas, SIZES, THEMES, LIBRARIES };
   document.addEventListener('DOMContentLoaded', init);
 })();

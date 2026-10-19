@@ -353,7 +353,7 @@ def build_app(dest, bundled_arch):
         "CFBundleName": "WordPaper",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": VERSION,
-        "CFBundleVersion": "4",
+        "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
     }
@@ -388,8 +388,9 @@ def build_app(dest, bundled_arch):
             raise SystemExit(f"缺自带运行时: {src}(见 scripts/node-dist/README)")
         bin_dir = os.path.join(res, "bin")
         os.makedirs(bin_dir)
-        shutil.copy2(src, os.path.join(bin_dir, f"node-{bundled_arch}"))
-        os.chmod(os.path.join(bin_dir, f"node-{bundled_arch}"), 0o755)
+        node_name = "node-x86_64" if bundled_arch == "x64" else f"node-{bundled_arch}"
+        shutil.copy2(src, os.path.join(bin_dir, node_name))
+        os.chmod(os.path.join(bin_dir, node_name), 0o755)
 
 
 def eject_stale(extra_paths):
@@ -487,7 +488,7 @@ def main():
         results.append((dmg_name, mb))
         log(f"  ✓ {dmg_name}  {mb:.1f} MB")
 
-    log("\n完成。gh release upload companion-v2.0.0 scripts/dist/*.dmg --clobber 即发布:")
+    log(f"\n完成。gh release upload companion-v{VERSION} scripts/dist/*.dmg 即上传到对应 Release:")
     for name, mb in results:
         log(f"  {name}  {mb:.1f} MB")
 

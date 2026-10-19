@@ -17,8 +17,9 @@ try {
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
 </script>
-<link rel="stylesheet" href="css/styles.css?v=20260817f">
-<link rel="stylesheet" href="css/ui-themes.css?v=20260817d">
+<link rel="stylesheet" href="css/styles.css?v=20261019b">
+<link rel="stylesheet" href="css/ui-themes.css?v=20261019b">
+<link rel="stylesheet" href="css/motion.css?v=20261019b">
 </head>
 <body>
 
@@ -187,9 +188,10 @@ try {
       <div class="preview-top">
         <span id="meta"></span>
         <div class="meta-actions">
-          <button id="btn-refresh2" class="btn primary small">换一组</button>
-          <button id="btn-download2" class="btn soft small">↓ 下载</button>
-          <button id="btn-set-wallpaper2" class="btn soft small">▣ 设壁纸</button>
+          <button id="btn-refresh2" class="btn primary small" type="button"><svg class="ic btn-ic" aria-hidden="true"><use href="#i-refresh"/></svg>换一组</button>
+          <button id="btn-download2" class="btn soft small" type="button">↓ 下载</button>
+          <button id="btn-set-wallpaper2" class="btn soft small" type="button">▣ 设壁纸</button>
+          <button id="btn-live" class="btn ghost small" type="button" title="全屏网页壁纸，不写入系统照片">实时</button>
         </div>
       </div>
       <section id="pet-dock" class="pet-dock" data-state="checking" aria-label="桌面小词灵">
@@ -316,26 +318,6 @@ try {
           <input id="rng-lineheight" type="range" min="0.8" max="1.8" step="0.05" value="1">
           <b id="lineheight-val">100%</b>
         </label>
-      </section>
-
-      <section id="module-desktop" class="card desktop-card module-card">
-        <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg></span>搬到电脑桌面上</h2>
-        <p class="hint">想在 Mac 桌面<b>真正换壁纸</b>、还要一个常驻不遮挡的小宠物？点一下下面按钮就行，<b>不用下载、不用解压、不用敲命令</b>。</p>
-        <button id="btn-companion" class="btn soft">一键启用桌面伴侣</button>
-        <div class="pack-row dl-row">
-          <span class="mini-label">没在本机跑本站？</span>
-          <button id="btn-companion-dl" class="chip">↓ 下载桌面伴侣</button>
-        </div>
-        <div id="pet-controls" style="display:none">
-          <div class="pet-group">
-            <div class="pet-group-label">桌面宠物</div>
-            <div class="pet-group-btns">
-              <button id="btn-pet-toggle" class="chip">召唤宠物</button>
-            </div>
-          </div>
-          <p class="mini-label pet-hint" id="pet-hint"></p>
-        </div>
-        <button id="btn-live" class="btn ghost">或者先试网页实时壁纸</button>
       </section>
 
       <details id="module-custom" class="card module-card">
@@ -523,15 +505,15 @@ try {
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 <!-- ?v= busts browser cache — bump after any js/ change -->
-<script src="js/store.js?v=20260820a"></script>
+<script src="js/store.js?v=20261019b"></script>
 <script src="js/words.js?v=20260810j"></script>
 <script src="js/importer.js?v=20260810f"></script>
 <script src="js/ocr.js?v=20260810f"></script>
 <script src="js/reminders.js?v=20260810f"></script>
 <script src="js/review.js?v=20260812a"></script>
-<script src="js/render.js?v=20260816a"></script>
+<script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20260820a"></script>
+<script src="js/app.js?v=20261019b"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

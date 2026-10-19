@@ -175,7 +175,7 @@
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(18, Math.min(W, H) * .045);
     ctx.shadowColor = 'rgba(255,255,255,.52)';
-    ctx.shadowBlur = Math.max(16, Math.min(W, H) * .025);
+    ctx.shadowBlur = px(ctx, Math.max(16, Math.min(W, H) * .025));
     ctx.beginPath();
     ctx.moveTo(-W * .08, H * .22);
     ctx.bezierCurveTo(W * .24, H * .06, W * .61, H * .34, W * 1.08, H * .12);
@@ -523,8 +523,8 @@
         ctx.strokeStyle = 'rgba(255,255,255,.64)';
         ctx.lineWidth = Math.max(1.5, W * .0012);
         ctx.shadowColor = theme.name === '珍珠' ? 'rgba(60,60,70,.13)' : 'rgba(54,83,105,.14)';
-        ctx.shadowBlur = Math.max(8, W * .009);
-        ctx.shadowOffsetY = Math.max(2, W * .0025);
+        ctx.shadowBlur = px(ctx, Math.max(8, W * .009));
+        ctx.shadowOffsetY = px(ctx, Math.max(2, W * .0025));
       }
       var padX = Math.round(W * 0.012);
       var cardR = Math.min(Math.round(rowH * 0.30), Math.round(W * 0.02));
@@ -700,20 +700,32 @@
     }
   }
 
-  /* Main dispatcher. page: 'words' | 'reminders'. */
+  /* Main dispatcher. page: 'words' | 'reminders'.
+   * opts.scale < 1 draws the same W×H layout into a smaller bitmap (the live
+   * preview); all layout math stays in wallpaper coordinates. */
   function draw(ctx, opts) {
     var page = opts.page || 'words';
+    var s = opts.scale > 0 ? opts.scale : 1;
+    ctx.save();
+    if (s !== 1) ctx.setTransform(s, 0, 0, s, 0, 0);
+    ctx.__wpScale = s;
     if (page === 'reminders') {
       renderReminderPage(ctx, opts.width, opts.height, opts.theme, opts.reminders, opts.settings, opts.dateStr, opts.minutesUntil);
     } else {
       renderGroup(ctx, opts.width, opts.height, opts.theme, opts.words, opts.reminders, opts.settings, opts.dateStr, opts.minutesUntil);
     }
+    ctx.__wpScale = 1;
+    ctx.restore();
   }
+  /* shadowBlur / shadowOffset ignore the canvas transform, so scale them by hand. */
+  function px(ctx, v) { return v * (ctx.__wpScale || 1); }
 
   /* Browser convenience: render to a canvas element. */
   function render(opts) {
+    var s = opts.scale > 0 ? opts.scale : 1;
     var canvas = document.createElement('canvas');
-    canvas.width = opts.width; canvas.height = opts.height;
+    canvas.width = Math.max(1, Math.round(opts.width * s));
+    canvas.height = Math.max(1, Math.round(opts.height * s));
     draw(canvas.getContext('2d'), opts);
     return canvas;
   }

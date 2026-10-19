@@ -116,11 +116,12 @@ body::before {
 }
 /* 主按钮一道流动的光泽，显得更活 */
 .btn.primary::after {
-  content: ""; position: absolute; top: -40%; bottom: -40%; left: -30%; width: 34%;
+  content: ""; position: absolute; top: -40%; bottom: -40%; left: 0; width: 34%;
   background: linear-gradient(105deg, transparent, rgba(255,255,255,.5), transparent);
-  transform: skewX(-20deg); animation: btn-sheen 3.2s ease-in-out infinite;
+  transform: translateX(-118%) skewX(-20deg); animation: btn-sheen 3.2s ease-in-out infinite;
 }
-@keyframes btn-sheen { 0%, 55% { left: -40%; } 85%, 100% { left: 130%; } }
+/* 动 transform 而不是 left：left 每帧都要重新布局 + 重绘，transform 交给合成线程 */
+@keyframes btn-sheen { 0%, 55% { transform: translateX(-118%) skewX(-20deg); } 85%, 100% { transform: translateX(382%) skewX(-20deg); } }
 .btn.primary:hover { filter: brightness(1.07); box-shadow: 0 13px 24px rgba(205,105,38,.28); }
 .btn.primary:active { box-shadow: 0 4px 10px rgba(205,105,38,.18); }
 .btn.soft { background: var(--accent-soft); border-color: rgba(216,150,80,.38); color: #a05a1f; box-shadow: 0 5px 14px rgba(216,150,80,.14); }
@@ -202,7 +203,7 @@ body::before {
 .panel-col > .card:nth-child(2) { animation-delay: .07s; }
 .panel-col > .card:nth-child(3) { animation-delay: .12s; }
 .panel-col > .card:nth-child(4) { animation-delay: .17s; }
-@keyframes card-pop { from { opacity: 0; transform: translateY(12px); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes card-pop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .panel-col > .card:hover { transform: translateY(-2px); border-color: rgba(196, 128, 68, .48); box-shadow: 0 16px 34px rgba(115,74,31,.13), inset 0 1px 0 #fff; }
 .card h2 {
   font-size: 13.5px; margin: 0 0 6px; color: var(--ink); font-weight: 800;
@@ -530,8 +531,9 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 }
 @keyframes stage-breathe { from { background-position: 0% 20%; } to { background-position: 100% 80%; } }
 
-/* 预览直接编辑器取代右侧的重复字体卡；宠物入口也只保留中央主区这一处。 */
-#module-typography, #module-desktop { display: none; }
+/* 字体卡仍留在 DOM 里，给点词编辑器同步字号/字体；界面上不占一列。
+   桌面伴侣的重复入口已去掉，启用和下载走预览上方的小词灵。 */
+#module-typography { display: none; }
 #preview-canvas {
   display: block; border-radius: 14px; box-shadow: 0 14px 44px rgba(0,0,0,.4);
   max-width: 100%; height: auto; cursor: grab;
@@ -583,31 +585,6 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 }
 .modal-close:hover { border-color: var(--danger); color: var(--danger); transform: rotate(90deg); }
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* ---------- desktop card (卡通蓝天渐变 + 整齐分区) ---------- */
-.desktop-card {
-  background: linear-gradient(145deg, rgba(255,253,248,.94) 8%, #e8f5ff 100%);
-  border-color: rgba(108, 175, 213, .38);
-  overflow: hidden;
-}
-.desktop-card::after {
-  content: "✦"; position: absolute; right: 16px; top: 13px; font-size: 22px; color: #58a4d5; opacity: .7;
-  animation: floaty 8s ease-in-out infinite;
-}
-.desktop-card .btn { width: 100%; margin-top: 6px; }
-.dl-row { margin-top: 7px; margin-bottom: 0; }
-
-/* 宠物控制分区：每组一行，标签 + 按钮，整齐对齐 */
-#pet-controls { margin-top: 9px; border-top: 2px dashed var(--line); padding-top: 9px; display: flex; flex-direction: column; gap: 8px; }
-#pet-controls::before { content: "小词灵正在桌面等你"; font-size: 12px; font-weight: 800; color: #317da9; letter-spacing: .03em; }
-.pet-group { display: flex; align-items: center; gap: 9px; }
-.pet-group-label {
-  flex: 0 0 64px; font-size: 12.5px; font-weight: 800; color: var(--sub);
-  display: flex; align-items: center; gap: 4px;
-}
-.pet-group-btns { display: flex; gap: 7px; flex-wrap: wrap; flex: 1; }
-.pet-group-btns .chip { background: rgba(255,255,255,.78); border-color: rgba(91,160,202,.34); color: #286c95; }
-.pet-hint { margin: 0; line-height: 1.6; }
 
 /* ---------- live overlay ---------- */
 .live-overlay { position: fixed; inset: 0; z-index: 100; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -704,7 +681,7 @@ body.live .app { display: none; }
    靛青工作台。避免厚描边、糖果渐变和持续弹跳，让高密度工具更像编辑工作台。
 */
 @scope (:root[data-ui-theme="editorial"]) {
-:root {
+:scope {
   --bg: #ece7dc;
   --bg-2: #e5dfd3;
   --panel: #fffdf7;
