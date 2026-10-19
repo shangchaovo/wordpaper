@@ -1377,29 +1377,33 @@ function currentPetKeys() { return petFirstPassWords().map(petWordKey); }
 /* ---------------- set the REAL macOS desktop wallpaper ---------------- */
 /* Read-only. setDesktopImageURL is a different script, used only when the
  * desktop is not already one of our stable files. */
-const READ_WALLPAPER_SWIFT = `import AppKit
-let path = NSWorkspace.shared.desktopImageURL(for: NSScreen.main!)?.path ?? ""
-print(path)
+// JXA ships with macOS; invoking swift would require developer tools.
+const READ_WALLPAPER_JXA = `ObjC.import('AppKit');
+ObjC.unwrap($.NSWorkspace.sharedWorkspace.desktopImageURLForScreen($.NSScreen.mainScreen).path) || '';
 `;
 /* One import of our stable slot. Never points this call at the extension
  * cache: that is the call which stores another 你的照片 card. */
-const SET_WALLPAPER_SWIFT = `import AppKit
-let target = URL(fileURLWithPath: ProcessInfo.processInfo.environment["WP_TARGET"] ?? "")
-if target.path.contains("/com.apple.wallpaper.extension.image/") || target.path.contains("/com.apple.wallpaper.caches/") {
-  fputs("refusing to import a wallpaper cache file\\n", stderr)
-  exit(2)
-}
-guard FileManager.default.fileExists(atPath: target.path) else {
-  fputs("missing wallpaper file\\n", stderr)
-  exit(1)
-}
-for screen in NSScreen.screens {
-  try NSWorkspace.shared.setDesktopImageURL(target, for: screen, options: [:])
-}
-print(NSWorkspace.shared.desktopImageURL(for: NSScreen.main!)?.path ?? "")
+const SET_WALLPAPER_JXA = `ObjC.import('AppKit');
+(function () {
+  const targetPath = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('WP_TARGET')) || '';
+  if (targetPath.includes('/com.apple.wallpaper.extension.image/') || targetPath.includes('/com.apple.wallpaper.caches/')) {
+    throw new Error('refusing to import a wallpaper cache file');
+  }
+  if (!$.NSFileManager.defaultManager.fileExistsAtPath(targetPath)) throw new Error('missing wallpaper file');
+  const target = $.NSURL.fileURLWithPath(targetPath);
+  const workspace = $.NSWorkspace.sharedWorkspace;
+  const screens = $.NSScreen.screens;
+  for (let i = 0; i < screens.count; i++) {
+    const error = Ref();
+    if (!workspace.setDesktopImageURLForScreenOptionsError(target, screens.objectAtIndex(i), $({}), error)) {
+      throw new Error(error[0] ? ObjC.unwrap(error[0].localizedDescription) : 'could not set desktop image');
+    }
+  }
+  return ObjC.unwrap(workspace.desktopImageURLForScreen($.NSScreen.mainScreen).path) || '';
+})();
 `;
 function readDesktopImagePath(cb) {
-  execFile('/usr/bin/swift', ['-e', READ_WALLPAPER_SWIFT], { timeout: 20000 }, (err, stdout) => {
+  execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', READ_WALLPAPER_JXA], { timeout: 20000 }, (err, stdout) => {
     if (err) return cb(err);
     cb(null, String(stdout || '').trim());
   });
@@ -1452,7 +1456,7 @@ function setMacWallpaper(pngPath, cb) {
       }
       return finishReuse();
     }
-    execFile('/usr/bin/swift', ['-e', SET_WALLPAPER_SWIFT], {
+    execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', SET_WALLPAPER_JXA], {
       timeout: 45000,
       env: { ...process.env, WP_TARGET: plan.setPath },
     }, (setErr, stdout) => {
