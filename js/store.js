@@ -165,24 +165,47 @@
   }
 
   async function flush() {
+    flushLocal();
     const keys = Object.keys(pending);
     if (!keys.length) return true;
     const results = await Promise.all(keys.map(syncKey));
     return results.every(Boolean) && Object.keys(pending).length === 0;
   }
 
+  /* settings 里带着背景照片的 dataURL（可达数 MB）；滑块每动一格都同步序列化 + 写
+   * localStorage 会把主线程卡住。内存缓存立即生效，本地落盘合并到 250ms 一次，
+   * 页面隐藏 / 关闭 / 登出前强制落盘。 */
+  const localDirty = new Set();
+  let pendingDirty = false;
+  let localTimer = 0;
+  function scheduleLocalFlush() {
+    if (!localTimer) localTimer = setTimeout(flushLocal, 250);
+  }
+  function flushLocal() {
+    clearTimeout(localTimer);
+    localTimer = 0;
+    if (userPrefix) localDirty.forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(cache, key)) localSet(userPrefix + key, cache[key]);
+    });
+    localDirty.clear();
+    if (pendingDirty) { pendingDirty = false; persistPending(); }
+  }
+  window.addEventListener('pagehide', flushLocal);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushLocal(); });
+
   function queueWrite(key, value) {
     if (!STATE_KEYS.includes(key)) return false;
     cache[key] = value;
-    const localOk = userPrefix ? localSet(userPrefix + key, value) : false;
+    if (userPrefix) localDirty.add(key);
     if (key === 'uiTheme') localSet(NS + 'uiTheme', value); // harmless pre-paint preference, shared only on this browser
     if (currentUser) {
       if (!pending[key]) pending[key] = { value: value, expectedRevision: Number(revisions[key]) || 0 };
       else pending[key].value = value;
-      persistPending();
+      pendingDirty = true;
       scheduleSync(key);
     }
-    return localOk;
+    scheduleLocalFlush();
+    return !!userPrefix;
   }
 
   function legacyState() {
@@ -373,6 +396,14 @@
       const all = read('knownWords', {});
       const set = new Set(Array.isArray(all[library]) ? all[library] : []);
       if (known) set.add(key); else set.delete(key);
+      all[library] = Array.from(set);
+      write('knownWords', all);
+      return set;
+    },
+    setKnownWords(library, keys, known) {
+      const all = read('knownWords', {});
+      const set = new Set(Array.isArray(all[library]) ? all[library] : []);
+      keys.forEach(function (key) { if (known) set.add(key); else set.delete(key); });
       all[library] = Array.from(set);
       write('knownWords', all);
       return set;

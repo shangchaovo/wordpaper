@@ -120,8 +120,9 @@ with sync_playwright() as playwright:
     assert shared_page.locator("#btn-import-legacy").is_visible(), "explicit legacy-import fallback was not offered"
     shared_page.evaluate("Store.flush()")
     shared_page.once("dialog", lambda dialog: dialog.accept())
-    shared_page.click("#btn-import-legacy")
-    shared_page.wait_for_load_state("domcontentloaded")
+    # 导入成功后页面会 location.reload()；旧页面上 #preview-canvas 早已存在，必须等重载完成再断言。
+    with shared_page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
+        shared_page.click("#btn-import-legacy")
     shared_page.wait_for_selector("#preview-canvas", timeout=20_000)
     assert "不应被普通登录认领的旧数据" in shared_page.locator("#reminder-list").inner_text()
     shared_context.close()

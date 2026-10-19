@@ -99,7 +99,8 @@ def main():
             page.wait_for_timeout(200)
             check("清空搜索恢复全部词书", page.locator("#library-cards .lib-card").count() == 13)
             # default canvas size phone 1080x2400
-            dims = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:c.width,h:c.height}; }")
+            # 预览按屏幕像素绘制，壁纸的逻辑尺寸标在 data-wallpaper-w/h 上
+            dims = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:+c.dataset.wallpaperW,h:+c.dataset.wallpaperH}; }")
             check("默认手机画布 1080×2400", dims["w"] == 1080 and dims["h"] == 2400)
 
             # switch library via the cet4 card (locate by text, not index)
@@ -160,7 +161,7 @@ def main():
             # desktop size
             page.select_option("#sel-size", "desktop-1920x1080")
             page.wait_for_timeout(400)
-            dims2 = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:c.width,h:c.height}; }")
+            dims2 = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:+c.dataset.wallpaperW,h:+c.dataset.wallpaperH}; }")
             check("切桌面 1920×1080", dims2["w"] == 1920 and dims2["h"] == 1080)
 
             # paste import -> custom library card (import UI now lives in a button-triggered modal)
@@ -209,6 +210,11 @@ def main():
             with page.expect_download() as dl:
                 page.click("#btn-download2")
             check("PNG 下载", dl.value.suggested_filename.endswith(".png"))
+            with open(dl.value.path(), "rb") as f:
+                png_head = f.read(24)
+            png_w, png_h = int.from_bytes(png_head[16:20], "big"), int.from_bytes(png_head[20:24], "big")
+            check("下载的 PNG 是壁纸原尺寸(非预览分辨率)",
+                  (png_w, png_h) == (int(dims2["w"]), int(dims2["h"])))
 
             # SRS (艾宾浩斯) — 记忆复习 card. Switch to a stable built-in fixture (四级)
             # before exercising the notebook; custom libraries use the same SRS path.
@@ -367,11 +373,19 @@ def main():
 
             # All three interface themes remain selectable. Liquid gets
             # per-surface optical filters in Chromium and persists on reload.
-            page.locator('.ui-theme-option[data-ui-theme="anime"]').click()
+            # 主题切换先播放圆形铺满的过渡，盖满后才真正换主题，所以等属性落定再断言。
+            # 页面 CSP 禁止 unsafe-eval，字符串形式的 wait_for_function 会直接报错，所以在这边轮询。
+            def switch_ui_theme(theme):
+                page.locator(f'.ui-theme-option[data-ui-theme="{theme}"]').click()
+                for _ in range(40):
+                    if page.eval_on_selector("html", "e=>e.dataset.uiTheme") == theme:
+                        break
+                    page.wait_for_timeout(50)
+            switch_ui_theme("anime")
             check("动漫主题可切换", page.eval_on_selector("html", "e=>e.dataset.uiTheme") == "anime")
-            page.locator('.ui-theme-option[data-ui-theme="editorial"]').click()
+            switch_ui_theme("editorial")
             check("校样主题可切换", page.eval_on_selector("html", "e=>e.dataset.uiTheme") == "editorial")
-            page.locator('.ui-theme-option[data-ui-theme="liquid"]').click()
+            switch_ui_theme("liquid")
             page.wait_for_timeout(500)
             check("Liquid Glass 主题可切换", page.eval_on_selector("html", "e=>e.dataset.uiTheme") == "liquid")
             check("Liquid 壁纸配色已加入并自动联动",

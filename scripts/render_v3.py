@@ -63,9 +63,9 @@ def wait_up(port, timeout=10):
 
 
 def canvas_png(page, path):
-    """Dump the off-screen render (currentCanvas equivalent) via toDataURL."""
+    """Dump the full-size wallpaper render (what download / set-wallpaper export)."""
     data = page.evaluate(
-        "() => { const c = document.querySelector('#preview-canvas'); return c.toDataURL('image/png'); }"
+        "() => { const c = App.exportCanvas(); return c.toDataURL('image/png'); }"
     )
     import base64
     with open(path, "wb") as f:
@@ -75,7 +75,7 @@ def canvas_png(page, path):
 def px(page, fx, fy):
     """Read a canvas pixel at fractional coords -> (r,g,b)."""
     return page.evaluate(
-        "([fx,fy]) => { const c=document.querySelector('#preview-canvas');"
+        "([fx,fy]) => { const c=App.exportCanvas();"
         " const x=Math.floor(c.width*fx), y=Math.floor(c.height*fy);"
         " const d=c.getContext('2d').getImageData(x,y,1,1).data; return [d[0],d[1],d[2]]; }",
         [fx, fy],
@@ -87,7 +87,7 @@ def first_dark_row(page):
     vertical strip near the left of the words column. Directly tracks the
     words block's vertical position."""
     return page.evaluate(
-        "() => { const c=document.querySelector('#preview-canvas');"
+        "() => { const c=App.exportCanvas();"
         " const ctx=c.getContext('2d'); const x=Math.floor(c.width*0.18);"
         " for (let y=0; y<c.height; y+=2) { const d=ctx.getImageData(x,y,1,1).data;"
         "   if (d[0]<120 && d[1]<110 && d[2]<110) return y/c.height; } return -1; }"
