@@ -531,8 +531,9 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 }
 @keyframes stage-breathe { from { background-position: 0% 20%; } to { background-position: 100% 80%; } }
 
-/* 预览直接编辑器取代右侧的重复字体卡；宠物入口也只保留中央主区这一处。 */
-#module-typography, #module-desktop { display: none; }
+/* 字体卡仍留在 DOM 里，给点词编辑器同步字号/字体；界面上不占一列。
+   桌面伴侣的重复入口已去掉，启用和下载走预览上方的小词灵。 */
+#module-typography { display: none; }
 #preview-canvas {
   display: block; border-radius: 14px; box-shadow: 0 14px 44px rgba(0,0,0,.4);
   max-width: 100%; height: auto; cursor: grab;
@@ -584,31 +585,6 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 }
 .modal-close:hover { border-color: var(--danger); color: var(--danger); transform: rotate(90deg); }
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* ---------- desktop card (卡通蓝天渐变 + 整齐分区) ---------- */
-.desktop-card {
-  background: linear-gradient(145deg, rgba(255,253,248,.94) 8%, #e8f5ff 100%);
-  border-color: rgba(108, 175, 213, .38);
-  overflow: hidden;
-}
-.desktop-card::after {
-  content: "✦"; position: absolute; right: 16px; top: 13px; font-size: 22px; color: #58a4d5; opacity: .7;
-  animation: floaty 8s ease-in-out infinite;
-}
-.desktop-card .btn { width: 100%; margin-top: 6px; }
-.dl-row { margin-top: 7px; margin-bottom: 0; }
-
-/* 宠物控制分区：每组一行，标签 + 按钮，整齐对齐 */
-#pet-controls { margin-top: 9px; border-top: 2px dashed var(--line); padding-top: 9px; display: flex; flex-direction: column; gap: 8px; }
-#pet-controls::before { content: "小词灵正在桌面等你"; font-size: 12px; font-weight: 800; color: #317da9; letter-spacing: .03em; }
-.pet-group { display: flex; align-items: center; gap: 9px; }
-.pet-group-label {
-  flex: 0 0 64px; font-size: 12.5px; font-weight: 800; color: var(--sub);
-  display: flex; align-items: center; gap: 4px;
-}
-.pet-group-btns { display: flex; gap: 7px; flex-wrap: wrap; flex: 1; }
-.pet-group-btns .chip { background: rgba(255,255,255,.78); border-color: rgba(91,160,202,.34); color: #286c95; }
-.pet-hint { margin: 0; line-height: 1.6; }
 
 /* ---------- live overlay ---------- */
 .live-overlay { position: fixed; inset: 0; z-index: 100; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }

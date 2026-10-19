@@ -3,8 +3,9 @@
  *
  * Double-click or `node companion.js` and you get, all on localhost:
  *   1. The wallpaper website itself (so OCR + "set wallpaper" buttons work).
- *   2. A scheduler that renders today's wallpaper to PNG and sets it as your
- *      REAL macOS desktop picture via osascript — auto-changes on a timer.
+ *   2. A scheduler that renders today's wallpaper onto one stable PNG and sets
+ *      it as the macOS desktop. Later refreshes overwrite that file in place
+ *      so 系统设置 → 墙纸 → 你的照片 does not gain a card per refresh.
  *   3. An always-on-top floating "pet" mini-window showing today's word/reminders.
  *
  * No npm install, no packages. Uses only Node's stdlib + macOS built-ins
@@ -18,8 +19,9 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execFile, exec } = require('child_process');
+const { execFile } = require('child_process');
 const os = require('os');
+const wallpaperFiles = require('./lib/wallpaper_files');
 
 const ROOT = __dirname;
 const DEFAULT_PORT = 8771;
@@ -110,7 +112,7 @@ function saveConfig() {
  * counter, which is mixed into the pick seed so the wallpaper + pet jump to a
  * new word group right away (the auto interval still rotates by bucket). */
 const STATE_PATH = process.env.WORDPAPER_STATE_PATH || migratedRuntimePath('companion-state.json');
-const STATE_DEFAULTS = { bump: 0, petMemoryEvents: [], petMemorySeq: 0, petMemoryStreamId: '', petLearnedByLibrary: {}, petDecksByLibrary: {}, petKnownByLibrary: {}, petWordEpoch: 0 };
+const STATE_DEFAULTS = { bump: 0, petMemoryEvents: [], petMemorySeq: 0, petMemoryStreamId: '', petLearnedByLibrary: {}, petDecksByLibrary: {}, petKnownByLibrary: {}, petWordEpoch: 0, wallpaperCachePath: '' };
 let state = Object.assign({}, STATE_DEFAULTS);
 try { state = Object.assign({}, STATE_DEFAULTS, JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'))); } catch {}
 if (!Array.isArray(state.petMemoryEvents)) state.petMemoryEvents = [];
@@ -118,6 +120,7 @@ if (!state.petLearnedByLibrary || typeof state.petLearnedByLibrary !== 'object')
 if (!state.petDecksByLibrary || typeof state.petDecksByLibrary !== 'object') state.petDecksByLibrary = {};
 if (!state.petKnownByLibrary || typeof state.petKnownByLibrary !== 'object') state.petKnownByLibrary = {};
 state.petWordEpoch = Math.max(0, Number(state.petWordEpoch) || 0);
+if (typeof state.wallpaperCachePath !== 'string') state.wallpaperCachePath = '';
 function makeStreamId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`; }
 if (!state.petMemoryStreamId) state.petMemoryStreamId = makeStreamId();
 function saveState() {
@@ -510,25 +513,84 @@ function buildSVG(opts) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${parts.join('')}</svg>`;
 }
 
+/* sips writes a unique SVG/PNG pair per raster. Keep them only long enough for
+ * an in-flight render (and the layout test that reads the SVG) to finish. */
+function forgetTemp(file) {
+  if (!file) return;
+  const timer = setTimeout(() => { try { fs.unlinkSync(file); } catch {} }, 8000);
+  if (timer.unref) timer.unref();
+}
+function sweepRasterTemps() {
+  const dir = os.tmpdir();
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const now = Date.now();
+  for (const name of names) {
+    const stamped = /^dw_\d+_\d+\.(svg|png)$/.test(name) || /^dw_\d+_\d+\.svg\.png$/.test(name);
+    const ocr = name === 'dw_ocr.png';
+    if (!stamped && !ocr) continue;
+    const full = path.join(dir, name);
+    try {
+      const st = fs.statSync(full);
+      if (now - st.mtimeMs > (ocr ? 10 * 60 * 1000 : 60 * 1000)) fs.unlinkSync(full);
+    } catch {}
+  }
+}
+/* sips is one machine-wide rasterizer. Pet clicks and wallpaper pushes both
+ * call this; a queue keeps those jobs from overlapping. */
+const rasterJobs = [];
+let rasterBusy = false;
 function rasterizeSVG(svg, outPng, W, H, cb) {
+  rasterJobs.push({ svg, outPng, W, H, cb });
+  pumpRaster();
+}
+function pumpRaster() {
+  if (rasterBusy) return;
+  const job = rasterJobs.shift();
+  if (!job) return;
+  rasterBusy = true;
+  rasterizeSVGNow(job.svg, job.outPng, job.W, job.H, (err, png) => {
+    rasterBusy = false;
+    try { if (job.cb) job.cb(err, png); } catch {}
+    pumpRaster();
+  });
+}
+function placeRaster(from, outPng) {
+  try {
+    // Keep the destination inode. Replacing the file (rename / atomic write)
+    // makes macOS treat the next desktop set as a brand-new picture.
+    wallpaperFiles.writeBufferInPlace(fs, outPng, fs.readFileSync(from));
+  } catch (err) { return err; }
+  try { fs.unlinkSync(from); } catch { /* temp already gone */ }
+  return null;
+}
+function rasterizeSVGNow(svg, outPng, W, H, cb) {
   const tag = Date.now() + '_' + Math.floor(Math.random() * 1e6);
   const tmpSvg = path.join(os.tmpdir(), 'dw_' + tag + '.svg');
   fs.writeFileSync(tmpSvg, svg);
   // sips rasterizes SVG -> PNG at the SVG's own dimensions (macOS built-in).
   // (qlmanage would letterbox to a square thumbnail, so we don't use it.)
   const tmpPng = path.join(os.tmpdir(), 'dw_' + tag + '.png');
+  const finish = (err, png) => {
+    forgetTemp(tmpSvg);
+    forgetTemp(tmpPng);
+    cb(err, png);
+  };
   execFile('sips', ['-s', 'format', 'png', tmpSvg, '--out', tmpPng], { timeout: 20000 }, (err) => {
     if (err || !fs.existsSync(tmpPng)) {
       // fallback: try qlmanage
       return execFile('qlmanage', ['-t', '-s', String(W), '-o', os.tmpdir(), tmpSvg], { timeout: 20000 }, (e2) => {
         const produced = path.join(os.tmpdir(), 'dw_' + tag + '.svg.png');
-        if (e2 || !fs.existsSync(produced)) return cb(new Error('rasterize failed'), null);
-        fs.renameSync(produced, outPng);
-        cb(null, outPng);
+        if (e2 || !fs.existsSync(produced)) return finish(new Error('rasterize failed'), null);
+        const placeErr = placeRaster(produced, outPng);
+        forgetTemp(produced);
+        if (placeErr) return finish(placeErr, null);
+        finish(null, outPng);
       });
     }
-    try { fs.renameSync(tmpPng, outPng); } catch { fs.copyFileSync(tmpPng, outPng); }
-    cb(null, outPng);
+    const placeErr = placeRaster(tmpPng, outPng);
+    if (placeErr) return finish(placeErr, null);
+    finish(null, outPng);
   });
 }
 
@@ -1206,6 +1268,12 @@ function startHotkey() {
  * same /tmp/dw_pet.png and leave a half-written (blank / partial) image. */
 let petRenderBusy = false;
 let petRenderPending = null;   // {W,H,cbs:[]} — only the latest size is kept
+let lastPetSig = '';
+function petContentSig(words, w, h) {
+  const keys = (words || []).map(petWordKey).join('\n');
+  const rems = (CFG.reminders || []).map(r => (r && r.text) + '\t' + (r && r.time)).join('\n');
+  return w + 'x' + h + '|' + (CFG.uiTheme || '') + '|' + keys + '|' + rems;
+}
 function renderPetPng(W, H, cb) {
   if (petRenderBusy) {
     if (!petRenderPending) petRenderPending = { W, H, cbs: [] };
@@ -1217,9 +1285,10 @@ function renderPetPng(W, H, cb) {
   const doOne = (w, h, cbs) => {
     const picked = petFirstPassWords();
     petWords = picked;
-    const svg = buildPetSVG(picked, CFG.reminders || [], CFG.uiTheme, w, h);
     const pngPath = path.join(os.tmpdir(), 'dw_pet.png');
-    rasterizeSVG(svg, pngPath, w * 2, h * 2, (err) => {
+    const sig = petContentSig(picked, w, h);
+    const done = (err) => {
+      if (!err) lastPetSig = sig;
       for (const c of cbs) { try { c(err); } catch {} }
       if (petRenderPending) {
         const p = petRenderPending; petRenderPending = null;
@@ -1227,7 +1296,12 @@ function renderPetPng(W, H, cb) {
       } else {
         petRenderBusy = false;
       }
-    });
+    };
+    // Same words and size already on disk: skip sips. Resize and word clicks
+    // change the signature, so they still rasterize.
+    if (sig === lastPetSig && fs.existsSync(pngPath)) return done(null);
+    const svg = buildPetSVG(picked, CFG.reminders || [], CFG.uiTheme, w, h);
+    rasterizeSVG(svg, pngPath, w * 2, h * 2, done);
   };
   doOne(W, H, cb ? [cb] : []);
 }
@@ -1301,15 +1375,112 @@ function refreshPetInPlace(prevCount, nextCount, done) {
 function currentPetKeys() { return petFirstPassWords().map(petWordKey); }
 
 /* ---------------- set the REAL macOS desktop wallpaper ---------------- */
+/* Read-only. setDesktopImageURL is a different script, used only when the
+ * desktop is not already one of our stable files. */
+const READ_WALLPAPER_SWIFT = `import AppKit
+let path = NSWorkspace.shared.desktopImageURL(for: NSScreen.main!)?.path ?? ""
+print(path)
+`;
+/* One import of our stable slot. Never points this call at the extension
+ * cache: that is the call which stores another 你的照片 card. */
+const SET_WALLPAPER_SWIFT = `import AppKit
+let target = URL(fileURLWithPath: ProcessInfo.processInfo.environment["WP_TARGET"] ?? "")
+if target.path.contains("/com.apple.wallpaper.extension.image/") || target.path.contains("/com.apple.wallpaper.caches/") {
+  fputs("refusing to import a wallpaper cache file\\n", stderr)
+  exit(2)
+}
+guard FileManager.default.fileExists(atPath: target.path) else {
+  fputs("missing wallpaper file\\n", stderr)
+  exit(1)
+}
+for screen in NSScreen.screens {
+  try NSWorkspace.shared.setDesktopImageURL(target, for: screen, options: [:])
+}
+print(NSWorkspace.shared.desktopImageURL(for: NSScreen.main!)?.path ?? "")
+`;
+function readDesktopImagePath(cb) {
+  execFile('/usr/bin/swift', ['-e', READ_WALLPAPER_SWIFT], { timeout: 20000 }, (err, stdout) => {
+    if (err) return cb(err);
+    cb(null, String(stdout || '').trim());
+  });
+}
+function reloadWallpaperAgent() {
+  if (process.env.WORDPAPER_TEST_MODE === '1') return;
+  // Same-path setDesktopImageURL does not redraw, and calling it again copies
+  // a new UUID into the image extension. Relaunching the agent re-reads the
+  // file Index.plist already points at.
+  execFile('/usr/bin/killall', ['WallpaperAgent'], () => {});
+}
+function rememberWallpaperCache(applied, setPath) {
+  if (!applied || applied === setPath || !wallpaperFiles.isWallpaperExtensionCachePath(applied)) return;
+  if (state.wallpaperCachePath === applied) return;
+  state.wallpaperCachePath = applied;
+  saveState();
+}
 function setMacWallpaper(pngPath, cb) {
   if (!isMac) return cb && cb(new Error('not macOS'));
-  const posix = pngPath;
-  const script = `tell application "System Events" to set picture of every desktop to "${posix}"`;
-  execFile('osascript', ['-e', script], { timeout: 15000 }, (err) => cb && cb(err));
+  readDesktopImagePath((err, current) => {
+    if (err) return cb && cb(err);
+    if (!current) return cb && cb(new Error('could not read the current desktop image'));
+    let plan;
+    try {
+      plan = wallpaperFiles.resolveWallpaperPublish({
+        currentPath: current,
+        targetPath: pngPath,
+        ownedCachePath: state.wallpaperCachePath || '',
+        cacheExists: !wallpaperFiles.isWallpaperExtensionCachePath(current) || fs.existsSync(current),
+      });
+    } catch (e) { return cb && cb(e); }
+    const finishReuse = () => {
+      reloadWallpaperAgent();
+      cb && cb(null, plan.updatePath || pngPath);
+    };
+    if (plan.mode === 'reuse') {
+      if (plan.updatePath && wallpaperFiles.isWallpaperExtensionCachePath(plan.updatePath)
+          && (!/\.png$/i.test(plan.updatePath) || !fs.existsSync(plan.updatePath))) {
+        // Never create a cache file, and never overwrite a HEIC cache with PNG bytes.
+        plan = { mode: 'reuse', setPath: null, updatePath: null };
+      }
+      if (plan.updatePath) {
+        try { wallpaperFiles.writeBufferInPlace(fs, plan.updatePath, fs.readFileSync(pngPath)); }
+        catch (e) {
+          // The extension cache is TCC-protected. The stable slot already has
+          // the new bytes; reloading the agent still shows that file.
+          if (!wallpaperFiles.isWallpaperExtensionCachePath(plan.updatePath)) return cb && cb(e);
+          console.error('[companion] in-place cache update skipped:', e.message);
+        }
+      }
+      return finishReuse();
+    }
+    execFile('/usr/bin/swift', ['-e', SET_WALLPAPER_SWIFT], {
+      timeout: 45000,
+      env: { ...process.env, WP_TARGET: plan.setPath },
+    }, (setErr, stdout) => {
+      if (setErr) return cb && cb(setErr);
+      const applied = String(stdout || '').trim();
+      const ok = applied === plan.setPath || wallpaperFiles.isWallpaperExtensionCachePath(applied);
+      if (!ok) {
+        return cb && cb(new Error(`wallpaper path mismatch (wanted ${path.basename(plan.setPath)}, got ${path.basename(applied || 'empty')})`));
+      }
+      rememberWallpaperCache(applied, plan.setPath);
+      cb && cb(null, plan.setPath);
+    });
+  });
 }
 
 /* push one fresh wallpaper to the desktop */
-function pushWallpaper(cb) {
+let lastWallpaperSig = '';
+let lastWallpaperPath = '';
+function wallpaperSignature(picked, W, H) {
+  const words = (picked || []).map(w => [w && w.word, w && w.phonetic, w && w.pos, w && w.meaning].join('\t')).join('\n');
+  const s = buildSettings();
+  const rems = (CFG.reminders || []).map(r => [r && r.text, r && r.time, r && r.done].join('\t')).join('\n');
+  const epoch = CFG.petWallpaperSync ? (state.petWordEpoch || 0) : 0;
+  return [W, H, CFG.theme, CFG.layout, CFG.bgPattern, s.anchorWords, s.anchorReminders,
+    s.offWords.x, s.offWords.y, s.offReminders.x, s.offReminders.y, s.showReminders, epoch, words, rems].join('|');
+}
+function pushWallpaper(cb, opts) {
+  const force = !!(opts && opts.force);
   const today = dateKey(new Date());
   // 同步开启时壁纸 = 小词灵当前页词（单一事实源）；否则回退原有按日期/种子随机。
   let picked;
@@ -1320,38 +1491,160 @@ function pushWallpaper(cb) {
     picked = pickForDate(words, CFG.wordsPerGroup, todaySeed(), 'random');
   }
   const [W, H] = SIZES[CFG.size] || SIZES['desktop-1920x1080'];
+  const sig = wallpaperSignature(picked, W, H);
+  // Identical content is already on the stable file. Skip sips and avoid
+  // another desktop import — that import is what fills 你的照片.
+  // Pet-click sync still forces a render when the epoch changes.
+  if (!force && sig === lastWallpaperSig && lastWallpaperPath && fs.existsSync(lastWallpaperPath)) {
+    return cb && cb(null, lastWallpaperPath);
+  }
+  const settings = buildSettings();
   const svg = buildSVG({
     width: W, height: H, layout: CFG.layout, theme: THEMES[CFG.theme] || THEMES.cream,
-    words: picked, reminders: CFG.reminders || [], settings: buildSettings(), dateStr: today,
+    words: picked, reminders: CFG.reminders || [], settings, dateStr: today,
   });
-  // fresh filename EVERY push: macOS only redraws the desktop when the picture
-  // path changes — re-setting the same path is a silent no-op, so the wallpaper
-  // would look "stuck" forever.
+  // Always the same slot file. A new path on each refresh is what made
+  // macOS keep a new 你的照片 card.
   const out = freshWallpaperFile('wallpaper');
   rasterizeSVG(svg, out, W, H, (err, png) => {
     if (err) { console.error('[companion] render failed:', err.message); return cb && cb(err); }
-    if (!CFG.autoSetWallpaper) { console.log('[companion] rendered', out, '(autoSet off)'); return cb && cb(null, out); }
+    if (!CFG.autoSetWallpaper) {
+      lastWallpaperSig = sig; lastWallpaperPath = out;
+      console.log('[companion] rendered', out, '(autoSet off)');
+      return cb && cb(null, out);
+    }
     setMacWallpaper(out, (e2) => {
-      cleanupOldWallpapers('wallpaper', 4);
+      cleanupOldWallpapers('wallpaper', out);
       if (e2) console.error('[companion] set wallpaper failed:', e2.message);
-      else console.log(`[companion] desktop wallpaper updated ${new Date().toLocaleTimeString()} (${picked.length} words)`);
+      else {
+        lastWallpaperSig = sig; lastWallpaperPath = out;
+        console.log(`[companion] desktop wallpaper updated ${new Date().toLocaleTimeString()} (${picked.length} words)`);
+      }
       cb && cb(e2, out);
     });
   });
 }
-/* Fresh wallpaper file per set; macOS won't refresh the desktop if the picture
- * path stays the same. Old files get pruned, keeping the newest few. */
+/* One stable file per kind. slot1 is kept only so an older desktop that
+ * already points at it is overwritten in place instead of imported again. */
 function freshWallpaperFile(prefix) {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  return path.join(RUNTIME_ROOT, `${prefix}-${stamp}.png`);
+  return wallpaperFiles.slotFile(RUNTIME_ROOT, prefix);
 }
-function cleanupOldWallpapers(prefix, keep) {
+function cleanupOldWallpapers(prefix, keepPath) {
   try {
-    const files = fs.readdirSync(RUNTIME_ROOT).filter(f => f.startsWith(prefix + '-') && f.endsWith('.png')).sort();
-    files.slice(0, Math.max(0, files.length - keep)).forEach(f => { try { fs.unlinkSync(path.join(RUNTIME_ROOT, f)); } catch {} });
+    const keepName = keepPath ? path.basename(keepPath) : '';
+    const files = fs.readdirSync(RUNTIME_ROOT).filter(f => f.startsWith(prefix + '-') && f.endsWith('.png'));
+    for (const f of files) {
+      if (f === keepName || f === `${prefix}-slot0.png` || f === `${prefix}-slot1.png`) continue;
+      try { fs.unlinkSync(path.join(RUNTIME_ROOT, f)); } catch {}
+    }
   } catch {}
+  if (keepPath) pruneMacWallpaperIndex(keepPath);
+}
+/* Point leftover WordPaper picture paths in the system wallpaper index at the
+ * file we just set, so 你的照片 does not grow a new card on every refresh. */
+const PRUNE_WALLPAPER_PY = `
+import os, plistlib, sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+index_path, keep = sys.argv[1], sys.argv[2]
+keep_url = Path(keep).as_uri()
+root = plistlib.load(open(index_path, "rb"))
+changed = 0
+STABLE = {
+    "wallpaper-slot0.png", "wallpaper-slot1.png",
+    "custom-slot0.png", "custom-slot1.png",
+}
+def ours(url):
+    if not isinstance(url, str) or not url.startswith("file:"):
+        return False
+    path = unquote(urlparse(url).path)
+    base = os.path.basename(path)
+    if base in STABLE:
+        return False
+    return "/WordPaper/companion/" in path and base.endswith(".png") and (base.startswith("wallpaper-") or base.startswith("custom-"))
+def walk(obj):
+    global changed
+    if isinstance(obj, dict):
+        cfg = obj.get("Configuration")
+        if isinstance(cfg, (bytes, bytearray)) and bytes(cfg).startswith(b"bplist"):
+            try:
+                inner = plistlib.loads(bytes(cfg))
+            except Exception:
+                inner = None
+            if isinstance(inner, dict) and inner.get("type") == "imageFile":
+                url = (inner.get("url") or {}).get("relative")
+                if ours(url) and url != keep_url:
+                    inner["url"] = {"relative": keep_url}
+                    obj["Configuration"] = plistlib.dumps(inner, fmt=plistlib.FMT_BINARY)
+                    changed += 1
+        for v in obj.values():
+            walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            walk(v)
+walk(root)
+if changed:
+    tmp = index_path + ".wordpaper-tmp"
+    with open(tmp, "wb") as f:
+        plistlib.dump(root, f, fmt=plistlib.FMT_BINARY)
+    os.replace(tmp, index_path)
+print(changed)
+`;
+let pruneQueued = '';
+let pruneRunning = false;
+let pruneState = { keep: '', mtimeMs: -1 };
+const WP_INDEX_URL_RE = /file:\/\/[^\x00-\x1f\s"<>]+WordPaper\/companion\/(?:wallpaper|custom)-[^\x00-\x1f\s"<>]+\.png/g;
+function wordpaperUrlsInWallpaperIndex(indexPath) {
+  let buf;
+  try { buf = fs.readFileSync(indexPath); } catch { return null; }
+  return [...new Set(buf.toString('latin1').match(WP_INDEX_URL_RE) || [])];
+}
+function wallpaperIndexAlreadyFolded(indexPath, keepPath) {
+  // Stable slot URLs are already the files we reuse. Only timestamped
+  // wallpaper-YYYY… names need folding, and never onto a cache UUID.
+  if (!wallpaperFiles.isOurWallpaperFile(keepPath)) return true;
+  const urls = wordpaperUrlsInWallpaperIndex(indexPath);
+  if (!urls || !urls.length) return true;
+  return !urls.some(u => wallpaperFiles.isLegacyWallpaperUrl(u));
+}
+function pruneMacWallpaperIndex(keepPath) {
+  if (!isMac || !keepPath) return;
+  pruneQueued = keepPath;
+  if (!pruneRunning) pumpWallpaperPrune();
+}
+function pumpWallpaperPrune() {
+  const keep = pruneQueued;
+  pruneQueued = '';
+  if (!keep) { pruneRunning = false; return; }
+  const index = path.join(os.homedir(), 'Library', 'Application Support', 'com.apple.wallpaper', 'Store', 'Index.plist');
+  let st;
+  try { st = fs.statSync(index); } catch { pruneRunning = false; return; }
+  // Already folded onto this file, and WallpaperAgent has not rewritten the
+  // index since. Skip the python spawn and the plist write entirely.
+  if (pruneState.keep === keep && pruneState.mtimeMs === st.mtimeMs) {
+    pruneRunning = false;
+    if (pruneQueued) pumpWallpaperPrune();
+    return;
+  }
+  if (wallpaperIndexAlreadyFolded(index, keep)) {
+    pruneState = { keep, mtimeMs: st.mtimeMs };
+    pruneRunning = false;
+    if (pruneQueued) pumpWallpaperPrune();
+    return;
+  }
+  pruneRunning = true;
+  execFile('python3', ['-c', PRUNE_WALLPAPER_PY, index, keep], { timeout: 8000 }, (err, stdout) => {
+    pruneRunning = false;
+    if (err) console.error('[companion] prune wallpaper history failed:', err.message);
+    else {
+      let mtime = st.mtimeMs;
+      try { mtime = fs.statSync(index).mtimeMs; } catch {}
+      pruneState = { keep, mtimeMs: mtime };
+      const n = String(stdout || '').trim();
+      if (n && n !== '0') console.log(`[companion] folded ${n} old wallpaper paths onto ${path.basename(keep)}`);
+    }
+    if (pruneQueued) pumpWallpaperPrune();
+  });
 }
 function rotationBucket() {
   const now = new Date();
@@ -1366,34 +1659,67 @@ let advancing = false;
 let pendingDir = 0;
 let lastAdvanceAt = 0;   // 服务端安全阀：500ms 内重复推进直接吞掉，防幽灵连发
 function runAdvance(dir) {
+  if (petWallpaperTimer) { clearTimeout(petWallpaperTimer); petWallpaperTimer = null; }
   advancing = true;
   pushWallpaper(() => {
-    startPet();
-    advancing = false;
-    if (pendingDir) { const d = pendingDir; pendingDir = 0; runAdvance(d); }
+    if (!petVisible || !petChild) startPet();
+    else refreshPetInPlace(petWords.length, petFirstPassWords().length);
+    finishWallpaperJob();
   });
 }
 
-/* 小词灵驱动的壁纸同步：词变了立即换壁纸，但点词可能连击——throttle 到 ≥900ms
- * 一次，期间只记一个「待渲染」标记，结束后补一帧，避免壁纸狂闪。sips 单线程，
- * 与 runAdvance 共用同一把串行锁（advancing），防止两个渲染交错抢壁纸。 */
+/* 小词灵驱动的壁纸同步：点词立刻改小窗（调用方自己 refreshPetInPlace）。
+ * 桌面 sips 最多约 1 秒一次，连点合并成一次，停手后再补一帧最终画面。
+ * 与 runAdvance 共用 advancing，sips 本身再经 rasterizeSVG 串行。 */
+const PET_WALLPAPER_MIN_MS = 1000;
 let petWallpaperTimer = null;
+let petWallpaperLastAt = 0;
+let petWallpaperDirty = false;
 let petWallpaperPending = false;
 function syncWallpaperToPet() {
   if (!CFG.petWallpaperSync || !CFG.autoSetWallpaper) return;
-  if (petWallpaperTimer) { petWallpaperPending = true; return; }
-  petWallpaperTimer = setTimeout(() => {
-    petWallpaperTimer = null;
-    const go = () => {
-      advancing = true;
-      pushWallpaper(() => {
-        advancing = false;
-        if (petWallpaperPending) { petWallpaperPending = false; syncWallpaperToPet(); }
-      });
-    };
-    if (advancing) { petWallpaperPending = true; return; }
-    go();
-  }, 900);
+  petWallpaperDirty = true;
+  armPetWallpaperSync();
+}
+function armPetWallpaperSync() {
+  if (advancing) { petWallpaperPending = true; return; }
+  if (petWallpaperTimer) { clearTimeout(petWallpaperTimer); petWallpaperTimer = null; }
+  const wait = Math.max(0, PET_WALLPAPER_MIN_MS - (Date.now() - petWallpaperLastAt));
+  // setTimeout even for wait 0: the click handler queues the pet raster first.
+  petWallpaperTimer = setTimeout(runPetWallpaperSync, wait);
+  if (petWallpaperTimer.unref) petWallpaperTimer.unref();
+}
+function runPetWallpaperSync() {
+  petWallpaperTimer = null;
+  if (advancing) { petWallpaperPending = true; return; }
+  if (!petWallpaperDirty && !petWallpaperPending) return;
+  const hadPetSync = petWallpaperDirty || petWallpaperPending;
+  petWallpaperDirty = false;
+  petWallpaperPending = false;
+  petWallpaperLastAt = Date.now();
+  advancing = true;
+  pushWallpaper(err => {
+    if (err && hadPetSync) petWallpaperDirty = true;
+    finishWallpaperJob();
+  }, { force: hadPetSync });
+}
+function finishWallpaperJob() {
+  advancing = false;
+  if (pendingDir) { const d = pendingDir; pendingDir = 0; runAdvance(d); return; }
+  if (petWallpaperDirty || petWallpaperPending) armPetWallpaperSync();
+}
+function enqueueWallpaper() {
+  if (!CFG.autoSetWallpaper) return;
+  if (advancing) { petWallpaperPending = true; return; }
+  // Do not cancel a pending pet-click sync — interval refresh can wait.
+  if (CFG.petWallpaperSync && (petWallpaperDirty || petWallpaperTimer)) {
+    petWallpaperDirty = true;
+    armPetWallpaperSync();
+    return;
+  }
+  petWallpaperLastAt = Date.now();
+  advancing = true;
+  pushWallpaper(finishWallpaperJob);
 }
 
 /* ---------------- Apple Vision OCR (zero-dep, via JXA) ---------------- */
@@ -1524,6 +1850,7 @@ const server = http.createServer((req, res) => {
       const tmp = path.join(os.tmpdir(), 'dw_ocr.png');
       fs.writeFileSync(tmp, img);
       ocrImage(tmp, (err, text) => {
+        try { fs.unlinkSync(tmp); } catch {}
         if (err) { res.writeHead(500); return res.end(JSON.stringify({ error: err.message })); }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ text }));
@@ -1540,9 +1867,13 @@ const server = http.createServer((req, res) => {
       const img = boundary ? parseMultipart(body, boundary) : body;
       if (!img) { res.writeHead(400); return res.end(JSON.stringify({ error: 'no image' })); }
       const out = freshWallpaperFile('custom');
-      fs.writeFileSync(out, img);
+      try { wallpaperFiles.writeBufferInPlace(fs, out, img); }
+      catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message || 'wallpaper-write-failed' }));
+      }
       setMacWallpaper(out, err => {
-        cleanupOldWallpapers('custom', 3);
+        cleanupOldWallpapers('custom', out);
         res.writeHead(err ? 500 : 200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(err ? { error: err.message } : { ok: true }));
       });
@@ -1635,7 +1966,7 @@ const server = http.createServer((req, res) => {
       }
       // 页词变了或主题/纹理/版面位置变了都要重推壁纸（同步开启时页词即壁纸词源）。
       if (changedPageKeys) syncWallpaperToPet();
-      else if ((changedWallpaperTheme || changedPattern || changedLayout) && CFG.autoSetWallpaper) pushWallpaper();
+      else if ((changedWallpaperTheme || changedPattern || changedLayout) && CFG.autoSetWallpaper) enqueueWallpaper();
     });
   }
 
@@ -1814,15 +2145,20 @@ server.listen(CFG.port, '127.0.0.1', () => {
     if (process.env.WORDPAPER_TEST_MODE !== '1' && process.env.WORDPAPER_COMPANION_SILENT !== '1') execFile('open', [CFG.webOrigin || `http://localhost:${CFG.port}`], () => {});
     else if (process.env.WORDPAPER_COMPANION_SILENT === '1') console.log('  静默启动（开机自启）：不打开浏览器');
     // push the first wallpaper now, then on the interval
+    sweepRasterTemps();
     if (CFG.autoSetWallpaper) {
-      pushWallpaper();
-      setInterval(() => pushWallpaper(), Math.max(1, CFG.intervalMinutes) * 60000);
+      enqueueWallpaper();
+      setInterval(() => enqueueWallpaper(), Math.max(1, CFG.intervalMinutes) * 60000);
     }
-    // floating always-on-top pet window, refreshed on a timer
+    // floating always-on-top pet window. Later ticks refresh the PNG in place
+    // so the window does not get killed and reopened every interval.
     if (CFG.petEnabled) {
       try { fs.unlinkSync(PET_CLOSED_PATH); } catch {} // ✕ 关闭只对本次运行有效，重启伴侣恢复
       startPet();
-      setInterval(startPet, Math.max(5, CFG.intervalMinutes) * 60000);
+      setInterval(() => {
+        if (!petVisible || !petChild) startPet();
+        else refreshPetInPlace(petWords.length, petFirstPassWords().length);
+      }, Math.max(5, CFG.intervalMinutes) * 60000);
     }
     // global hotkey listener (independent of the pet; survives pet ✕ close)
     startHotkey();

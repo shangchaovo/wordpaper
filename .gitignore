@@ -1,5 +1,5 @@
-# runtime artifacts (regenerated; wallpaper-*/custom-* are timestamped each set
-# so macOS actually refreshes the desktop picture)
+# runtime artifacts (regenerated). Wallpaper files alternate wallpaper-slot0/1.png
+# so macOS refreshes the desktop without a new 你的照片 card on every set.
 wallpaper-*.png
 custom-*.png
 companion-config.json

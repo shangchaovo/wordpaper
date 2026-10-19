@@ -683,7 +683,7 @@
 
     const refreshTop = $('#btn-refresh'); if (refreshTop) refreshTop.addEventListener('click', async () => { requestPreviewSwap(); await refresh(true); toast('已换一组新单词'); });
     const downloadTop = $('#btn-download'); if (downloadTop) downloadTop.addEventListener('click', downloadPNG);
-    $('#btn-live').addEventListener('click', enterLive);
+    const liveBtn = $('#btn-live'); if (liveBtn) liveBtn.addEventListener('click', enterLive);
     $('#btn-exit-live').addEventListener('click', exitLive);
     const wallpaperTop = $('#btn-set-wallpaper'); if (wallpaperTop) wallpaperTop.addEventListener('click', setDesktopWallpaper);
     // preview meta-bar duplicates (快速出壁纸，滚到中部也能直接操作)
@@ -727,7 +727,8 @@
       if (libraryModal && !libraryModal.hidden) closeLibraryBrowser();
       if (memoryModal && !memoryModal.hidden) closeMemoryNotebook();
     });
-    $('#btn-companion').addEventListener('click', handleCompanionAction);
+    const companionBtn = $('#btn-companion');
+    if (companionBtn) companionBtn.addEventListener('click', handleCompanionAction);
     // 换词特效下拉:选中即存 localStorage 并触发 pet-sync,下次换词生效。
     const petFx = $('#sel-pet-transition');
     if (petFx) {
@@ -1281,10 +1282,48 @@
     });
     $('#btn-bgphoto-clear').addEventListener('click', () => { setBgImage(null); toast('已换回主题背景'); });
   }
+  const BG_MAX_EDGE = 2560;
+  const BG_JPEG_Q = 0.82;
+  function packBgDataUrl(img, dataUrl) {
+    const iw = img.naturalWidth || img.width || 0;
+    const ih = img.naturalHeight || img.height || 0;
+    if (!iw || !ih) return dataUrl;
+    if (Math.max(iw, ih) <= BG_MAX_EDGE) return dataUrl;
+    try {
+      const fit = BG_MAX_EDGE / Math.max(iw, ih);
+      const w = Math.max(1, Math.round(iw * fit));
+      const h = Math.max(1, Math.round(ih * fit));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', BG_JPEG_Q);
+    } catch (e) { return dataUrl; }
+  }
+  function adoptBgImage(img, dataUrl, announce) {
+    const packed = packBgDataUrl(img, dataUrl);
+    settings.bgImage = packed;
+    settings.bgImagePos = { x: 0, y: 0 };
+    settings.bgImageZoom = 1.14;
+    const finish = (decoded) => {
+      bgImageEl = decoded;
+      applyBgPhotoUI();
+      commit();
+      if (announce) toast('背景照片已应用 · 可向任意方向拖动调整取景');
+    };
+    if (packed === dataUrl) { finish(img); return; }
+    const packedImg = new Image();
+    packedImg.onload = () => finish(packedImg);
+    packedImg.onerror = () => finish(img);
+    packedImg.src = packed;
+  }
   function setBgImage(dataUrl) {
     if (!dataUrl) { settings.bgImage = null; bgImageEl = null; settings.bgImagePos = { x: 0, y: 0 }; settings.bgImageZoom = 1.14; applyBgPhotoUI(); commit(); return; }
     const img = new Image();
-    img.onload = () => { settings.bgImage = dataUrl; settings.bgImagePos = { x: 0, y: 0 }; settings.bgImageZoom = 1.14; bgImageEl = img; applyBgPhotoUI(); commit(); toast('背景照片已应用 · 可向任意方向拖动调整取景'); };
+    img.onload = () => adoptBgImage(img, dataUrl, true);
     img.onerror = () => { bgImageEl = null; toast('这张照片读不出来，换一张 PNG、JPG 或 WebP 试试'); };
     img.src = dataUrl;
   }
@@ -1298,9 +1337,18 @@
   function loadBgImage() {
     bgImageEl = null;
     if (!settings.bgImage) return;
+    const original = settings.bgImage;
     const img = new Image();
-    img.onload = () => { bgImageEl = img; refresh(false); };
-    img.src = settings.bgImage;
+    img.onload = () => {
+      const packed = packBgDataUrl(img, original);
+      if (!packed || packed === original) { bgImageEl = img; refresh(false); return; }
+      settings.bgImage = packed;
+      const packedImg = new Image();
+      packedImg.onload = () => { bgImageEl = packedImg; applyBgPhotoUI(); saveSettings(); refresh(false); };
+      packedImg.onerror = () => { settings.bgImage = original; bgImageEl = img; refresh(false); };
+      packedImg.src = packed;
+    };
+    img.src = original;
   }
 
   /* ---------- import ---------- */
