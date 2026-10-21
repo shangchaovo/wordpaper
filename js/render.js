@@ -125,12 +125,21 @@
 
   /* Liquid Glass wallpaper material. This is not a flat blue gradient: several
    * broad light fields are composited beneath a pair of soft caustic bands so
-   * the exported PNG keeps the same refractive, pearl-like depth as the UI. */
+   * the exported PNG keeps the same refractive, pearl-like depth as the UI.
+   * Dark Liquid (theme.dark) keeps the same architecture but flips the sheet
+   * to a deep night slate: luminous fields screen over near-black, caustic
+   * bands turn into faint blue glints, and the rim reads as moonlit glass. */
   function drawLiquidBackground(ctx, W, H, theme, settings) {
-    // 尊重 theme 的 bg/bg2：珍珠白等中性配色渲染纯白，蓝色「玻璃」保持原浅蓝灰。
-    var neutral = theme.bg === '#ffffff' || theme.name === '珍珠';
+    var dark = !!theme.dark;
+    // 尊重 theme 的 bg/bg2：珍珠白等中性配色渲染纯白，蓝色「玻璃」保持原浅蓝灰，
+    // 墨璃（dark）则自 theme.bg/bg2 的深夜底起步。
+    var neutral = !dark && (theme.bg === '#ffffff' || theme.name === '珍珠');
     var base = ctx.createLinearGradient(0, 0, W, H);
-    if (neutral) {
+    if (dark) {
+      base.addColorStop(0, theme.bg || '#0b0e17');
+      base.addColorStop(.52, theme.bg2 || '#131a2c');
+      base.addColorStop(1, '#0a0d15');
+    } else if (neutral) {
       base.addColorStop(0, theme.bg || '#ffffff');
       base.addColorStop(.55, '#fbfbfd');
       base.addColorStop(1, theme.bg2 || '#f1f1f4');
@@ -143,7 +152,12 @@
     ctx.fillStyle = base;
     ctx.fillRect(0, 0, W, H);
 
-    var fields = neutral ? [
+    var fields = dark ? [
+      [W * .12, H * .05, Math.max(W, H) * .58, 'rgba(122,162,247,.30)'],
+      [W * .91, H * .12, Math.max(W, H) * .44, 'rgba(96,120,200,.20)'],
+      [W * .18, H * .94, Math.max(W, H) * .46, 'rgba(70,92,160,.18)'],
+      [W * .82, H * .86, Math.max(W, H) * .38, 'rgba(54,72,130,.14)'],
+    ] : neutral ? [
       [W * .12, H * .05, Math.max(W, H) * .58, 'rgba(255,255,255,.96)'],
       [W * .91, H * .12, Math.max(W, H) * .44, 'rgba(228,228,234,.42)'],
       [W * .18, H * .94, Math.max(W, H) * .46, 'rgba(232,232,238,.34)'],
@@ -168,13 +182,13 @@
     // Wide specular bands mimic light bending through a continuous sheet.
     var band = ctx.createLinearGradient(0, 0, W, H);
     band.addColorStop(0, 'rgba(255,255,255,0)');
-    band.addColorStop(.38, 'rgba(255,255,255,.44)');
-    band.addColorStop(.55, neutral ? 'rgba(232,232,238,.24)' : 'rgba(190,223,240,.24)');
+    band.addColorStop(.38, dark ? 'rgba(150,185,250,.20)' : 'rgba(255,255,255,.44)');
+    band.addColorStop(.55, dark ? 'rgba(96,124,200,.14)' : neutral ? 'rgba(232,232,238,.24)' : 'rgba(190,223,240,.24)');
     band.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.strokeStyle = band;
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(18, Math.min(W, H) * .045);
-    ctx.shadowColor = 'rgba(255,255,255,.52)';
+    ctx.shadowColor = dark ? 'rgba(110,150,240,.30)' : 'rgba(255,255,255,.52)';
     ctx.shadowBlur = px(ctx, Math.max(16, Math.min(W, H) * .025));
     ctx.beginPath();
     ctx.moveTo(-W * .08, H * .22);
@@ -193,10 +207,17 @@
     var edge = Math.max(3, Math.round(Math.min(W, H) * .003));
     var inset = edge * 2;
     var rim = ctx.createLinearGradient(0, 0, W, H);
-    rim.addColorStop(0, 'rgba(255,255,255,.88)');
-    rim.addColorStop(.34, 'rgba(255,255,255,.20)');
-    rim.addColorStop(.72, neutral ? 'rgba(150,150,160,.16)' : 'rgba(135,174,202,.16)');
-    rim.addColorStop(1, 'rgba(255,255,255,.62)');
+    if (dark) {
+      rim.addColorStop(0, 'rgba(170,195,245,.55)');
+      rim.addColorStop(.34, 'rgba(140,165,230,.14)');
+      rim.addColorStop(.72, 'rgba(96,120,200,.10)');
+      rim.addColorStop(1, 'rgba(160,185,240,.40)');
+    } else {
+      rim.addColorStop(0, 'rgba(255,255,255,.88)');
+      rim.addColorStop(.34, 'rgba(255,255,255,.20)');
+      rim.addColorStop(.72, neutral ? 'rgba(150,150,160,.16)' : 'rgba(135,174,202,.16)');
+      rim.addColorStop(1, 'rgba(255,255,255,.62)');
+    }
     ctx.strokeStyle = rim;
     ctx.lineWidth = edge;
     rr(ctx, inset, inset, W - inset * 2, H - inset * 2, Math.max(18, Math.min(W, H) * .024));
@@ -517,14 +538,21 @@
     if (settings.wordCards !== false && !settings.bgImage) {
       ctx.save();
       var liquidCards = !!theme.liquid;
-      ctx.fillStyle = liquidCards ? 'rgba(255,255,255,.24)' : (theme.accentSoft || theme.accent || '#ffd9b8');
-      ctx.globalAlpha = liquidCards ? 1 : (single ? 0.16 : 0.30);
-      if (liquidCards) {
+      var darkCards = !!theme.dark;
+      if (darkCards) {
+        // 深色玻璃卡：半透明黑蓝底 + 月光描边，压暗背后光场保证浅色文字可读。
+        ctx.fillStyle = 'rgba(10,14,26,.38)';
+        ctx.strokeStyle = 'rgba(170,195,245,.34)';
+        ctx.lineWidth = Math.max(1.5, W * .0012);
+        ctx.shadowColor = 'rgba(0,0,0,.46)';
+      } else if (liquidCards) {
+        ctx.fillStyle = 'rgba(255,255,255,.24)';
         ctx.strokeStyle = 'rgba(255,255,255,.64)';
         ctx.lineWidth = Math.max(1.5, W * .0012);
         ctx.shadowColor = theme.name === '珍珠' ? 'rgba(60,60,70,.13)' : 'rgba(54,83,105,.14)';
-        ctx.shadowBlur = px(ctx, Math.max(8, W * .009));
-        ctx.shadowOffsetY = px(ctx, Math.max(2, W * .0025));
+      } else {
+        ctx.fillStyle = theme.accentSoft || theme.accent || '#ffd9b8';
+        ctx.globalAlpha = single ? 0.16 : 0.30;
       }
       var padX = Math.round(W * 0.012);
       var cardR = Math.min(Math.round(rowH * 0.30), Math.round(W * 0.02));
@@ -534,7 +562,7 @@
         var cx0 = single ? (margin + xNudge - padX) : cp.x;
         rr(ctx, cx0, cp.y + Math.round(rowH * 0.05), cwid, rowH - Math.round(rowH * 0.12), cardR);
         ctx.fill();
-        if (liquidCards) ctx.stroke();
+        if (liquidCards || darkCards) ctx.stroke();
         if (settings.selectedWordIndex === ci) {
           ctx.save();
           ctx.strokeStyle = theme.accent || '#ff8f4d';

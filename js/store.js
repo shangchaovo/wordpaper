@@ -18,7 +18,7 @@
   const timers = new Map();
 
   const DEFAULT_SETTINGS = {
-    uiTheme: 'liquid',         // 'anime' | 'editorial' | 'liquid'（网站界面皮肤）
+    uiTheme: 'liquid',         // 'anime' | 'editorial' | 'liquid' | 'darkliquid'（网站界面皮肤）
     library: 'ielts',          // see LIBRARIES in app.js (chuzhong/gaozhong/cet4/.../custom)
     layout: 'group',           // 唯一版式;旧数据里的 'poster' 会自动落到 group 渲染
     size: 'phone-1080x2400',   // see SIZES in app.js
@@ -360,18 +360,18 @@
       merged.bgImagePos = Object.assign({}, DEFAULT_SETTINGS.bgImagePos, s.bgImagePos || {});
       merged.bgImageZoom = Math.max(1, Number(s.bgImageZoom) || DEFAULT_SETTINGS.bgImageZoom);
       const mirroredTheme = read('uiTheme', null);
-      merged.uiTheme = ['anime', 'editorial', 'liquid'].includes(mirroredTheme)
+      merged.uiTheme = ['anime', 'editorial', 'liquid', 'darkliquid'].includes(mirroredTheme)
         ? mirroredTheme
-        : (['anime', 'editorial', 'liquid'].includes(merged.uiTheme) ? merged.uiTheme : DEFAULT_SETTINGS.uiTheme);
-      if (!['anime', 'editorial', 'liquid'].includes(mirroredTheme)) write('uiTheme', merged.uiTheme);
+        : (['anime', 'editorial', 'liquid', 'darkliquid'].includes(merged.uiTheme) ? merged.uiTheme : DEFAULT_SETTINGS.uiTheme);
+      if (!['anime', 'editorial', 'liquid', 'darkliquid'].includes(mirroredTheme)) write('uiTheme', merged.uiTheme);
       return merged;
     },
     saveSettings(settings) {
-      write('uiTheme', ['anime', 'editorial', 'liquid'].includes(settings.uiTheme) ? settings.uiTheme : DEFAULT_SETTINGS.uiTheme);
+      write('uiTheme', ['anime', 'editorial', 'liquid', 'darkliquid'].includes(settings.uiTheme) ? settings.uiTheme : DEFAULT_SETTINGS.uiTheme);
       write('settings', settings);
     },
     setUITheme(theme) {
-      const value = ['anime', 'editorial', 'liquid'].includes(theme) ? theme : DEFAULT_SETTINGS.uiTheme;
+      const value = ['anime', 'editorial', 'liquid', 'darkliquid'].includes(theme) ? theme : DEFAULT_SETTINGS.uiTheme;
       write('uiTheme', value);
       return value;
     },

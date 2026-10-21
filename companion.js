@@ -69,7 +69,7 @@ function loadConfig() {
     wordsPerGroup: 6,
     bgPattern: 'soft',
     showReminders: true,
-    uiTheme: 'editorial',          // 'anime' | 'editorial' | 'liquid'（网页外观与小词灵同步）
+    uiTheme: 'editorial',          // 'anime' | 'editorial' | 'liquid' | 'darkliquid'（网页外观与小词灵同步）
     // floating pet window
     petEnabled: true,
     petCorner: 'top-right',       // 'top-right'|'top-left'|'bottom-right'|'bottom-left'
@@ -98,7 +98,7 @@ if (process.env.WORDPAPER_WEB_ORIGIN) {
     if (origin.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(origin.hostname)) CFG.webOrigin = origin.origin;
   } catch {}
 }
-const PET_UI_THEMES = new Set(['anime', 'editorial', 'liquid']);
+const PET_UI_THEMES = new Set(['anime', 'editorial', 'liquid', 'darkliquid']);
 if (!PET_UI_THEMES.has(CFG.uiTheme)) CFG.uiTheme = 'editorial';
 if (process.env.WORDPAPER_PORT) CFG.port = Math.max(1, Number(process.env.WORDPAPER_PORT) || DEFAULT_PORT);
 if (process.env.WORDPAPER_TEST_MODE === '1') { CFG.autoSetWallpaper = false; CFG.petEnabled = false; CFG.hotkeyEnabled = false; }
@@ -393,6 +393,7 @@ const THEMES = {
   pearl: { bg: '#ffffff', bg2: '#fafafc', ink: '#2b2b30', sub: '#9a9aa2', accent: '#8e8e93', accentSoft: '#f4f4f6', line: 'rgba(43,43,48,0.10)', patternInk: '#e8e8ec' },
   night: { bg: '#151a2e', bg2: '#1f2745', ink: '#eef1f8', sub: '#8b95b3', accent: '#7aa2f7', accentSoft: '#2a3358', line: 'rgba(238,241,248,0.14)', patternInk: '#3a4670' },
   forest: { bg: '#12211c', bg2: '#1c332a', ink: '#e8f0ea', sub: '#8fae9f', accent: '#5ec99a', accentSoft: '#234534', line: 'rgba(232,240,234,0.12)', patternInk: '#2e5040' },
+  darkliquid: { bg: '#0b0e17', bg2: '#131a2c', ink: '#f2f5fc', sub: '#93a0bd', accent: '#7aa2f7', accentSoft: 'rgba(122,162,247,0.16)', line: 'rgba(242,245,252,0.16)', patternInk: '#2c3a5e', liquid: true, dark: true },
 };
 
 /* Render the wallpaper to a PNG file WITHOUT any dependency, by drawing SVG
@@ -405,16 +406,17 @@ function buildSVG(opts) {
   const t = theme;
   const margin = Math.round(W * 0.06);
   const parts = [];
+  const darkBg = !!t.dark;
   parts.push(`<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="${t.bg}"/><stop offset="${t.liquid ? '.36' : '1'}" stop-color="${t.liquid ? '#edf5fa' : (t.bg2 || t.bg)}"/><stop offset="1" stop-color="${t.bg2 || t.bg}"/></linearGradient>
+    <stop offset="0" stop-color="${t.bg}"/><stop offset="${t.liquid ? (darkBg ? '.52' : '.36') : '1'}" stop-color="${t.liquid ? (darkBg ? (t.bg2 || '#131a2c') : '#edf5fa') : (t.bg2 || t.bg)}"/><stop offset="1" stop-color="${darkBg ? '#0a0d15' : (t.bg2 || t.bg)}"/></linearGradient>
     <radialGradient id="blob" cx="0.85" cy="0.12" r="0.6">
     <stop offset="0" stop-color="${t.accentSoft}" stop-opacity="0.6"/><stop offset="1" stop-color="${t.accentSoft}" stop-opacity="0"/></radialGradient>
-    <radialGradient id="liquidSky" cx="0.9" cy="0.12" r="0.52"><stop offset="0" stop-color="#a9d2e8" stop-opacity=".48"/><stop offset="1" stop-color="#dceaf3" stop-opacity="0"/></radialGradient>
-    <radialGradient id="liquidPearl" cx="0.16" cy="0.92" r="0.48"><stop offset="0" stop-color="#dcd9f0" stop-opacity=".36"/><stop offset="1" stop-color="#eef5fa" stop-opacity="0"/></radialGradient></defs>`);
+    <radialGradient id="liquidSky" cx="0.9" cy="0.12" r="0.52"><stop offset="0" stop-color="${darkBg ? '#4a6db4' : '#a9d2e8'}" stop-opacity="${darkBg ? '.34' : '.48'}"/><stop offset="1" stop-color="${darkBg ? '#131a2c' : '#dceaf3'}" stop-opacity="0"/></radialGradient>
+    <radialGradient id="liquidPearl" cx="0.16" cy="0.92" r="0.48"><stop offset="0" stop-color="${darkBg ? '#6474b4' : '#dcd9f0'}" stop-opacity="${darkBg ? '.22' : '.36'}"/><stop offset="1" stop-color="${darkBg ? '#0b0e17' : '#eef5fa'}" stop-opacity="0"/></radialGradient></defs>`);
   parts.push(`<rect width="${W}" height="${H}" fill="url(#g)"/>`);
   if (t.liquid) {
     parts.push(`<rect width="${W}" height="${H}" fill="url(#liquidSky)"/><rect width="${W}" height="${H}" fill="url(#liquidPearl)"/>`);
-    parts.push(`<rect x="${Math.round(W * .008)}" y="${Math.round(H * .008)}" width="${Math.round(W * .984)}" height="${Math.round(H * .984)}" rx="${Math.round(Math.min(W,H) * .025)}" fill="none" stroke="#ffffff" stroke-opacity=".7" stroke-width="${Math.max(2,Math.round(Math.min(W,H)*.003))}"/>`);
+    parts.push(`<rect x="${Math.round(W * .008)}" y="${Math.round(H * .008)}" width="${Math.round(W * .984)}" height="${Math.round(H * .984)}" rx="${Math.round(Math.min(W,H) * .025)}" fill="none" stroke="${darkBg ? '#a9c0f2' : '#ffffff'}" stroke-opacity="${darkBg ? '.38' : '.7'}" stroke-width="${Math.max(2,Math.round(Math.min(W,H)*.003))}"/>`);
   } else if (settings.bgPattern !== 'none') parts.push(`<rect width="${W}" height="${H}" fill="url(#blob)"/>`);
   const fam = 'Yuanti SC, YouYuan, 幼圆, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif';
   const text = (x, y, s, size, fill, weight, anchor) =>
@@ -622,7 +624,7 @@ function petScale(W, H) {
   return Math.max(0.74, Math.min(1.65, s));
 }
 
-/* 三套界面主题共用同一套几何与命中区域，只替换材质。Liquid 的外壳会
+/* 四套界面主题共用同一套几何与命中区域，只替换材质。Liquid 的外壳会
  * 露出下方原生 NSGlassEffectView；词卡仍保持较实的承载面，确保细字可读。 */
 const PET_SKINS = {
   editorial: {
@@ -665,6 +667,20 @@ const PET_SKINS = {
     handleFill: '#fafafd', handleStroke: '#ffffff', handleInk: '#3a3a3c', shellShadow: '#000000', shellShadowOpacity: .13, cardShadow: '#000000', cardShadowOpacity: .09,
     liquid: true,
   },
+  darkliquid: {
+    font: '-apple-system, BlinkMacSystemFont, SF Pro Text, PingFang SC, sans-serif',
+    shell: '#121726', shell2: '#0c101c', shellLine: '#7d97cf', shellOpacity: .82,
+    top1: '#1c2438', top2: '#151c2e', top3: '#1a2338', topOpacity: .96,
+    card: '#1a2236', card2: '#131a2c', cardStroke: '#55709f', cardOpacity: .92,
+    ink: '#e8edf8', sub: '#93a0bd', phonetic: '#8b98b8',
+    moss: '#5ec99a', rust: '#e08e8e', rustStrong: '#7aa2f7', gold: '#a9c0f2', mist: '#2a3450',
+    title: '#eef2fb', titleSub: '#97a2bd', empty: '#dbe2f2', emptySub: '#8b98b8', footerSub: '#7d89a8', reminder: '#c6d2ee',
+    avatarOuter: '#232e4a', avatarStroke: '#7aa2f7', avatarFace: '#f0d4c2', avatarHair: '#4a5478', avatarHairLine: '#3b4464', avatarEye: '#1c2438', avatarSpark: '#eef2fb',
+    closeFill: '#202a44', closeStroke: '#56698f', closeInk: '#c6d2ee',
+    prevFill: '#222c48', prevStroke: '#56698f', prevInk: '#dbe2f2', memoryFill: '#1f3a56', memoryStroke: '#4a7db4', memoryInk: '#dbe2f2', nextFill: '#5e7fd0', nextStroke: '#8fb0f5', nextInk: '#0d1117',
+    handleFill: '#232e4a', handleStroke: '#7aa2f7', handleInk: '#c6d2ee', shellShadow: '#000000', shellShadowOpacity: .5, cardShadow: '#000000', cardShadowOpacity: .35,
+    liquid: true, dark: true,
+  },
 };
 function petSkin(name) { return PET_SKINS[PET_UI_THEMES.has(name) ? name : 'editorial']; }
 
@@ -683,7 +699,7 @@ function buildPetSVG(words, reminders, uiTheme, W, H) {
     `<linearGradient id="shellG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${shell}"/><stop offset="1" stop-color="${shell2}"/></linearGradient>` +
     `<linearGradient id="topG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${skin.top1}"/><stop offset=".58" stop-color="${skin.top2}"/><stop offset="1" stop-color="${skin.top3}"/></linearGradient>` +
     `<linearGradient id="cardG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${card}"/><stop offset="1" stop-color="${card2}"/></linearGradient>` +
-    `<linearGradient id="liquidRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".32" stop-color="#f4e4ec"/><stop offset=".58" stop-color="#e7f2ed"/><stop offset=".78" stop-color="#ebe8f6"/><stop offset="1" stop-color="#ffffff"/></linearGradient>` +
+    `<linearGradient id="liquidRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${skin.dark ? '#b9cdf7' : '#ffffff'}"/><stop offset=".32" stop-color="${skin.dark ? '#5f7ec4' : '#f4e4ec'}"/><stop offset=".58" stop-color="${skin.dark ? '#3d5a9e' : '#e7f2ed'}"/><stop offset=".78" stop-color="${skin.dark ? '#44619f' : '#ebe8f6'}"/><stop offset="1" stop-color="${skin.dark ? '#a9c0f2' : '#ffffff'}"/></linearGradient>` +
     `<filter id="shellShadow" x="-18%" y="-15%" width="136%" height="140%"><feDropShadow dx="0" dy="${5 * s}" stdDeviation="${7 * s}" flood-color="${skin.shellShadow}" flood-opacity="${skin.shellShadowOpacity}"/></filter>` +
     `<filter id="cardShadow" x="-12%" y="-14%" width="124%" height="135%"><feDropShadow dx="0" dy="${1.6 * s}" stdDeviation="${2.2 * s}" flood-color="${skin.cardShadow}" flood-opacity="${skin.cardShadowOpacity}"/></filter>` +
     `</defs>`);
@@ -702,7 +718,7 @@ function buildPetSVG(words, reminders, uiTheme, W, H) {
   parts.push(`<rect x="${7 * s}" y="${7 * s}" width="${(W - 14) * s}" height="${(headerH + 5) * s}" rx="${17 * s}" fill="url(#topG)" opacity="${skin.topOpacity}"/>`);
   if (skin.liquid) {
     parts.push(`<rect x="${5.7 * s}" y="${5.7 * s}" width="${(W - 11.4) * s}" height="${(H - 11.4) * s}" rx="${20.4 * s}" fill="none" stroke="url(#liquidRim)" stroke-width="${1.15 * s}" opacity=".78"/>`);
-    parts.push(`<path d="M ${20 * s} ${12 * s} Q ${W * .34 * s} ${4.5 * s} ${W * .57 * s} ${11 * s}" fill="none" stroke="#fff" stroke-width="${1.25 * s}" stroke-linecap="round" opacity=".68"/>`);
+    parts.push(`<path d="M ${20 * s} ${12 * s} Q ${W * .34 * s} ${4.5 * s} ${W * .57 * s} ${11 * s}" fill="none" stroke="${skin.dark ? '#a9c0f2' : '#fff'}" stroke-width="${1.25 * s}" stroke-linecap="round" opacity="${skin.dark ? .5 : .68}"/>`);
   }
   parts.push(`<path d="M ${18 * s} ${(padY + headerH - 1) * s} H ${(W - 18) * s}" stroke="${gold}" stroke-width="${.8 * s}" opacity=".42"/>`);
   // 可拖动的标题区用三根短线做暗示，不添加新交互。
@@ -874,7 +890,7 @@ function truncate(str, fs, maxW) {
 }
 
 function buildPetJXA(W, H) {
-  const meta = JSON.stringify({ btn: PET_BTN, frame: PET_FRAME, footerH: PET_FOOTER_H, rsz: PET_RESIZE, minW: MIN_PET_W, minH: MIN_PET_H, max: MAX_PET, port: CFG.port, count: petWords.length, wordKeys: petWords.map(petWordKey) });
+  const meta = JSON.stringify({ btn: PET_BTN, frame: PET_FRAME, footerH: PET_FOOTER_H, rsz: PET_RESIZE, minW: MIN_PET_W, minH: MIN_PET_H, max: MAX_PET, port: CFG.port, count: petWords.length, wordKeys: petWords.map(petWordKey), dark: petSkin(CFG.uiTheme).dark === true });
   const memoryTarget = localWebOrigin(CFG.webOrigin) || `http://localhost:${CFG.port}`;
   return `
 ObjC.import('Cocoa');
@@ -883,7 +899,7 @@ function run(argv){
   var pngPath = argv[0], corner = argv[1], posFile = argv[2], savedPos = argv[3], closeFile = argv[4], W = ${W}, H = ${H};
   var TRANSITION = ${JSON.stringify(CFG.petTransition || 'dissolve-pop')};
   var META = ${meta};
-  var BTN = META.btn, FRAME = META.frame, FOOTERH = META.footerH, RSZ = META.rsz, MINW = META.minW, MINH = META.minH, MAXS = META.max, PORT = META.port, COUNT = META.count, KEYS = META.wordKeys;
+  var BTN = META.btn, FRAME = META.frame, FOOTERH = META.footerH, RSZ = META.rsz, MINW = META.minW, MINH = META.minH, MAXS = META.max, PORT = META.port, COUNT = META.count, KEYS = META.wordKeys, skinDark = META.dark === true;
   var rememberUrl = 'http://127.0.0.1:' + PORT + '/remember.php?i=';
   var pageUrl = 'http://127.0.0.1:' + PORT + '/pet-page.php?dir=';
   var memoryUrl = ${JSON.stringify(memoryTarget + '/?openMemory=1')};
@@ -1149,19 +1165,19 @@ function run(argv){
   var grip = $.DWGrip.alloc.initWithFrame($.NSMakeRect(0, 0, W, H));
   grip.autoresizingMask = $.NSViewWidthSizable | $.NSViewHeightSizable;
   // macOS 26+ 直接使用系统 Liquid Glass；旧系统回退到原生视觉材质。
-  // 三套皮肤都复用该承载层，非 Liquid 的高不透明 SVG 会自然遮住材质。
+  // 四套皮肤都复用该承载层，非 Liquid 的高不透明 SVG 会自然遮住材质。暗夜用 style=3 深色材质。
   var GlassClass = $.NSClassFromString('NSGlassEffectView');
   if (GlassClass) {
     var glassHost = GlassClass.alloc.initWithFrame($.NSMakeRect(0, 0, W, H));
     glassHost.autoresizingMask = $.NSViewWidthSizable | $.NSViewHeightSizable;
     glassHost.cornerRadius = 22;
-    glassHost.style = 0;
+    glassHost.style = skinDark ? 3 : 0;   // macOS 26 NSGlassEffectView: 0=clear 3=dark
     glassHost.contentView = grip;
     win.contentView.addSubview(glassHost);
   } else {
     var visualHost = $.NSVisualEffectView.alloc.initWithFrame($.NSMakeRect(0, 0, W, H));
     visualHost.autoresizingMask = $.NSViewWidthSizable | $.NSViewHeightSizable;
-    visualHost.material = 12;
+    visualHost.material = skinDark ? 4 : 12;   // 4=underWindowBackground-dark  12=sidebar(light)
     visualHost.blendingMode = 0;
     visualHost.state = 1;
     visualHost.wantsLayer = true;
