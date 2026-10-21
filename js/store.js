@@ -342,6 +342,7 @@
     importLegacy,
     flush,
     currentUser() { return currentUser; },
+    csrfToken() { return csrfToken; },
     async logout() {
       await flush();
       await fetch('/api/session', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } }).catch(function () {});

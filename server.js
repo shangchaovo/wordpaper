@@ -63,6 +63,7 @@ storage.deleteExpiredOAuthFlows();
 // 主账号镜像(卫星模式):本机作为上游账号的实时缓存 + 写入代理。
 // 只有 local 模式允许配对/镜像;public 实例永远是权威数据源,不做卫星。
 const upstream = require('./lib/upstream');
+const updater = require('./lib/updater');
 upstream.init({
   storage,
   usernameKey,
@@ -76,6 +77,9 @@ function mirroring() { return MODE === 'local' && upstream.isPaired(); }
 //    与 GitHub main 的 VERSION 比较,有新版本时在 /api/session 里带给页面。 ──
 const BUNDLED_VERSION = (() => { try { return fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch { return ''; } })();
 let latestVersion = '';
+let updateApplying = false;   // 应用内更新进行中(CSRF 保护后的互斥)
+let updateProgress = null;   // {fraction, stage} — 前端经 /api/update/status 轮询
+let updateError = '';
 let updateRequest = null;   // 进行中的版本检查请求;shutdown 时取消,避免卡住退出
 function versionNewer(candidate, current) {
   const a = String(candidate).split('.').map(n => parseInt(n, 10) || 0);
@@ -286,6 +290,7 @@ function requireOrigin(req, res) {
 
 function requireSession(req, res) {
   const session = requestSession(req);
+
   if (session) return session;
   json(res, 401, { error: '请先登录' });
   return null;
@@ -1002,9 +1007,66 @@ async function handle(req, res) {
     return;
   }
 
+  // ── 应用内自更新(独立版专属):检查 + 安装。棘轮与权限校验都在 POST /apply
+  //    里重做一遍,GET /check 只读无副作用。 ──────────────────────────────
+  if (pathname === '/api/update/check' && req.method === 'GET') {
+    json(res, 200, {
+      available: Boolean(updateNotice()),
+      current: BUNDLED_VERSION || '',
+      latest: latestVersion || '',
+      supported: Boolean(BUNDLED_VERSION && MODE === 'local' && process.platform === 'darwin'),
+    });
+    return;
+  }
+
   if (await handleAuth(req, res, parsed)) return;
 
   const session = requestSession(req);
+
+  if (pathname === '/api/update/apply' && req.method === 'POST') {
+    if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    if (!requireCsrf(req, res, session)) return;
+    if (MODE !== 'local' || !isLoopbackRequest(req) || !BUNDLED_VERSION) {
+      json(res, 404, { error: '只有本机安装的 WordPaper.app 支持内置更新' });
+      return;
+    }
+    if (updateApplying) { json(res, 429, { error: '更新正在进行中,请勿重复点击' }); return; }
+    if (!latestVersion || !versionNewer(latestVersion, BUNDLED_VERSION)) {
+      json(res, 409, { error: '没有可安装的新版本(已是最新,或尚未检查到更新)' });
+      return;
+    }
+    const target = latestVersion;
+    updateApplying = true;
+    // 不阻塞当前响应:阶段进度写到 updateProgress,前端轮询 /api/update/check 拿状态。
+    updater.applyUpdate(BUNDLED_VERSION, target, (fraction, stage) => {
+      updateProgress = { fraction, stage };
+    }).then(() => {
+      updateProgress = { fraction: 1, stage: 'restart' };
+    }).catch(error => {
+      updateApplying = false;
+      updateProgress = null;
+      updateError = String(error.message || error);
+      console.error('[update] apply failed:', error.message || error);
+    }).then(() => {
+      // 成功路径:给前端一帧时间读到最后状态,再退出。重启由 launcher.sh 完成。
+      setTimeout(() => { try { shutdown(); } catch {} }, 1200);
+    });
+    json(res, 200, { ok: true, started: true, target });
+    return;
+  }
+
+  if (pathname === '/api/update/status' && req.method === 'GET') {
+    if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    json(res, 200, {
+      applying: updateApplying,
+      progress: updateProgress,
+      error: updateError,
+      current: BUNDLED_VERSION || '',
+      target: latestVersion || '',
+    });
+    return;
+  }
+
 
   if ((pathname === '/' || pathname === '/index.html') && !session) {
     redirect(res, '/login.html');

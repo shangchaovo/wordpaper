@@ -166,6 +166,14 @@ fi
 
 if [ "$SELFTEST" = "1" ]; then echo "SELFTEST OK: NODE=$NODE"; "$NODE" -v; exit 0; fi
 
+# ── 应用内更新旗标:server.js 的 /api/update/apply 替换完 Resources 后写下此文件
+#    并自行退出;走到进程尾部的 launcher 看到它,清理后自动重启整个服务链,
+#    用户全程只需点一次「一键更新」。─────────────────────────────────
+UPDATE_FLAG="$HOME/.wordpaper/update-pending.json"
+restart_requested() { [ -f "$UPDATE_FLAG" ]; }
+clear_restart_flag() { rm -f "$UPDATE_FLAG" 2>/dev/null; }
+clear_restart_flag
+
 # ── 主服务 + 伴侣 ─────────────────────────────────────────────
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8770}"
@@ -265,6 +273,14 @@ if ! kill -0 "$COMP_PID" 2>/dev/null; then
   exit 1
 fi
 wait "$COMP_PID"
+# 服务链退出后:若是应用内更新的预期退出(UPDATE_FLAG 在),exec 重入本脚本,
+# 重新走一遍完整启动流程(含版本闸门 + 端口清理 + 小词灵复活)。
+if restart_requested; then
+  clear_restart_flag
+  echo "update applied: restarting service chain" >>"$LOG_DIR/server.log"
+  for _ in $(seq 1 20); do server_up || break; sleep 0.25; done
+  exec "$0"
+fi
 '''
 
 README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
@@ -380,6 +396,25 @@ def build_app(dest, bundled_arch):
             ignore=shutil.ignore_patterns(".*", "__pycache__"),
         )
     shutil.copy2(ICON, os.path.join(res, "icon.icns"))
+
+    # RELEASE_SHA256.json — 应用内自更新(/api/update/apply)用它在 rsync 后
+    # 校验各文件完整落地。逐文件记录「刚拷进本 bundle 的那一份」的摘要。
+    import hashlib, json as _json
+    manifest = {"version": VERSION, "files": {}}
+    for name in PAYLOAD_FILES:
+        digest = hashlib.sha256(open(os.path.join(res, name), "rb").read()).hexdigest()
+        manifest["files"][name] = digest
+    for d in PAYLOAD_DIRS:
+        base = os.path.join(res, d)
+        for root_dir, _dirs, names in os.walk(base):
+            for fn in sorted(names):
+                if fn.startswith("."):
+                    continue
+                fp = os.path.join(root_dir, fn)
+                rel = os.path.relpath(fp, res)
+                manifest["files"][rel] = hashlib.sha256(open(fp, "rb").read()).hexdigest()
+    with open(os.path.join(res, "RELEASE_SHA256.json"), "w", encoding="utf-8") as f:
+        _json.dump(manifest, f, ensure_ascii=False, indent=1, sort_keys=True)
 
     # bundled runtime
     if bundled_arch:

@@ -2501,6 +2501,85 @@
     t._t = setTimeout(() => t.classList.remove('show'), 2400);
   }
 
+  /* ---------- 应用内自更新(独立版专属;网页/开发模式静默隐藏) ---------- */
+  let updatePolling = null;
+  async function bindUpdateUI() {
+    const row = $('#update-row');
+    const btn = $('#btn-update');
+    const status = $('#update-status');
+    if (!row || !btn || !status) return;
+    let check;
+    try { check = await (await fetch('/api/update/check', { cache: 'no-store' })).json(); }
+    catch { return; }   // 静态托管/无服务端:静默隐藏
+    // 只有独立版(local mode + VERSION)支持;网页部署与开发目录不显示按钮。
+    if (!check || check.supported !== true) return;
+    row.hidden = false;
+    const csrf = () => { try { return window.Store.csrfToken() || ''; } catch { return ''; } };
+    const render = (label, disabled) => { btn.textContent = label; btn.disabled = !!disabled; };
+    const refreshLine = () => {
+      if (check.available && check.latest) {
+        status.textContent = '检测到新版本 v' + check.latest + ' · 数据不受影响';
+        render('一键更新到 v' + check.latest, false);
+      } else {
+        status.textContent = '当前已是最新 v' + check.current;
+        render('已最新 · 点击重新检查', false);
+      }
+    };
+    refreshLine();
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      // 已经有更新进行中:轮询拿状态
+      let st;
+      try {
+        st = await (await fetch('/api/update/status', { cache: 'no-store' })).json();
+      } catch { toast('更新状态获取失败'); return; }
+      if (st.applying) { toast('更新进行中:下载校验安装包…'); startPolling(st.target); return; }
+      // 无可用版本:先重新检查一次
+      if (!check.available) {
+        try { check = await (await fetch('/api/update/check', { cache: 'no-store' })).json(); } catch {}
+        refreshLine();
+        if (!check.available) { toast('已是最新版本'); return; }
+      }
+      // 触发安装
+      try {
+        const rsp = await fetch('/api/update/apply', { method: 'POST', headers: { 'X-CSRF-Token': csrf() } });
+        const data = await rsp.json().catch(() => ({}));
+        if (!rsp.ok) { toast(data.error || '更新启动失败'); return; }
+        render('正在更新…', true);
+        startPolling(data.target);
+      } catch (e) { toast('更新请求失败:网络异常'); }
+    });
+    function startPolling(target) {
+      clearInterval(updatePolling);
+      render('正在更新…', true);
+      let ticks = 0;
+      updatePolling = setInterval(async () => {
+        ticks++;
+        try {
+          const st = await (await fetch('/api/update/status', { cache: 'no-store' })).json();
+          if (st.applying) {
+            const stage = st.progress && st.progress.stage || '';
+            const label = stage === 'verify' ? '校验完整性…' : stage === 'mount' ? '挂载安装包…'
+              : stage === 'install' ? '替换应用文件…' : stage === 'restart' ? '即将重启…'
+              : Math.round(((st.progress && st.progress.fraction) || 0) * 100) + '%';
+            status.textContent = '更新到 v' + (st.target || target) + ': ' + label;
+          } else if (st.error) {
+            clearInterval(updatePolling); updatePolling = null;
+            status.textContent = '更新失败,请到 GitHub Releases 手动下载';
+            render('重试', false);
+            toast('更新失败: ' + st.error);
+          } else if (ticks > 90) {   // 超过 ~90s 没动静:server 应已重启
+            clearInterval(updatePolling); updatePolling = null;
+          }
+        } catch {
+          // server 正在重启,请求失败属预期:提示并停止轮询
+          clearInterval(updatePolling); updatePolling = null;
+          status.textContent = '更新完成,正在重启…';
+        }
+      }, 1000);
+    }
+  }
+
   function bindPersistenceUI() {
     const status = $('#sync-status');
     const accountName = $('#account-name');
@@ -2574,6 +2653,7 @@
 
   async function init() {
     const showAccount = bindPersistenceUI();
+    bindUpdateUI();
     await window.Store.init();
     showAccount();
     loadSettings();
