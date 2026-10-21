@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成手机/电脑壁纸的多用户 Web 工具。浏览器仍是无构建的经典脚本 + canvas；`server.js` 同时提供账号认证、同源 API 和 SQLite 持久化。localStorage 只是按用户分区的缓存，服务端数据库才是权威数据源。
 
-**V3 现状**（2026-08）：12 个内置词库（2 日语 JLPT 开放词表 + 8 个 ECDICT 分级库每库 1500–3000 核心词 + 法语 1155 / 西语 1400 高频词）+ 我的词库；日期/时钟已从壁纸移除（更干净、更专注）；**整个排版可视化拖拽**——单词块/提醒块/自定义文字都能在预览上按住拖到任意位置；字体风格（黑/宋/楷/圆/粗黑）+ 文字颜色可选；背景可上传**自定义照片**（cover-fit + 留白 scrim 保证可读）。
+**V3 现状**（2026-08）：12 个内置词库（2 日语 JLPT 开放词表 + 8 个 ECDICT 分级库每库 1500–3000 核心词 + 法语 1155 / 西语 1400 高频词）+ 我的词库；日期/时钟已从壁纸移除（更干净、更专注）；**整个排版可视化拖拽**——单词块/提醒块/自定义文字都能在预览上按住拖到任意位置；字体风格（黑/宋/楷/圆/粗黑）+ 文字颜色可选；界面主题 4 个（糖果/校样/Liquid/暗夜），壁纸「墨璃」暗色玻璃配色与暗夜界面联动；背景可上传**自定义照片**（cover-fit + 留白 scrim 保证可读）。
 
 ## Commands
 
 ```bash
 npm start                      # 开发服务器 http://localhost:8770（端口占用时直接失败，不漂移 origin）
 npm test                       # 账号隔离/重启持久化/安全边界 + SRS + companion 测试
-python3 scripts/e2e.py         # 端到端验证（55 项断言，自带临时数据库/账号/端口，不碰 8770）
+python3 scripts/e2e.py         # 端到端验证（73 项断言，自带临时数据库/账号/端口，不碰 8770）
 python3 scripts/render_v3.py   # v3 渲染验证：真渲染 PNG 到 scripts/out_v3/ 并做像素级断言
 python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json（需 /tmp/ecdict.csv）
 ```
@@ -81,12 +81,12 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 - 版式:只剩单词组(group)一种(大字海报 poster 已于 2026-08-16 整体删除,含 `#layout-switch` UI/renderPoster/engine.js 词数特判/companion buildSVG 分支)。旧数据里的 layout: poster 不需要迁移,渲染分发自动落到 group。
 - **加一个内置词库**：`scripts/build_wordlibs.py` 的 `CAPS`/`TAG_TO_ID`/`LIB_META` 加一项并跑一遍生成 `data/words_<id>.json`；`app.js` 的 `LIBRARIES` 加一项（`icon` 填 sprite 里的图标键，没有就先在 sprite 画一个）；e2e 的卡片总数断言 +1。
 - **法语/西班牙语库走另一条管线**（2026-08-17 起）：`scripts/build_romance_libs.py`（不走 ECDICT）——收词顺序用 hermitdave/FrequencyWords（OpenSubtitles 词频），法语释义反查 CFDICT（CC BY-SA 3.0）并用「现有英语库释义里的现代汉语词」白名单过滤文言/方言头词，西语释义直接用 X2CNDICT 西汉词典；两库的高频功能词/不规则动词都在脚本里的 `FR_OVERRIDES`/`ES_OVERRIDES` 人工校对，变位形式进 `*_SKIP`（词卡背原形，不背变位）。改释义优先级：先改 OVERRIDES 再重建，别手改 JSON。
-- **图标体系**（2026-08-17 起，告别"单字当图标"）：`index.html` `<body>` 开头有一个隐藏的 SVG sprite，所有图标是 24×24 线性 `<symbol id="i-…">`（fill:none + stroke:currentColor，**自动跟随三个界面主题着色**）。引用统一为 `<svg class="ic"><use href="#i-…"/></svg>`，尺寸由 CSS 按容器定（`.h-emoji .ic` 15px / `.lib-icon .ic` 16px / `.it-icon .ic` 24px）。**加新图标 = sprite 里加一个 `<symbol>` + 引用一行**；词库图标在 `LIBRARIES[].icon` 填键名。日语两库用鸟居/樱花、初中书包、高中博士帽、四级考卷、六级奖章、考研登顶旗、雅思地球、托福纸飞机、GRE 灯泡、我的词库文件夹+。模块标题（含弹窗标题）也都走这套，不再用汉字或 emoji。
+- **图标体系**（2026-08-17 起，告别"单字当图标"）：`index.html` `<body>` 开头有一个隐藏的 SVG sprite，所有图标是 24×24 线性 `<symbol id="i-…">`（fill:none + stroke:currentColor，**自动跟随界面主题着色**）。引用统一为 `<svg class="ic"><use href="#i-…"/></svg>`，尺寸由 CSS 按容器定（`.h-emoji .ic` 15px / `.lib-icon .ic` 16px / `.it-icon .ic` 24px）。**加新图标 = sprite 里加一个 `<symbol>` + 引用一行**；词库图标在 `LIBRARIES[].icon` 填键名。日语两库用鸟居/樱花、初中书包、高中博士帽、四级考卷、六级奖章、考研登顶旗、雅思地球、托福纸飞机、GRE 灯泡、我的词库文件夹+。模块标题（含弹窗标题）也都走这套，不再用汉字或 emoji。
 - **改提醒呈现**：`render.js` 的 `drawReminders` + `remindersHeight` 要**一起改**（预估高度必须与实际逐行高度一致，否则吸底错位）。
 
 ## 验证矩阵
 
-`scripts/e2e.py`（55 项）覆盖主路径 + v3 控件存在性 + 完整可迁移伴侣 zip + 一键启用端点 + 记忆复习（SRS）；`scripts/render_v3.py`（7 项）真渲染 PNG 并做像素级断言（字体栈写入、文字颜色持久化、背景照片铺满且非主题色、**锚点真的移动单词块**、自定义文字拖拽位置持久化、海报+楷体）。账号/隔离/重启/静态目录安全另由 `scripts/test_server.js` 与 `scripts/test_accounts_browser.py` 覆盖。
+`scripts/e2e.py`（73 项）覆盖主路径 + v3 控件存在性 + 完整可迁移伴侣 zip + 一键启用端点 + 记忆复习（SRS）；`scripts/render_v3.py`（9 项）真渲染 PNG 并做像素级断言（字体栈写入、文字颜色持久化、背景照片铺满且非主题色、**锚点真的移动单词块**、自定义文字拖拽位置持久化、海报+楷体、**墨璃深夜壁纸**）。账号/隔离/重启/静态目录安全另由 `scripts/test_server.js` 与 `scripts/test_accounts_browser.py` 覆盖。
 
 ## 模块整理
 

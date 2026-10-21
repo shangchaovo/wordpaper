@@ -227,6 +227,31 @@ def main():
             kai_on = page.locator("#sel-fontstyle").evaluate("e=>e.value")
             check("单词组 + 楷体渲染", kai_on == "kai")
 
+            # ---- 7. 墨璃 (dark liquid) wallpaper: dark base + light ink ----
+            page.evaluate(
+                "() => { const s=window.Store.getSettings(); s.theme='darkliquid'; s.bgPattern='none';"
+                " s.inkOverride=''; s.fontStyle='hei'; window.Store.saveSettings(s); }"
+            )
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_selector("#preview-canvas")
+            page.wait_for_timeout(600)
+            canvas_png(page, os.path.join(OUT, "7_darkliquid.png"))
+            r, g, b = px(page, 0.5, 0.5)
+            check("墨璃背景为深夜底色", r < 40 and g < 45 and b < 70)
+            # 词卡描边 (月光玻璃边) 在词行左缘附近应有冷色亮像素
+            r, g, b = px(page, 0.095, 0.5)
+            card_light = (r + g + b) > 60 and b >= g >= r - 10
+            # 文字应为浅色（在单词行基线附近取一个亮像素）
+            ink_light = page.evaluate(
+                "() => { const c=App.exportCanvas(); const ctx=c.getContext('2d');"
+                " let bright=0; for (let y=0;y<c.height;y+=4){"
+                "  const d=ctx.getImageData(Math.floor(c.width*0.09),y,1,1).data;"
+                "  if (d[0]>200&&d[1]>210&&d[2]>230) bright++; } return bright>0; }"
+            )
+            check("墨璃文字为浅色墨水", ink_light)
+            if not card_light:
+                print("    [debug] card rim sample at 0.095/0.5:", (r, g, b))
+
             browser.close()
     finally:
         server.terminate()

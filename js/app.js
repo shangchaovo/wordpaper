@@ -23,6 +23,7 @@
     pearl:  { name: '珍珠', bg: '#ffffff', bg2: '#f1f1f4', ink: '#2b2b30', sub: '#9a9aa2', accent: '#8e8e93', accentSoft: '#ececf0', line: 'rgba(43,43,48,0.10)', patternInk: '#d6d6db', blob: false, liquid: true },
     night:  { name: '夜空', bg: '#151a2e', bg2: '#1f2745', ink: '#eef1f8', sub: '#8b95b3', accent: '#7aa2f7', accentSoft: '#2a3358', line: 'rgba(238,241,248,0.14)', patternInk: '#3a4670', blob: true },
     forest: { name: '森林', bg: '#12211c', bg2: '#1c332a', ink: '#e8f0ea', sub: '#8fae9f', accent: '#5ec99a', accentSoft: '#234534', line: 'rgba(232,240,234,0.12)', patternInk: '#2e5040', blob: true },
+    darkliquid: { name: '墨璃', bg: '#0b0e17', bg2: '#131a2c', ink: '#f2f5fc', sub: '#93a0bd', accent: '#7aa2f7', accentSoft: 'rgba(122,162,247,0.16)', line: 'rgba(242,245,252,0.16)', patternInk: '#2c3a5e', blob: false, liquid: true, dark: true },
   };
 
   const LIBRARIES = [
@@ -52,7 +53,7 @@
   ];
 
   let settings = null;
-  const UI_THEMES = new Set(['anime', 'editorial', 'liquid']);
+  const UI_THEMES = new Set(['anime', 'editorial', 'liquid', 'darkliquid']);
   let companionAction = 'start'; // 'start' | 'control' | 'download' | 'remote'
   let liveTimer = null;
   let clockTimer = null;
@@ -136,7 +137,7 @@
     root.dataset.uiTheme = next;
     clearTimeout(liquidTransitionTimer);
     root.classList.remove('liquid-materializing');
-    if (persist && next === 'liquid' && !themeWashing
+    if (persist && (next === 'liquid' || next === 'darkliquid') && !themeWashing
       && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Apple-style materialisation: the edge light resolves into place instead
       // of treating the theme as a flat colour fade.
@@ -152,8 +153,12 @@
     if (persist) {
       // Liquid is a whole-page visual mode. Enter it with the matching clean
       // wallpaper palette so the proof does not remain a dark/starry island.
-      if (next === 'liquid') {
-        settings.theme = 'pearl';
+      // 暗夜同理:联动「墨璃」壁纸配色,浅色记忆的壁纸不会留在暗夜界面上反差刺眼。
+      const pairedWallpaper = next === 'liquid' ? 'pearl' : next === 'darkliquid' ? 'darkliquid' : null;
+      if (pairedWallpaper && settings.theme !== pairedWallpaper) {
+        settings.theme = pairedWallpaper;
+      }
+      if (next === 'liquid' || next === 'darkliquid') {
         settings.bgPattern = 'none';
         renderThemeSwatches();
         renderPatternPicker();
@@ -171,7 +176,7 @@
    * 换主题要整页重算样式 + 重新光栅化（100–200ms），这段卡顿被纯色遮住；圆的放大
    * 和淡出只动 transform / opacity，由合成线程驱动，主线程忙的时候也不掉帧。
    * （View Transition 要截两张全屏快照、clip-path 还得主线程逐帧算，实测更卡。） */
-  const THEME_WASH = { anime: '#f4effe', editorial: '#efeae0', liquid: '#fbfbfc' };
+  const THEME_WASH = { anime: '#f4effe', editorial: '#efeae0', liquid: '#fbfbfc', darkliquid: '#141824' };
   let themeWash = null;
   let themeWashing = false;
   function revealUITheme(theme, origin, event) {
@@ -1195,7 +1200,9 @@
       b.type = 'button';
       b.className = 'swatch' + (key === settings.theme ? ' on' : '');
       b.title = t.name;
-      b.style.background = `linear-gradient(135deg, ${t.bg} 0%, ${t.accentSoft} 60%, ${t.accent} 100%)`;
+      b.style.background = t.dark
+        ? `linear-gradient(135deg, ${t.bg} 0%, ${t.bg2} 55%, ${t.accent} 165%)`
+        : `linear-gradient(135deg, ${t.bg} 0%, ${t.accentSoft} 60%, ${t.accent} 100%)`;
       b.innerHTML = `<span>${t.name}</span>`;
       b.addEventListener('click', () => {
         if (settings.theme !== key) requestPreviewSwap();
