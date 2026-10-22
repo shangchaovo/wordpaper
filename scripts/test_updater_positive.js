@@ -36,10 +36,12 @@ const manifest = { version: '2.2.3', files: {} };
 for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'lib/updater.js', 'js/app.js']) {
   manifest.files[rel] = digest(path.join(mountRes, rel));
 }
+manifest.version = '2.3.0';   // 新包自校验:manifest.version 必须等于目标版本
 fs.writeFileSync(path.join(mountRes, 'RELEASE_SHA256.json'), JSON.stringify(manifest));
 
 // Place the manifest in the RUNNING resources too (that's what shaManifest reads).
-fs.writeFileSync(path.join(resPath, 'RELEASE_SHA256.json'), JSON.stringify(manifest));
+const runningManifest = { version: '2.2.3', files: manifest.files };   // 旧包自带旧摘要
+fs.writeFileSync(path.join(resPath, 'RELEASE_SHA256.json'), JSON.stringify(runningManifest));
 
 // ── Not from WordPaper.app check: applyUpdate requires runningFrom.includes('WordPaper.app');
 //    our fakeRes path includes 'fakeRes/WordPaper.app' — passes. ──

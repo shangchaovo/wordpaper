@@ -33,7 +33,10 @@ for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'l
   manifest.files[rel] = digest(path.join(mountRes, rel));   // digest the CLEAN payload
 }
 fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// CORRUPTED');  // then corrupt AFTER digesting
-fs.writeFileSync(path.join(resPath, 'RELEASE_SHA256.json'), JSON.stringify(manifest));
+manifest.version = '2.3.0';   // 新包自校验要求 manifest.version === target
+fs.writeFileSync(path.join(mountRes, 'RELEASE_SHA256.json'), JSON.stringify(manifest));   // 新包内也要有
+const runningManifest = { version: '2.2.3', files: manifest.files };   // 旧包自带旧摘要
+fs.writeFileSync(path.join(resPath, 'RELEASE_SHA256.json'), JSON.stringify(runningManifest));
 
 u.__setRunningFrom(resPath);
 // remap repo-root reads to fakeRes
