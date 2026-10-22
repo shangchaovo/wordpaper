@@ -78,6 +78,7 @@ function mirroring() { return MODE === 'local' && upstream.isPaired(); }
 const BUNDLED_VERSION = (() => { try { return fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch { return ''; } })();
 let latestVersion = '';
 let updateApplying = false;   // 应用内更新进行中(CSRF 保护后的互斥)
+let lastRefreshProbe = 0;     // 上次手动 refresh 的时间戳(30s 限速)
 let updateProgress = null;   // {fraction, stage} — 前端经 /api/update/status 轮询
 let updateError = '';
 let updateRequest = null;   // 进行中的版本检查请求;shutdown 时取消,避免卡住退出
@@ -87,18 +88,46 @@ function versionNewer(candidate, current) {
   for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
   return false;
 }
-function checkForUpdate() {
-  if (!BUNDLED_VERSION || MODE !== 'local') return;
-  const req = https.get('https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION', { timeout: 8000 }, res => {
-    if (res.statusCode !== 200) { res.resume(); return; }
-    let body = '';
-    res.on('data', c => { body += c; });
-    res.on('end', () => { const v = body.trim(); if (/^\d+\.\d+\.\d+$/.test(v)) latestVersion = v; });
+// 版本源按可达性排序:直连 raw 在多数网络上可用;失败时退到 ghproxy(国内可达)与
+// fastly.jsdelivr(CN 加速)。任一成功即停止。
+const VERSION_SOURCES = [
+  'https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION',
+  'https://ghproxy.net/https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION',
+  'https://fastly.jsdelivr.net/gh/shangchaovo/wordpaper@main/VERSION',
+];
+function checkForUpdateOnce(url) {
+  return new Promise(resolve => {
+    const req = https.get(url, { timeout: 8000 }, res => {
+      if (res.statusCode !== 200) { res.resume(); resolve(false); return; }
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => {
+        const v = body.trim();
+        if (/^\d+\.\d+\.\d+$/.test(v)) { latestVersion = v; resolve(true); }
+        else resolve(false);
+      });
+    });
+    updateRequest = req;
+    req.on('close', () => { if (updateRequest === req) updateRequest = null; });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
   });
-  updateRequest = req;
-  req.on('close', () => { if (updateRequest === req) updateRequest = null; });
-  req.on('error', () => {});
-  req.on('timeout', () => req.destroy());
+}
+// 并发竞态保护:一次只有一个探索在跑
+let updateChecking = false;
+let updateCheckPromise = null;
+async function checkForUpdate() {
+  if (!BUNDLED_VERSION || MODE !== 'local') return false;
+  if (updateChecking) return updateCheckPromise;
+  updateChecking = true;
+  updateCheckPromise = (async () => {
+    for (const url of VERSION_SOURCES) {
+      if (await checkForUpdateOnce(url)) { updateChecking = false; return true; }
+    }
+    updateChecking = false;
+    return false;
+  })();
+  return updateCheckPromise;
 }
 checkForUpdate();
 setInterval(checkForUpdate, 24 * 60 * 60 * 1000).unref();
@@ -1010,6 +1039,15 @@ async function handle(req, res) {
   // ── 应用内自更新(独立版专属):检查 + 安装。棘轮与权限校验都在 POST /apply
   //    里重做一遍,GET /check 只读无副作用。 ──────────────────────────────
   if (pathname === '/api/update/check' && req.method === 'GET') {
+    // ?refresh=1: 请求方明确要新探测(点击「重新检查」时)。限速 30s 防滥用。
+    if (parsed.searchParams.get('refresh') === '1' && BUNDLED_VERSION && MODE === 'local') {
+      const now = Date.now();
+      if (now - lastRefreshProbe > 30000) {
+        lastRefreshProbe = now;
+        latestVersion = '';   // 清掉旧值,强制重新取
+        await checkForUpdate();
+      }
+    }
     json(res, 200, {
       available: Boolean(updateNotice()),
       current: BUNDLED_VERSION || '',

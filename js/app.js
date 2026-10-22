@@ -2522,7 +2522,7 @@
         render('一键更新到 v' + check.latest, false);
       } else {
         status.textContent = '当前已是最新 v' + check.current;
-        render('已最新 · 点击重新检查', false);
+        render('检查新版本', false);
       }
     };
     refreshLine();
@@ -2534,11 +2534,12 @@
         st = await (await fetch('/api/update/status', { cache: 'no-store' })).json();
       } catch { toast('更新状态获取失败'); return; }
       if (st.applying) { toast('更新进行中:下载校验安装包…'); startPolling(st.target); return; }
-      // 无可用版本:先重新检查一次
+      // 无可用版本:强制 server 重新探测(?refresh=1 —— 启动时缓存的可能是旧值)
       if (!check.available) {
-        try { check = await (await fetch('/api/update/check', { cache: 'no-store' })).json(); } catch {}
+        render('检查中…', true);
+        try { check = await (await fetch('/api/update/check?refresh=1', { cache: 'no-store' })).json(); } catch {}
         refreshLine();
-        if (!check.available) { toast('已是最新版本'); return; }
+        if (!check.available) { toast('已是最新版本'); setTimeout(refreshLine, 100); return; }
       }
       // 触发安装
       try {
