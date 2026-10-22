@@ -94,6 +94,16 @@ LAUNCHER = r'''#!/bin/bash
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RES="$(cd "$HERE/../Resources" && pwd)"
+# App Translocation 检测:直接从挂载的 DMG 里双击运行时,macOS 会把 App 拷到只读
+# 的随机临时目录运行 —— 应用内更新(rsync 替换 Resources)在那没有写权限,必然失败。
+# 明确提示用户先拖进「应用程序」再运行,比静默半残体验好得多。
+case "$HERE" in
+  *AppTranslocation/*)
+    wp_alert "$(printf '这个 WordPaper 是直接从安装盘(DMG)里打开的。\n\n请先把左侧的 WordPaper 拖到右边的「应用程序」文件夹,\n然后从「应用程序」里打开 —— 之后应用内一键更新才能正常工作。')"
+    open -R "$(dirname "$(dirname "$(dirname "$HERE")")")" 2>/dev/null || true
+    exit 1
+    ;;
+esac
 cd "$RES"
 
 ARCH="$(uname -m)"   # arm64 | x86_64

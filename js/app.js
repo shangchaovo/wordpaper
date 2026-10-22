@@ -1937,13 +1937,19 @@
 
   function openMemoryNotebook() {
     if (!window.Review) return;
+    // 进场动画只在「刚打开」这一刻播;之后 15s 轮询重绘不再重播(闪屏根源之一)
+    const modal = $('#memory-modal');
+    if (modal) {
+      modal.classList.add('fresh-open');
+      setTimeout(() => modal.classList.remove('fresh-open'), 700);
+    }
     if (!settings.srsEnabled) {
       settings.srsEnabled = true;
       const toggle = $('#chk-srs'); if (toggle) toggle.checked = true;
       saveSettings(); updateSrsUI(); syncPetMemoryEvents();
       toast('已开启艾宾浩斯记忆复习');
     }
-    const modal = $('#memory-modal'); if (!modal) return;
+    if (!modal) return;
     renderMemoryNotebook(); modal.hidden = false;
   }
   function closeMemoryNotebook() { const modal = $('#memory-modal'); if (modal) modal.hidden = true; }
@@ -2064,7 +2070,9 @@
       if (!settings.srsEnabled) return;
       const newlyDue = updateSrsUI();
       // 每一批新增到期词都重绘一次；不再用同一 tick 内两个必然相等的计数比较。
-      if (newlyDue > 0) refresh(false);
+      // 记忆本开着时跳过重绘(见 syncPetCurrent 的闪屏注),关闭后下一 tick 补上。
+      const memoryOpen = $('#memory-modal') && !$('#memory-modal').hidden;
+      if (newlyDue > 0 && !memoryOpen) refresh(false);
     }, 30000);
     setInterval(syncPetMemoryEvents, 15000);
     setInterval(syncPetCurrent, 5000);   // 小词灵词代际轮询：点词/翻页后 ≤5s 预览对齐
@@ -2121,7 +2129,11 @@
       petSyncedSel = petSelectionFromSync(data.words);
       if (!petSyncedSel) return;
       window.Engine.freeze(settings.library, petSyncedSel.dateStr, data.words);
-      await refresh(false);   // 用 petSyncedSel 重绘（refresh 内优先吃它）
+      // 记忆本开着时不重绘预览:preview 在 modal 背后,liquid 玻璃叠加下预览每次重绘
+      // 都会透过半透明遮罩闪一下(用户报告的「记忆本滚动闪屏」)。关闭后下一次轮询
+      // (≤5s)会自然对齐。
+      const memoryOpen = $('#memory-modal') && !$('#memory-modal').hidden;
+      if (!memoryOpen) await refresh(false);
     } catch (e) { /* 伴侣未运行时静默跳过 */ }
     finally { petCurrentSyncing = false; }
   }
