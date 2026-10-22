@@ -2569,8 +2569,10 @@
             status.textContent = '更新失败,请到 GitHub Releases 手动下载';
             render('重试', false);
             toast('更新失败: ' + st.error);
-          } else if (ticks > 90) {   // 超过 ~90s 没动静:server 应已重启
+          } else if (ticks > 360) {   // 6 分钟墙钟:下载停滞/总超时应已被 server 端杀掉;这里是 UI 兜底
             clearInterval(updatePolling); updatePolling = null;
+            status.textContent = '更新卡住了,请重启应用后重试,或到 GitHub Releases 手动下载';
+            render('重试', false);
           }
         } catch {
           // server 正在重启,请求失败属预期:提示并停止轮询
