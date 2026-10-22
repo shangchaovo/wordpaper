@@ -59,8 +59,12 @@ def pack():
 
 
 if __name__ == "__main__":
-    try:
-        rasterize()
-    except Exception as e:  # noqa: BLE001
-        sys.exit(f"Playwright 渲染失败(先 pip install playwright && playwright install chromium): {e}")
+    # master 已入库(玻璃卡片+日出设计)。--favicon 可用旧 W 标重新生成 master。
+    if "--favicon" in sys.argv:
+        try:
+            rasterize()
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"Playwright 渲染失败(先 pip install playwright && playwright install chromium): {e}")
+    elif not os.path.exists(MASTER):
+            sys.exit(f"缺 {MASTER}")
     pack()
