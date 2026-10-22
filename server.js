@@ -158,6 +158,9 @@ const STATIC_RULES = {
   css: new Set(['.css', '.woff', '.woff2', '.png', '.svg']),
   js: new Set(['.js']),
   data: new Set(['.json']),
+  // assets/ 只放图标等同资源(favicon/app 图标/DMG 背景);类型白名单拦 .icns/.json 等,
+  // 且入口判定已在 safeStaticPath 里挡 ".."/隐藏文件,无目录穿越风险。
+  assets: new Set(['.png', '.svg', '.ico']),
 };
 
 const COMPANION_METHODS = new Map([

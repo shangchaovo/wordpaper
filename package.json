@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/test_wallpaper_files.js && node scripts/test_server.js && node scripts/test_oauth.js && node scripts/test_review.js && node scripts/test_companion_learning.js && node scripts/test_pairing.js && node scripts/test_updater_positive.js && node scripts/test_updater_negative.js && python3 scripts/test_update_api.py && python3 scripts/test_update_refresh.py",
+    "test": "node scripts/test_wallpaper_files.js && node scripts/test_server.js && node scripts/test_oauth.js && node scripts/test_review.js && node scripts/test_companion_learning.js && node scripts/test_pairing.js && node scripts/test_updater_positive.js && node scripts/test_updater_negative.js && python3 scripts/test_update_api.py && python3 scripts/test_update_refresh.py && node scripts/test_assets_static.py",
     "test:server": "node scripts/test_server.js",
     "test:browser": "python3 scripts/test_accounts_browser.py"
   }
