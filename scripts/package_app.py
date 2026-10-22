@@ -176,7 +176,43 @@ clear_restart_flag
 
 # ── 主服务 + 伴侣 ─────────────────────────────────────────────
 export HOST="${HOST:-127.0.0.1}"
-export PORT="${PORT:-8770}"
+# 端口挑选:优先用户显式 PORT;否则从 8770 起找可绑定的(macOS AirPlay/sharingd
+# 常驻占 8770,IPv6/IPv4 都会被拒)。8771 保留给伴侣。launcher 选定后,server 仍是
+# fail-fast 绑定语义(不匹配就起不来,不会静默漂移)。
+pick_port() {  # $1=起始端口;打印第一个可绑定的端口,失败打印空
+  /usr/bin/python3 -c 'import socket, sys
+start = int(sys.argv[1])
+skip = {8771}
+for port in range(start, start + 30):
+    if port in skip:
+        continue
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", port))
+        sock.close()
+        print(port)
+        sys.exit(0)
+    except OSError:
+        continue
+sys.exit(1)' "$1"
+}
+# 端口粘滞:上次选过的口存 ~/.wordpaper/port.json,下次优先复用 — 浏览器书签/已开
+# 标签页的 localhost:PORT 在重启后仍然有效(否则每次自动换口,老标签页会 refused)。
+PORT_FILE="$HOME/.wordpaper/port.json"
+if [ -z "${PORT:-}" ]; then
+  SAVED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("port",""))' "$PORT_FILE" 2>/dev/null || true)"
+  if [ -n "$SAVED" ] && [ "$SAVED" = "$(pick_port "$SAVED")" ]; then
+    export PORT="$SAVED"
+  else
+    PICKED="$(pick_port 8770)"
+    if [ -z "$PICKED" ]; then
+      wp_alert "$(printf '8770~8800 之间找不到可用端口,WordPaper 无法启动。\n请保留端口空间或显式指定环境变量 PORT。')"
+      exit 1
+    fi
+    export PORT="$PICKED"
+  fi
+  python3 -c 'import json,sys,os; os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); json.dump({"port": int(sys.argv[2])}, open(sys.argv[1], "w"))' "$PORT_FILE" "$PORT" 2>/dev/null || true
+fi
 export WORDPAPER_MODE="${WORDPAPER_MODE:-local}"
 export WORDPAPER_DATA_DIR="${WORDPAPER_DATA_DIR:-$HOME/.wordpaper}"
 export WORDPAPER_COMPANION_ENABLED=1
@@ -307,7 +343,7 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
 跑起来之后:
   • 自动把桌面壁纸换成今天的单词,每 30 分钟换一组。
   • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习。
-  • 浏览器会打开 http://localhost:8770 ,首次使用请创建账号。
+  • 浏览器会打开本机端口(默认 8770;若被 AirPlay 等占用会自动换下一个可用口),首次使用请创建账号。
   • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。
   • 已经在运行时再次双击图标,会重新打开浏览器里的页面,
     不会重复启动——看到「没反应」时先看浏览器是不是已经开着了。
