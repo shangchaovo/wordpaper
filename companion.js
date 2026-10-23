@@ -641,7 +641,7 @@ const PET_SKINS = {
     ink: '#27343b', sub: '#686159', phonetic: '#59615f',
     moss: '#648f7d', rust: '#b96e55', rustStrong: '#914d3b', gold: '#c7a56b', mist: '#dce4e2',
     title: '#f5f0e7', titleSub: '#aebdc3', empty: '#f3eee5', emptySub: '#9eafb5', footerSub: '#9eafb5', reminder: '#d8e0df',
-    avatarOuter: '#14232d', avatarStroke: '#c7a56b', avatarFace: '#efd6c1', avatarHair: '#516473', avatarHairLine: '#405563', avatarEye: '#273741', avatarSpark: '#f9f6ef',
+    avatarOuter: '#14232d', avatarStroke: '#c7a56b', avatarFace: '#1d303b', avatarInk: '#e8dfd0', avatarAccent: '#c7a56b',
     closeFill: '#324955', closeStroke: '#607580', closeInk: '#edf1ef',
     prevFill: '#2c414c', prevStroke: '#617783', prevInk: '#f6f0e8', memoryFill: '#496f63', memoryStroke: '#7da190', memoryInk: '#f6f0e8', nextFill: '#914d3b', nextStroke: '#c98a72', nextInk: '#f6f0e8',
     handleFill: '#f5f0e7', handleStroke: '#c7a56b', handleInk: '#233945', shellShadow: '#071116', shellShadowOpacity: .34, cardShadow: '#071116', cardShadowOpacity: .2,
@@ -654,7 +654,7 @@ const PET_SKINS = {
     ink: '#40335f', sub: '#7c709d', phonetic: '#9b79ad',
     moss: '#65cdb1', rust: '#ff82b2', rustStrong: '#a777e8', gold: '#f3d76b', mist: '#edf9ff',
     title: '#40335f', titleSub: '#806f9e', empty: '#51416f', emptySub: '#8e7ca9', footerSub: '#8b77a5', reminder: '#5d4b7c',
-    avatarOuter: '#5b4586', avatarStroke: '#f3d76b', avatarFace: '#ffe2d3', avatarHair: '#9a76d5', avatarHairLine: '#7658aa', avatarEye: '#40335f', avatarSpark: '#fffdfd',
+    avatarOuter: '#5b4586', avatarStroke: '#f3d76b', avatarFace: '#6d55a0', avatarInk: '#fff6fb', avatarAccent: '#f3d76b',
     closeFill: '#fffafd', closeStroke: '#d5c2ed', closeInk: '#7a63a6',
     prevFill: '#f4eeff', prevStroke: '#cbb4ec', prevInk: '#7153a7', memoryFill: '#e4f7ff', memoryStroke: '#9fcef1', memoryInk: '#386888', nextFill: '#ff82b2', nextStroke: '#d967a1', nextInk: '#fffdfd',
     handleFill: '#fffdfd', handleStroke: '#b9a0df', handleInk: '#7658aa', shellShadow: '#8063ad', shellShadowOpacity: .18, cardShadow: '#8e6bb6', cardShadowOpacity: .14,
@@ -667,7 +667,7 @@ const PET_SKINS = {
     ink: '#1d1d1f', sub: '#626269', phonetic: '#6e6e73',
     moss: '#248a53', rust: '#636366', rustStrong: '#007aff', gold: '#ffffff', mist: '#ffffff',
     title: '#1d1d1f', titleSub: '#66666e', empty: '#2c2c2e', emptySub: '#6e6e73', footerSub: '#6e6e73', reminder: '#48484a',
-    avatarOuter: '#ffffff', avatarStroke: '#d8d8de', avatarFace: '#f0d4c2', avatarHair: '#6c7078', avatarHairLine: '#5d626b', avatarEye: '#2c2c2e', avatarSpark: '#ffffff',
+    avatarOuter: '#ffffff', avatarStroke: '#d8d8de', avatarFace: '#f7f7fa', avatarInk: '#48484a', avatarAccent: '#248a53',
     closeFill: '#ffffff', closeStroke: '#ffffff', closeInk: '#3a3a3c',
     prevFill: '#fafafd', prevStroke: '#ffffff', prevInk: '#3a3a3c', memoryFill: '#f2f2f7', memoryStroke: '#d8d8de', memoryInk: '#3a3a3c', nextFill: '#007aff', nextStroke: '#84bdff', nextInk: '#ffffff',
     handleFill: '#fafafd', handleStroke: '#ffffff', handleInk: '#3a3a3c', shellShadow: '#000000', shellShadowOpacity: .13, cardShadow: '#000000', cardShadowOpacity: .09,
@@ -681,7 +681,7 @@ const PET_SKINS = {
     ink: '#e8edf8', sub: '#93a0bd', phonetic: '#8b98b8',
     moss: '#5ec99a', rust: '#e08e8e', rustStrong: '#7aa2f7', gold: '#a9c0f2', mist: '#2a3450',
     title: '#eef2fb', titleSub: '#97a2bd', empty: '#dbe2f2', emptySub: '#8b98b8', footerSub: '#7d89a8', reminder: '#c6d2ee',
-    avatarOuter: '#232e4a', avatarStroke: '#7aa2f7', avatarFace: '#f0d4c2', avatarHair: '#4a5478', avatarHairLine: '#3b4464', avatarEye: '#1c2438', avatarSpark: '#eef2fb',
+    avatarOuter: '#232e4a', avatarStroke: '#7aa2f7', avatarFace: '#2b3757', avatarInk: '#dbe4f6', avatarAccent: '#7aa2f7',
     closeFill: '#202a44', closeStroke: '#56698f', closeInk: '#c6d2ee',
     prevFill: '#222c48', prevStroke: '#56698f', prevInk: '#dbe2f2', memoryFill: '#1f3a56', memoryStroke: '#4a7db4', memoryInk: '#dbe2f2', nextFill: '#5e7fd0', nextStroke: '#8fb0f5', nextInk: '#0d1117',
     handleFill: '#232e4a', handleStroke: '#7aa2f7', handleInk: '#c6d2ee', shellShadow: '#000000', shellShadowOpacity: .5, cardShadow: '#000000', cardShadowOpacity: .35,
@@ -730,16 +730,18 @@ function buildPetSVG(words, reminders, uiTheme, W, H) {
   // 可拖动的标题区用三根短线做暗示，不添加新交互。
   [0, 1, 2].forEach(i => parts.push(`<rect x="${(W / 2 - 13 + i * 10) * s}" y="${10 * s}" width="${6 * s}" height="${1.2 * s}" rx="${.6 * s}" fill="${mist}" opacity=".28"/>`));
 
-  // 小词灵只保留一枚精致二次元头像徽章：头发、表情和领口构成陪伴感，没有巨大耳朵或身体。
+  // 小词灵头像 = 与网页一致的「书页+轨道」徽记(不再用卡通脸):虚线轨道环绕
+  // 一本摊开的书,轨道上的圆点是唯一的状态点缀——成熟、安静,四套皮肤只换色。
   const sprite = (cx, cy, r) => (
     `<circle cx="${cx}" cy="${cy}" r="${r * 1.18}" fill="${skin.avatarOuter}" stroke="${skin.avatarStroke}" stroke-width="${1.1 * s}"/>` +
     `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${skin.avatarFace}"/>` +
-    `<path d="M ${cx - r * .95} ${cy - r * .08} Q ${cx - r * .76} ${cy - r * 1.08} ${cx} ${cy - r * .98} Q ${cx + r * .92} ${cy - r * .88} ${cx + r * .95} ${cy + r * .05} Q ${cx + r * .66} ${cy - r * .30} ${cx + r * .35} ${cy - r * .50} Q ${cx + r * .14} ${cy - r * .12} ${cx - r * .03} ${cy - r * .55} Q ${cx - r * .38} ${cy - r * .18} ${cx - r * .95} ${cy - r * .08} Z" fill="${skin.avatarHair}"/>` +
-    `<path d="M ${cx - r * .94} ${cy + r * .02} Q ${cx - r * .91} ${cy + r * .72} ${cx - r * .45} ${cy + r * .92} M ${cx + r * .94} ${cy + r * .02} Q ${cx + r * .91} ${cy + r * .72} ${cx + r * .45} ${cy + r * .92}" stroke="${skin.avatarHairLine}" stroke-width="${2.1 * s}" fill="none" stroke-linecap="round"/>` +
-    `<path d="M ${cx - r * .47} ${cy + r * .08} Q ${cx - r * .27} ${cy - r * .02} ${cx - r * .08} ${cy + r * .08} M ${cx + r * .08} ${cy + r * .08} Q ${cx + r * .27} ${cy - r * .02} ${cx + r * .47} ${cy + r * .08}" stroke="${skin.avatarEye}" stroke-width="${1.3 * s}" fill="none" stroke-linecap="round"/>` +
-    `<circle cx="${cx - r * .31}" cy="${cy + r * .05}" r="${r * .055}" fill="${skin.avatarSpark}"/><circle cx="${cx + r * .31}" cy="${cy + r * .05}" r="${r * .055}" fill="${skin.avatarSpark}"/>` +
-    `<path d="M ${cx - r * .13} ${cy + r * .42} Q ${cx} ${cy + r * .51} ${cx + r * .13} ${cy + r * .42}" stroke="${rust}" stroke-width="${1.1 * s}" fill="none" stroke-linecap="round"/>` +
-    `<path d="M ${cx - r * .28} ${cy + r * 1.02} L ${cx} ${cy + r * .77} L ${cx + r * .28} ${cy + r * 1.02}" fill="${rust}" opacity=".9"/>`
+    `<circle cx="${cx}" cy="${cy}" r="${r * .74}" fill="none" stroke="${skin.avatarInk}" stroke-width="${.85 * s}" stroke-dasharray="${r * 1.55} ${r * .8}" transform="rotate(-55 ${cx} ${cy})" opacity=".42"/>` +
+    `<g stroke="${skin.avatarInk}" stroke-width="${1.5 * s}" stroke-linecap="round" stroke-linejoin="round" fill="none">` +
+    `<path d="M ${cx} ${cy - r * .32} c ${-r * .28} ${-r * .22} ${-r * .62} ${-r * .27} ${-r * .96} ${-r * .18} l 0 ${r * 1.4} c ${r * .34} ${-r * .1} ${r * .68} ${-r * .05} ${r * .96} ${r * .18} c ${r * .28} ${-r * .23} ${r * .62} ${-r * .28} ${r * .96} ${-r * .18} l 0 ${-r * 1.4} c ${-r * .34} ${-r * .1} ${-r * .68} ${-r * .05} ${-r * .96} ${r * .18} Z" fill="${skin.avatarInk}" fill-opacity=".07"/>` +
+    `<path d="M ${cx} ${cy - r * .32} l 0 ${r * 1.4}"/>` +
+    `<path d="M ${cx - r * .62} ${cy - r * .18} l ${r * .28} ${r * .08} M ${cx - r * .62} ${cy + r * .1} l ${r * .28} ${r * .08} M ${cx + r * .34} ${cy - r * .06} l ${r * .28} ${-r * .08} M ${cx + r * .34} ${cy + r * .22} l ${r * .28} ${-r * .08}"/>` +
+    `</g>` +
+    `<circle cx="${cx + r * .68}" cy="${cy - r * .62}" r="${r * .14}" fill="${skin.avatarAccent}"/>`
   );
   // 六个词槽是暖雾白「任务片」，左侧苔玉状态线将它们连成连续词流。
   const tile = (x, y, tw, th, rr) =>
@@ -1952,6 +1954,18 @@ let advancing = false;
 let pendingDir = 0;
 let lastAdvanceAt = 0;   // 服务端安全阀：500ms 内重复推进直接吞掉，防幽灵连发
 function runAdvance(dir) {
+  // 「换一组」= 推动小词灵翻到下一页(pet-page.php 的同一原子操作)。
+  // 旧实现只 bump 随机种子:petWallpaperSync 开启时壁纸词源是小词灵当前页,
+  // 种子根本不参与选词 → 签名不变 → pushWallpaper 短路 → 热键/菜单点了毫无反应。
+  // 翻页语义与网页「换一组」按钮完全一致;同步开启时壁纸跟着换;小词灵没开
+  // (或已关闭)时退回旧的种子推进,至少壁纸要换一组。
+  if (petVisible && petChild && CFG.petEnabled) {
+    const prevCount = petFirstPassWords().length;
+    navigatePetPage(dir);
+    syncWallpaperToPet();
+    refreshPetInPlace(prevCount, petFirstPassWords().length);
+    return;
+  }
   if (petWallpaperTimer) { clearTimeout(petWallpaperTimer); petWallpaperTimer = null; }
   advancing = true;
   pushWallpaper(() => {
