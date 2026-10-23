@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 `VERSION` 文件是唯一版本源。
 
+## [2.4.4] - 2026-10-23
+
+### 修复
+- **伴侣启动即崩(2.4.3 回归)**:菜单栏子进程 stdio 改 'ignore' 后
+  `child.stderr` 为 null,残留的 `.on('data')` 直接 TypeError,伴侣无法启动
+  —— 更新到 2.4.3 后小词灵/菜单栏/8771 全部消失的根因。TEST_MODE 跳过菜单栏
+  分支导致隔离测试未拦截;已加真实 spawn 冒烟验证。
+
 ## [2.4.3] - 2026-10-23
 
 ### 修复
