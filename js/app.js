@@ -2507,7 +2507,7 @@
         render('一键更新到 v' + check.latest, false);
         if (badge) { badge.textContent = '● 新版本 v' + check.latest; showBadge(); }
       } else {
-        status.textContent = '当前已是最新 v' + check.current;
+        status.textContent = check.checked === false ? '暂未检查到版本信息，请重试' : '当前已是最新 v' + check.current;
         render('检查新版本', false);
         if (badge) badge.hidden = true;
       }
@@ -2526,7 +2526,7 @@
         render('检查中…', true);
         try { check = await (await fetch('/api/update/check?refresh=1', { cache: 'no-store' })).json(); } catch {}
         refreshLine();
-        if (!check.available) { toast('已是最新版本'); setTimeout(refreshLine, 100); return; }
+        if (!check.available) { toast(check.checked === false ? '暂时无法检查更新，请稍后重试' : '已是最新版本'); setTimeout(refreshLine, 100); return; }
       }
       // 触发安装
       try {
@@ -2540,12 +2540,26 @@
     function startPolling(target) {
       clearInterval(updatePolling);
       render('正在更新…', true);
-      let ticks = 0, reconnects = 0;
+      let ticks = 0, reconnects = 0, polling = false;
+      const complete = current => {
+        if (current !== target) return false;
+        clearInterval(updatePolling); updatePolling = null;
+        status.textContent = '已更新到 v' + target + ' ✓';
+        render('已是最新', true);
+        toast('WordPaper 已更新到 v' + target + ',刷新页面');
+        setTimeout(() => window.location.reload(), 1200);
+        return true;
+      };
       updatePolling = setInterval(async () => {
+        if (polling) return;
+        polling = true;
         ticks++;
         try {
-          const st = await (await fetch('/api/update/status', { cache: 'no-store' })).json();
+          const response = await fetch('/api/update/status', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+          if (!response.ok) throw new Error('更新状态暂不可用');
+          const st = await response.json();
           reconnects = 0;
+          if (complete(st.current)) return;
           if (st.applying) {
             const stage = st.progress && st.progress.stage || '';
             const label = stage === 'verify' ? '校验完整性…' : stage === 'mount' ? '挂载安装包…'
@@ -2573,17 +2587,10 @@
           }
           status.textContent = '更新完成,正在重启…';
           try {
-            const re = await (await fetch('/api/update/check', { cache: 'no-store' })).json();
-            if (re && re.supported && re.current && re.current !== target) return;   // 还在旧版本?继续等
-            if (re && re.current === target) {
-              clearInterval(updatePolling); updatePolling = null;
-              status.textContent = '已更新到 v' + target + ' ✓';
-              render('已是最新', true);
-              toast('WordPaper 已更新到 v' + target + ',刷新页面');
-              setTimeout(() => window.location.reload(), 1200);
-            }
+            const re = await (await fetch('/api/update/check', { cache: 'no-store', signal: AbortSignal.timeout(8000) })).json();
+            if (re) complete(re.current);
           } catch { /* 还没起来,下一秒再试 */ }
-        }
+        } finally { polling = false; }
       }, 1000);
     }
   }

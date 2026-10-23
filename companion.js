@@ -903,6 +903,8 @@ function buildPetJXA(W, H) {
   return `
 ObjC.import('Cocoa');
 ObjC.import('QuartzCore');
+ObjC.import('stdlib');
+ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
   var pngPath = argv[0], corner = argv[1], posFile = argv[2], savedPos = argv[3], closeFile = argv[4], W = ${W}, H = ${H};
   var OWNER = argv[5] || '';   // 派生我的伴侣 PID;/pet-owner.json 对不上号 = 我是孤儿,自毁
@@ -1208,23 +1210,25 @@ function run(argv){
   // 更新/重启后旧窗口残留,和新窗口一起抢同一份渲染文件,屏幕上「来回跳」。
   // 自毁判定走**本地计数器**(timer 自身递增,网络回调只清零):实测对死端口
   // sendAsynchronousRequest 的回调可能迟迟不来,靠回调数失联永远凑不满。
-  var lastOwnerGood = Date.now(), missTicks = 0;
+  var missTicks = 0;
   var ownerReq = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/pet-owner.json'));
   ownerReq.setTimeoutInterval(3);
   var petSelfDestruct = function(){
     win.orderOut($());
-    try { $.NSApplication.sharedApplication.terminate($()); } catch (e) {}
-    try { $.exit(0); } catch (e2) {}
+    $.exit(0);
   };
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
     missTicks++;
+    if (OWNER && String($.getppid()) !== OWNER) petSelfDestruct();
     if (missTicks >= 8) petSelfDestruct();   // ~16s 没有一次成功响应
     $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(ownerReq, $.NSOperationQueue.mainQueue, function(resp, data, err){
       if (data) {
-        missTicks = 0;
         try {
           var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
-          if (OWNER && o.ownerPid && String(o.ownerPid) !== OWNER) petSelfDestruct();
+          if (o && o.ok && o.ownerPid) {
+            if (OWNER && String(o.ownerPid) !== OWNER) petSelfDestruct();
+            missTicks = 0;
+          }
         } catch (e2) {}
       }
     });
@@ -1235,9 +1239,11 @@ function run(argv){
 }
 
 let petChild = null;
+let petGeneration = 0;
 let petVisible = false;   // whether the floating pet window is currently shown
 let petWords = [];        // 当前小词灵实际展示的词，供点击命中和记忆事件使用
 function stopPet() {
+  petGeneration++;
   petVisible = false;
   if (petChild) { try { petChild.kill(); } catch {} petChild = null; }
 }
@@ -1332,6 +1338,8 @@ function serverBase() {
 
 function buildMenuBarJXA(port, ownerPid) {
   return `ObjC.import('Cocoa');
+ObjC.import('stdlib');
+ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
   var PORT = '${port}';
   var OWNER = '${ownerPid || ''}';   // 派生本脚本的伴侣 PID;menu-status 回来对不上号就自毁
@@ -1397,16 +1405,17 @@ function run(argv){
     $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
       var st = null;
       if (data) {
-        lastGoodAt = Date.now();
         try { st = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js); } catch (e) {}
       }
       // 归属校验:端口上的服务不是「派生我的那个伴侣」时(比如我被杀后别的
       // 实例占了同一端口),继续活着只会变成幽灵图标 —— 立即自毁。
       if (OWNER && st && st.ownerPid && String(st.ownerPid) !== OWNER) {
-        try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e2) {}
-        $.NSApplication.sharedApplication.terminate($());
+        selfDestruct();
         return;
       }
+      // A bridged nil NSData can be truthy in JXA. Only a valid owner response
+      // counts as a heartbeat; an HTTP error or unparseable body never does.
+      if (st && st.ok && st.ownerPid) lastGoodAt = Date.now();
       var sig = data ? $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js : '';
       if (!force && sig === lastMenuSig) return;
       lastMenuSig = sig;
@@ -1426,16 +1435,17 @@ function run(argv){
       addItem(menu, '打开控制面板…', 'open:' + st.web, false);
       sep(menu);
       var u = st.update || {};
-      if (u.applying) {
+      if (st.appMode && u.applying) {
         addItem(menu, '正在更新到 v' + (u.target || '…') + '…', '', true);
-      } else if (u.error) {
+      } else if (st.appMode && u.error) {
         addItem(menu, '更新失败:' + String(u.error).slice(0, 40), '', true);
-        addItem(menu, '重试检查更新', 'update-check', false);
-      } else if (u.available && u.latest) {
+        addItem(menu, u.available ? '重试更新' : '重试检查更新', u.available ? 'update-apply' : 'update-check', false);
+      } else if (st.appMode && u.available && u.latest) {
         addItem(menu, '一键更新到 v' + u.latest, 'update-apply', false);
         addItem(menu, '当前 v' + u.current, '', true);
-      } else if (u.current) {
-        addItem(menu, u.checked ? '当前 v' + u.current + '(已是最新)' : '检查更新…', u.checked ? '' : 'update-check', false);
+      } else if (st.appMode) {
+        addItem(menu, '当前 v' + (u.current || st.version) + (u.checked ? '(已是最新)' : ''), '', true);
+        addItem(menu, '检查更新…', 'update-check', false);
       }
       if (u.available || u.applying) sep(menu);
       sep(menu);
@@ -1453,11 +1463,10 @@ function run(argv){
   ObjC.import('stdlib');
   function selfDestruct(){
     try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e) {}
-    try { $.NSApplication.sharedApplication.terminate($()); } catch (e) {}
-    try { $.exit(0); } catch (e) {}
+    $.exit(0);
   }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5, true, function(){
-    if (Date.now() - lastGoodAt > 15000) selfDestruct();
+    if ((OWNER && String($.getppid()) !== OWNER) || Date.now() - lastGoodAt > 15000) selfDestruct();
   });
   while (true) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); }
 }
@@ -1483,14 +1492,16 @@ function startMenuBar() {
   // 缓冲会整体冻结(定时器停摆,失联自毁永远跑不到 → 幽灵图标)。
   // stdio 'ignore' 时 child.stderr 为 null —— 不能再 .on('data')(真实崩溃:
   // TypeError 阻断伴侣启动,小词灵直接消失)。
-  menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'ignore'] });
-  menuBarChild.on('exit', () => { menuBarChild = null; });
+  const child = menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'ignore'] });
+  const clear = () => { if (menuBarChild === child) menuBarChild = null; };
+  child.on('error', clear);
+  child.on('exit', clear);
   menuBarChild.unref();
   console.log('[companion] 菜单栏图标已显示:小词灵/换一组/记忆本/检查更新/退出 都在这里');
 }
 
 /* 菜单栏命令与状态(仅本机回环,见 /menu.php) */
-let updateState = { applying: false, target: '', error: '', checked: false, available: false, latest: '', checkedAt: 0 };
+let updateState = { current: BUNDLED_VERSION, applying: false, target: '', error: '', checked: false, available: false, latest: '', checkedAt: 0 };
 function menuStatusPayload() {
   return {
     ok: true,
@@ -1505,20 +1516,36 @@ function menuStatusPayload() {
 function serverWebPort() {
   try { return Number(new URL(CFG.webOrigin).port) || 8770; } catch { return 8770; }
 }
-/* 向主服务查询更新状态(/api/update/check 是免登录只读端点)。 */
-function fetchServerUpdate(cb) {
-  const req = http.get(`${serverBase()}/api/update/check?refresh=1`, { timeout: 15000 }, res => {
+/* Shared server state keeps menu updates in sync with browser installs. */
+function fetchServerJson(endpoint, cb) {
+  let settled = false;
+  const done = (error, value) => { if (!settled) { settled = true; cb(error, value); } };
+  const req = http.get(`${serverBase()}${endpoint}`, {
+    timeout: 15000, headers: { 'X-WordPaper-Local': '1' },
+  }, res => {
     let body = '';
     res.on('data', c => { body += c; });
+    res.on('error', done);
     res.on('end', () => {
-      try {
-        const d = JSON.parse(body);
-        cb(null, { available: !!d.available, latest: d.latest || '', current: d.current || '' });
-      } catch (e) { cb(e); }
+      if (res.statusCode !== 200) return done(new Error('主服务返回 ' + res.statusCode));
+      let data;
+      try { data = JSON.parse(body); } catch (e) { return done(e); }
+      done(null, data);
     });
   });
-  req.on('error', err => cb(err));
-  req.on('timeout', () => { req.destroy(new Error('超时')); });
+  req.on('error', done);
+  req.on('timeout', () => req.destroy(new Error('超时')));
+}
+function fetchServerUpdate(cb) { fetchServerJson('/api/update/check?refresh=1', cb); }
+let menuUpdatePending = false;
+let menuStatusPending = false;
+function syncMenuUpdate() {
+  if (!APP_MODE || menuStatusPending || menuUpdatePending) return;
+  menuStatusPending = true;
+  fetchServerJson('/api/update/status-local', (err, info) => {
+    menuStatusPending = false;
+    if (!err && !menuUpdatePending) Object.assign(updateState, info);
+  });
 }
 function handleMenuCommand(cmd, res) {
   const jsonOut = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
@@ -1543,28 +1570,34 @@ function handleMenuCommand(cmd, res) {
         else {
           updateState.error = '';
           updateState.available = info.available; updateState.latest = info.latest;
-          updateState.current = info.current || BUNDLED_VERSION; updateState.checked = true; updateState.checkedAt = Date.now();
+          updateState.current = info.current || BUNDLED_VERSION; updateState.checked = !!info.checked; updateState.checkedAt = Date.now();
+          if (!info.checked) updateState.error = '暂时无法检查更新，请稍后重试';
         }
       });
       return jsonOut({ ok: true, checking: true });
     }
     case 'update-apply': {
       if (!APP_MODE || !BUNDLED_VERSION) return jsonOut({ ok: false, error: '开发模式不支持内置更新' });
-      if (updateState.applying) return jsonOut({ ok: true, applying: true });
+      if (updateState.applying || menuUpdatePending) return jsonOut({ ok: true, applying: true });
+      menuUpdatePending = true;
       fetchServerUpdate((err, info) => {
-        if (err || !info.available) { updateState.error = err ? '无法连接主服务' : '没有可用的新版本'; updateState.checked = true; return; }
+        if (err || !info.available) {
+          menuUpdatePending = false;
+          updateState.error = err ? '无法连接主服务' : '没有可用的新版本';
+          return;
+        }
         updateState.applying = true; updateState.error = ''; updateState.target = info.latest;
         const req = http.request(`${serverBase()}/api/update/apply-local`, { method: 'POST', timeout: 15000, headers: { 'X-WordPaper-Local': '1' } }, resp => {
           resp.resume();
           resp.on('end', () => {
+            menuUpdatePending = false;
             if (resp.statusCode !== 200) { updateState.applying = false; updateState.error = '主服务拒绝更新(' + resp.statusCode + ')'; }
+            syncMenuUpdate();
           });
         });
-        req.on('error', () => { updateState.applying = false; updateState.error = '更新请求失败'; });
+        req.on('error', () => { menuUpdatePending = false; updateState.applying = false; updateState.error = '更新请求失败'; });
+        req.on('timeout', () => req.destroy(new Error('更新请求超时')));
         req.end();
-        // server 落盘重启旗标后 hardExit;follow-server 会让本进程跟随退出,
-        // launcher 重入后新链接管 —— 菜单栏图标短暂消失再回来属预期。
-        setTimeout(() => { if (updateState.applying) updateState.error = '更新超时(6 分钟无进展)'; updateState.applying = false; }, 6 * 60 * 1000).unref();
       });
       return jsonOut({ ok: true, applying: true });
     }
@@ -1574,7 +1607,7 @@ function handleMenuCommand(cmd, res) {
       req.on('error', () => {});
       req.end();
       // server 会自行 shutdown;无论如何本进程稍后自杀,避免孤儿图标
-      setTimeout(() => process.exit(0), 1500).unref();
+      setTimeout(stopCompanion, 1500).unref();
       return jsonOut({ ok: true, quitting: true });
     }
     default:
@@ -1601,13 +1634,17 @@ function followServer() {
     serverMissCount++;
     if (serverMissCount >= 3) {
       console.log('[companion] 主服务已退出,伴侣跟随退出(服务链由 launcher 接管)');
-      stopPet();          // 先收自己的小词灵窗口,别让它变孤儿跟新伴侣抢屏(「跳动」根因)
-      stopMenuBar();
-      try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}   // 跟随时收起小词灵,重启后由新链恢复
-      process.exit(0);
+      stopCompanion();
     }
   });
   req.on('timeout', () => req.destroy(new Error('healthz 超时')));
+}
+
+function stopCompanion() {
+  stopPet();
+  stopMenuBar();
+  if (hotkeyChild) { try { hotkeyChild.kill(); } catch {} }
+  process.exit(0);
 }
 
 /* Render the pet card PNG at a given size (shared by spawn + live resize +
@@ -1633,7 +1670,7 @@ function renderPetPng(W, H, cb) {
   const doOne = (w, h, cbs) => {
     const picked = petFirstPassWords();
     petWords = picked;
-    const pngPath = path.join(os.tmpdir(), 'dw_pet.png');
+    const pngPath = path.join(os.tmpdir(), `dw_pet-${process.pid}.png`);
     const sig = petContentSig(picked, w, h);
     const done = (err) => {
       if (!err) lastPetSig = sig;
@@ -1666,6 +1703,7 @@ function resolvePetSize() {
 
 function startPet() {
   stopPet();
+  const generation = petGeneration;
   if (!isMac || !CFG.petEnabled) return;
   const closeFile = PET_CLOSED_PATH;
   if (fs.existsSync(closeFile)) { console.log('[companion] 小窗已被关闭（点 ✕），重启伴侣后恢复'); return; }
@@ -1680,10 +1718,11 @@ function startPet() {
     if (p && typeof p.x === 'number' && typeof p.y === 'number') savedPos = JSON.stringify({ x: p.x, y: p.y });
   } catch {}
   renderPetPng(W, H, (err) => {
+    if (generation !== petGeneration || fs.existsSync(closeFile)) return;
     if (err) { console.error('[companion] pet render failed:', err.message); return; }
-    const pngPath = path.join(os.tmpdir(), 'dw_pet.png');
+    const pngPath = path.join(os.tmpdir(), `dw_pet-${process.pid}.png`);
     const jxa = buildPetJXA(W, H);
-    const scriptPath = path.join(os.tmpdir(), 'dw_pet.jxa.js');
+    const scriptPath = path.join(os.tmpdir(), `dw_pet-${process.pid}.jxa.js`);
     fs.writeFileSync(scriptPath, jxa);
     const { spawn } = require('child_process');
     petVisible = true;
@@ -2604,14 +2643,11 @@ server.listen(CFG.port, '127.0.0.1', () => {
     // follow-server:主服务死亡 → 伴侣跟随退出(独立版恒开)
     followServer();
     setInterval(followServer, 5000).unref();
-    const cleanup = () => {
-      stopPet();
-      stopMenuBar();
-      if (hotkeyChild) { try { hotkeyChild.kill(); } catch {} }
-      process.exit(0);
-    };
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    syncMenuUpdate();
+    setInterval(syncMenuUpdate, 5000).unref();
+    setInterval(() => { if (process.env.WORDPAPER_TEST_MODE !== '1') startMenuBar(); }, 10000).unref();
+    process.on('SIGINT', stopCompanion);
+    process.on('SIGTERM', stopCompanion);
   } else {
     console.log('  （非 macOS：只提供网站，不改桌面壁纸 / 不做 OCR）');
   }

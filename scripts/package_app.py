@@ -67,7 +67,7 @@ VERSION = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
 VOLNAME = "WordPaper 每日壁纸"
 
 PAYLOAD_FILES = ["server.js", "companion.js", "package.json", "index.html", "login.html", "VERSION"]
-PAYLOAD_DIRS = ["lib", "css", "js", "data"]
+PAYLOAD_DIRS = ["lib", "css", "js", "data", "assets"]
 
 # Universal launcher stub: LaunchServices 只认 Mach-O 的架构;纯脚本可执行文件
 # 会被当成 Intel-only,Apple 芯片机器上弹「需要安装 Rosetta」。stub 找到同目录
@@ -112,7 +112,7 @@ NODE_DIST="darwin-arm64"; [ "$ARCH" = "x86_64" ] && NODE_DIST="darwin-x64"
 SHA_EXPECT="8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d"
 [ "$ARCH" = "x86_64" ] && SHA_EXPECT="d1b5e999db158c62fe8f7267a4476b035d8bd93b1a605bac24a3f0dd166e3316"
 RUNTIME_DIR="${WORDPAPER_RUNTIME_DIR:-$HOME/.wordpaper/runtime}"
-LOG_DIR="$HOME/Library/Logs/wordpaper"
+LOG_DIR="${WORDPAPER_LOG_DIR:-$HOME/Library/Logs/wordpaper}"
 mkdir -p "$LOG_DIR"
 SELFTEST="${WORDPAPER_SELFTEST:-0}"
 
@@ -179,10 +179,32 @@ if [ "$SELFTEST" = "1" ]; then echo "SELFTEST OK: NODE=$NODE"; "$NODE" -v; exit 
 # ── 应用内更新旗标:server.js 的 /api/update/apply 替换完 Resources 后写下此文件
 #    并自行退出;走到进程尾部的 launcher 看到它,清理后自动重启整个服务链,
 #    用户全程只需点一次「一键更新」。─────────────────────────────────
-UPDATE_FLAG="$HOME/.wordpaper/update-pending.json"
+APP_STATE="${WORDPAPER_DATA_DIR:-$HOME/.wordpaper}"
+mkdir -p "$APP_STATE"
+UPDATE_FLAG="$APP_STATE/update-pending.json"
 restart_requested() { [ -f "$UPDATE_FLAG" ]; }
 clear_restart_flag() { rm -f "$UPDATE_FLAG" 2>/dev/null; }
-clear_restart_flag
+# Serialize startup only; an already-running service is reused after this lock.
+START_LOCK="$APP_STATE/startup.lock"
+release_start_lock() {
+  if [ "$(cat "$START_LOCK/pid" 2>/dev/null)" = "$$" ]; then
+    rm -f "$START_LOCK/pid"
+    rmdir "$START_LOCK" 2>/dev/null || true
+  fi
+}
+LOCKED=0
+for _ in $(seq 1 80); do
+  if mkdir "$START_LOCK" 2>/dev/null; then echo "$$" >"$START_LOCK/pid"; LOCKED=1; break; fi
+  HOLDER="$(cat "$START_LOCK/pid" 2>/dev/null)"
+  case "$HOLDER" in
+    ''|*[!0-9]*) ;;
+    *) if ! kill -0 "$HOLDER" 2>/dev/null; then rm -f "$START_LOCK/pid"; rmdir "$START_LOCK" 2>/dev/null || true; fi ;;
+  esac
+  sleep 0.25
+done
+if [ "$LOCKED" != "1" ]; then wp_alert "WordPaper 正在启动，请稍后重试。"; exit 1; fi
+trap release_start_lock EXIT
+trap 'exit 0' INT TERM
 
 # ── 主服务 + 伴侣 ─────────────────────────────────────────────
 export HOST="${HOST:-127.0.0.1}"
@@ -208,10 +230,16 @@ sys.exit(1)' "$1"
 }
 # 端口粘滞:上次选过的口存 ~/.wordpaper/port.json,下次优先复用 — 浏览器书签/已开
 # 标签页的 localhost:PORT 在重启后仍然有效(否则每次自动换口,老标签页会 refused)。
-PORT_FILE="$HOME/.wordpaper/port.json"
+wordpaper_up() {
+  curl -fsS -m 3 "http://127.0.0.1:$1/healthz" 2>/dev/null | /usr/bin/python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); sys.exit(0 if d.get("ok") is True and d.get("mode") == "local" and "version" in d else 1)
+except Exception: sys.exit(1)'
+}
+PORT_FILE="$APP_STATE/port.json"
 if [ -z "${PORT:-}" ]; then
   SAVED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("port",""))' "$PORT_FILE" 2>/dev/null || true)"
-  if [ -n "$SAVED" ] && [ "$SAVED" = "$(pick_port "$SAVED")" ]; then
+  if [ -n "$SAVED" ] && { wordpaper_up "$SAVED" || [ "$SAVED" = "$(pick_port "$SAVED")" ]; }; then
     export PORT="$SAVED"
   else
     PICKED="$(pick_port 8770)"
@@ -238,33 +266,32 @@ COMP_PID=""
 cleanup() {
   [ -n "$COMP_PID" ] && kill "$COMP_PID" 2>/dev/null
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  release_start_lock
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 
-server_up() { curl -fsS -m 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; }
+server_up() { wordpaper_up "$PORT"; }
 companion_up() { curl -fsS -m 3 "http://127.0.0.1:$COMP_PORT/status.json" >/dev/null 2>&1; }
 
-# ── 版本闸门:在跑的实例版本和本包不一致时(比如没退旧版就装了新版),
-#    清掉**所有**从某个 WordPaper.app 启动的 server/companion —— 不按端口找,
-#    因为旧实例端口可能漂移(8770 被占时 launcher 会顺延),按端口扫会漏。
-#    别人/开发版实例(node 直接跑仓库目录)绝不乱动。
-#    旧版 healthz 不带 version 字段,读到空串也算不一致。────────────────
-bundle_process() {  # $1=pid;该进程的工作目录在某个 WordPaper.app 里才算我们的实例
+# Stop only the verified bundle processes bound to this service chain. A Slim
+# app may use cached/system Node, so inspect cwd instead of executable paths.
+bundle_process() {
   lsof -a -p "$1" -d cwd -Fn 2>/dev/null | grep -q "WordPaper.app/Contents/Resources"
 }
-sweep_old_bundle_instances() {
-  # pgrep 是 ERE:交替用 (server|companion),别用 BRE 转义 \(..\|..\) — 实测不匹配
-  for p in $(pgrep -f "WordPaper.app/Contents/Resources.*[sc](erver|ompanion)\\.js" 2>/dev/null); do
-    [ "$p" = "$$" ] && continue
-    bundle_process "$p" && kill "$p" 2>/dev/null
+stop_old_bundle_chain() {
+  for port in "$PORT" "$COMP_PORT"; do
+    for p in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
+      bundle_process "$p" && kill "$p" 2>/dev/null
+    done
   done
+  for _ in $(seq 1 40); do server_up || break; sleep 0.25; done
 }
 if server_up; then
   RUNNING_VER="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
   MY_VER="$(cat "$RES/VERSION" 2>/dev/null)"
   if [ -n "$MY_VER" ] && [ "$RUNNING_VER" != "$MY_VER" ]; then
-    sweep_old_bundle_instances
-    sleep 1
+    stop_old_bundle_chain
   fi
 fi
 
@@ -278,6 +305,7 @@ fi
 
 # ── 主服务 ──────────────────────────────────────────────────
 if ! server_up; then
+  clear_restart_flag
   "$NODE" server.js >>"$LOG_DIR/server.log" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 40); do
@@ -291,6 +319,7 @@ if ! server_up; then
 fi
 
 if [ "${WORDPAPER_SKIP_COMPANION:-0}" = "1" ]; then
+  release_start_lock
   echo "server up at :$PORT (companion skipped)"
   wait "$SERVER_PID"
   exit 0
@@ -302,7 +331,7 @@ fi
 STALE="$(lsof -nP -tiTCP:$COMP_PORT -sTCP:LISTEN 2>/dev/null || true)"
 if [ -n "$STALE" ]; then
   for p in $STALE; do
-    if ps -p "$p" -o command= 2>/dev/null | grep -q "companion.js"; then
+    if bundle_process "$p" && ps -p "$p" -o command= 2>/dev/null | grep -q "companion.js"; then
       kill "$p" 2>/dev/null || true
     else
       wp_alert "$(printf '端口 %s 被其它程序占用,小词灵无法启动。\n请退出占用该端口的程序后重新打开。' "$COMP_PORT")"
@@ -323,6 +352,7 @@ if ! kill -0 "$COMP_PID" 2>/dev/null; then
   wp_alert "$(printf '小词灵启动失败。\n请把日志文件发给开发者:\n%s/companion.log' "$LOG_DIR")"
   exit 1
 fi
+release_start_lock
 # ── wait server(核心守护循环)──────────────────────────────────
 # 生命周期以主 server 为准:server 正常退出(应用内更新落旗标 / 菜单栏「退出」/
 # SIGTERM),伴侣靠 companion.js 的 follow-server 在数秒内跟随退出;这里
@@ -477,7 +507,10 @@ def build_app(dest, bundled_arch):
     # RELEASE_SHA256.json — 应用内自更新(/api/update/apply)用它在 rsync 后
     # 校验各文件完整落地。逐文件记录「刚拷进本 bundle 的那一份」的摘要。
     import hashlib, json as _json
-    manifest = {"version": VERSION, "files": {}}
+    manifest = {"version": VERSION, "files": {}, "bundleFiles": {}}
+    for rel in ("MacOS/launcher.sh", "Info.plist"):
+        with open(os.path.join(dest, "Contents", rel), "rb") as f:
+            manifest["bundleFiles"][rel] = hashlib.sha256(f.read()).hexdigest()
     for name in PAYLOAD_FILES:
         digest = hashlib.sha256(open(os.path.join(res, name), "rb").read()).hexdigest()
         manifest["files"][name] = digest

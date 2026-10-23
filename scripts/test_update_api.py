@@ -6,7 +6,7 @@ def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 import http.cookiejar
-from urllib.request import Request, build_opener, HTTPCookieProcessor
+from urllib.request import Request, build_opener, HTTPCookieProcessor, urlopen
 opener = build_opener()   # replaced by cookie-processor opener inside main()
 
 def http_post(base, path, headers, body):
@@ -24,7 +24,7 @@ data_dir = tempfile.mkdtemp(prefix="wp-upd-local-")
 env = dict(os.environ, PORT=str(port), HOST="127.0.0.1", WORDPAPER_MODE="local", WORDPAPER_DATA_DIR=data_dir, NODE_ENV="test")
 env.pop("WORDPAPER_COMPANION_ENABLED", None)
 results = []
-server = subprocess.Popen(["node", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+server = subprocess.Popen(["node", "--require", "./scripts/fixtures/version_preload.cjs", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 def check(name, ok):
     results.append((name, bool(ok)))
     print(("PASS  " if ok else "FAIL  ") + name)
@@ -71,7 +71,7 @@ def free_port2():
 port2 = free_port2()
 data_dir2 = tempfile.mkdtemp(prefix="wp-upd-api2-")
 env2 = dict(os.environ, PORT=str(port2), HOST="127.0.0.1", WORDPAPER_MODE="public", WORDPAPER_DATA_DIR=data_dir2, NODE_ENV="test")
-server2 = subprocess.Popen(["node", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env2, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+server2 = subprocess.Popen(["node", "--require", "./scripts/fixtures/version_preload.cjs", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env2, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 try:
     from urllib.request import urlopen
     base2 = f"http://127.0.0.1:{port2}"
@@ -101,7 +101,7 @@ port3 = free_port3()
 data_dir3 = tempfile.mkdtemp(prefix="wp-upd-api3-")
 env3 = dict(os.environ, PORT=str(port3), HOST="127.0.0.1", WORDPAPER_MODE="local", WORDPAPER_DATA_DIR=data_dir3, NODE_ENV="test")
 env3.pop("WORDPAPER_COMPANION_ENABLED", None)
-server3 = subprocess.Popen(["node", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env3, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+server3 = subprocess.Popen(["node", "--require", "./scripts/fixtures/version_preload.cjs", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env3, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 try:
     base3 = f"http://127.0.0.1:{port3}"
     for _ in range(50):

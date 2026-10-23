@@ -9,12 +9,15 @@ const ROOT = path.join(__dirname, '..');
 const u = require(path.join(ROOT, 'lib', 'updater.js'));
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-upd-neg-'));
+process.env.WORDPAPER_DATA_DIR = path.join(tmp, 'state');
+process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
+
 const appPath = path.join(tmp, 'fakeRes', 'WordPaper.app');
 const resPath = path.join(appPath, 'Contents', 'Resources');
 fs.mkdirSync(resPath, { recursive: true });
 for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) fs.writeFileSync(path.join(resPath, f), 'stale');
 fs.writeFileSync(path.join(resPath, 'VERSION'), '2.2.3');
-for (const d of ['lib', 'css', 'js', 'data']) fs.mkdirSync(path.join(resPath, d), { recursive: true });
+for (const d of ['lib', 'css', 'js', 'data', 'assets']) fs.mkdirSync(path.join(resPath, d), { recursive: true });
 fs.writeFileSync(path.join(resPath, 'lib', 'updater.js'), 'x');
 fs.writeFileSync(path.join(resPath, 'js', 'app.js'), 'x');
 
@@ -22,7 +25,7 @@ const mountRes = path.join(tmp, 'dmgMount', 'WordPaper.app', 'Contents', 'Resour
 fs.mkdirSync(mountRes, { recursive: true });
 for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) fs.writeFileSync(path.join(mountRes, f), 'new');
 fs.writeFileSync(path.join(mountRes, 'VERSION'), '2.3.0');
-for (const d of ['lib', 'css', 'js', 'data']) fs.mkdirSync(path.join(mountRes, d), { recursive: true });
+for (const d of ['lib', 'css', 'js', 'data', 'assets']) fs.mkdirSync(path.join(mountRes, d), { recursive: true });
 fs.writeFileSync(path.join(mountRes, 'lib', 'updater.js'), '// ok');
 // CORRUPT: js/app.js has different content than manifest records
 fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// CLEAN');
@@ -90,7 +93,7 @@ u.__setHttpsGet((url, cb) => {
     check('损坏的安装包被拒绝', /校验失败|app\.js/.test(e.message));
     // verify the RUNNING resources were NOT touched (abort must happen before rsync)
     check('运行中 Resources 未被触碰', fs.readFileSync(path.join(resPath, 'VERSION'), 'utf8').trim() === '2.2.3');
-    const flagPath = path.join(os.homedir(), '.wordpaper', 'update-pending.json');
+    const flagPath = path.join(process.env.WORDPAPER_DATA_DIR, 'update-pending.json');
     check('失败时不写重启旗标', !fs.existsSync(flagPath));
     process.exit(failed ? 1 : 0);
   }

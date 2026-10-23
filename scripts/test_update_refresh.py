@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 port = free_port()
 data_dir = tempfile.mkdtemp(prefix="wp-upd-ref-")
 env = dict(os.environ, PORT=str(port), HOST="127.0.0.1", WORDPAPER_MODE="local",
@@ -17,7 +18,7 @@ def check(name, ok):
     results.append((name, bool(ok)))
     print(("PASS  " if ok else "FAIL  ") + name)
 
-server = subprocess.Popen(["node", "server.js"], cwd="/Users/xieshangchao/daily-wallpaper", env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+server = subprocess.Popen(["node", "--require", "./scripts/fixtures/version_preload.cjs", "server.js"], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 try:
     base = f"http://127.0.0.1:{port}"
     for _ in range(50):
@@ -29,7 +30,7 @@ try:
 
     # current=repo VERSION → upstream 同版本 → NOT available
     # (不钉死具体版本号,VERSION 前进时测试不用改)
-    repo_version = open("/Users/xieshangchao/daily-wallpaper/VERSION", encoding="utf-8").read().strip()
+    repo_version = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
     d = json.loads(opener.open(base + "/api/update/check?refresh=1", timeout=20).read())
     check("refresh=1 正常返回", "available" in d)
     check(f"当前版本={repo_version} 时不提示更新", d["available"] is False and d["current"] == repo_version)

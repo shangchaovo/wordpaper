@@ -134,6 +134,28 @@ setInterval(checkForUpdate, 24 * 60 * 60 * 1000).unref();
 function updateNotice() {
   return latestVersion && BUNDLED_VERSION && versionNewer(latestVersion, BUNDLED_VERSION) ? { latest: latestVersion } : null;
 }
+function updateStatus() {
+  return { applying: updateApplying, progress: updateProgress, error: updateError,
+    current: BUNDLED_VERSION || '', target: latestVersion || '', latest: latestVersion || '',
+    available: Boolean(updateNotice()), checked: Boolean(latestVersion) };
+}
+function beginUpdate(target) {
+  updateApplying = true;
+  updateError = '';
+  updateProgress = { fraction: 0, stage: 'download' };
+  updater.applyUpdate(BUNDLED_VERSION, target, (fraction, stage) => {
+    updateProgress = { fraction, stage };
+  }).then(() => {
+    updateProgress = { fraction: 1, stage: 'restart' };
+    // Only a successful install has a restart flag. Keep failed installs online.
+    setTimeout(shutdown, 1200);
+  }).catch(error => {
+    updateApplying = false;
+    updateProgress = null;
+    updateError = String(error.message || error);
+    console.error('[update] apply failed:', updateError);
+  });
+}
 storage.deleteExpiredEmailVerifications();
 setInterval(() => {
   storage.deleteExpiredSessions();
@@ -1059,6 +1081,7 @@ async function handle(req, res) {
       available: Boolean(updateNotice()),
       current: BUNDLED_VERSION || '',
       latest: latestVersion || '',
+      checked: Boolean(latestVersion),
       supported: Boolean(BUNDLED_VERSION && MODE === 'local' && process.platform === 'darwin'),
     });
     return;
@@ -1081,34 +1104,21 @@ async function handle(req, res) {
       return;
     }
     const target = latestVersion;
-    updateApplying = true;
-    // 不阻塞当前响应:阶段进度写到 updateProgress,前端轮询 /api/update/check 拿状态。
-    updater.applyUpdate(BUNDLED_VERSION, target, (fraction, stage) => {
-      updateProgress = { fraction, stage };
-    }).then(() => {
-      updateProgress = { fraction: 1, stage: 'restart' };
-    }).catch(error => {
-      updateApplying = false;
-      updateProgress = null;
-      updateError = String(error.message || error);
-      console.error('[update] apply failed:', error.message || error);
-    }).then(() => {
-      // 成功路径:给前端一帧时间读到最后状态,再退出。重启由 launcher.sh 完成。
-      setTimeout(() => { try { shutdown(); } catch {} }, 1200);
-    });
+    beginUpdate(target);
     json(res, 200, { ok: true, started: true, target });
     return;
   }
 
   if (pathname === '/api/update/status' && req.method === 'GET') {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
-    json(res, 200, {
-      applying: updateApplying,
-      progress: updateProgress,
-      error: updateError,
-      current: BUNDLED_VERSION || '',
-      target: latestVersion || '',
-    });
+    json(res, 200, updateStatus());
+    return;
+  }
+
+  if (pathname === '/api/update/status-local' && req.method === 'GET') {
+    if (!isLoopbackRequest(req) || req.headers['x-wordpaper-local'] !== '1') { json(res, 403, { error: '仅限本机菜单栏调用' }); return; }
+    if (MODE !== 'local') { json(res, 404, { error: 'Not Found' }); return; }
+    json(res, 200, updateStatus());
     return;
   }
 
@@ -1126,19 +1136,7 @@ async function handle(req, res) {
       return;
     }
     const targetLocal = latestVersion;
-    updateApplying = true;
-    updater.applyUpdate(BUNDLED_VERSION, targetLocal, (fraction, stage) => {
-      updateProgress = { fraction, stage };
-    }).then(() => {
-      updateProgress = { fraction: 1, stage: 'restart' };
-    }).catch(error => {
-      updateApplying = false;
-      updateProgress = null;
-      updateError = String(error.message || error);
-      console.error('[update] apply-local failed:', error.message || error);
-    }).then(() => {
-      setTimeout(() => { try { shutdown(); } catch {} }, 1200);
-    });
+    beginUpdate(targetLocal);
     json(res, 200, { ok: true, started: true, target: targetLocal });
     return;
   }
