@@ -1295,8 +1295,12 @@ function startHotkey() {
  * 每次命令完成后立即刷新。菜单栏脚本随伴侣进程存活,server 死亡时伴侣
  * follow-server 自杀,图标随 App 一同消失(不再有「看不见的僵尸实例」)。 */
 function serverBase() {
+  // 探测/内部调用一律 127.0.0.1,绝不用 localhost:Node 会先试 ::1,而主服务
+  // 只听 127.0.0.1 —— 双栈解析差异曾让 followServer 连续拒连误判「主服务已死」,
+  // 伴侣在主服务健康时自杀(小词灵消失、壁纸停更的真实事故)。
   const origin = localWebOrigin(CFG.webOrigin);
-  return origin || `http://localhost:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
+  if (origin) return origin.replace('//localhost:', '//127.0.0.1:');
+  return `http://127.0.0.1:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
 }
 
 function buildMenuBarJXA(port, ownerPid) {
@@ -1415,12 +1419,18 @@ function run(argv){
   rebuildMenu(true);
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(10, true, function(){ rebuildMenu(false); });
   // 伴侣进程崩溃/被杀后图标绝不能残留:连续 15s 拿不到状态就自我了断
-  // (正常周期 10s;0.5s 一轮 runUntilDate 保证能走到这里)。
+  // (正常周期 10s;0.5s 一轮 runUntilDate 保证能走到这里)。退出必须用
+  // stdlib exit —— terminate 在管道冻结等场景可能抛异常,而任何写向已死
+  // 父进程 stderr 管道的数据都会把本脚本冻死(64KB 缓冲写满即阻塞,
+  // 定时器全停 → 图标永远消失不掉,真实事故)。
+  ObjC.import('stdlib');
+  function selfDestruct(){
+    try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e) {}
+    try { $.NSApplication.sharedApplication.terminate($()); } catch (e) {}
+    try { $.exit(0); } catch (e) {}
+  }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5, true, function(){
-    if (Date.now() - lastGoodAt > 15000) {
-      try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e) {}
-      $.NSApplication.sharedApplication.terminate($());
-    }
+    if (Date.now() - lastGoodAt > 15000) selfDestruct();
   });
   while (true) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); }
 }
@@ -1442,7 +1452,9 @@ function startMenuBar() {
   const scriptPath = path.join(os.tmpdir(), `dw_menubar-${process.pid}.jxa.js`);
   try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
   const { spawn } = require('child_process');
-  menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+  // stderr 丢弃('ignore')而非 pipe:父进程死后没人读管道,子进程写满 64KB
+  // 缓冲会整体冻结(定时器停摆,失联自毁永远跑不到 → 幽灵图标)。
+  menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'ignore'] });
   menuBarChild.stderr.on('data', data => console.error('[companion] menu bar:', String(data).trim()));
   menuBarChild.on('exit', () => { menuBarChild = null; });
   menuBarChild.unref();
