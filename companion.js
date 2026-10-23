@@ -1299,10 +1299,11 @@ function serverBase() {
   return origin || `http://localhost:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
 }
 
-function buildMenuBarJXA(port) {
+function buildMenuBarJXA(port, ownerPid) {
   return `ObjC.import('Cocoa');
 function run(argv){
   var PORT = '${port}';
+  var OWNER = '${ownerPid || ''}';   // 派生本脚本的伴侣 PID;menu-status 回来对不上号就自毁
   var item = $.NSStatusBar.systemStatusBar.statusItemWithLength($.NSVariableStatusItemLength);
   var btn = item.button;
   btn.toolTip = 'WordPaper · 每日壁纸(点击打开菜单)';
@@ -1368,6 +1369,13 @@ function run(argv){
         lastGoodAt = Date.now();
         try { st = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js); } catch (e) {}
       }
+      // 归属校验:端口上的服务不是「派生我的那个伴侣」时(比如我被杀后别的
+      // 实例占了同一端口),继续活着只会变成幽灵图标 —— 立即自毁。
+      if (OWNER && st && st.ownerPid && String(st.ownerPid) !== OWNER) {
+        try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e2) {}
+        $.NSApplication.sharedApplication.terminate($());
+        return;
+      }
       var sig = data ? $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js : '';
       if (!force && sig === lastMenuSig) return;
       lastMenuSig = sig;
@@ -1421,12 +1429,18 @@ function run(argv){
 
 let menuBarChild = null;
 function stopMenuBar() {
-  if (menuBarChild) { try { menuBarChild.kill(); } catch {} menuBarChild = null; }
+  if (menuBarChild) {
+    try { menuBarChild.kill(); } catch {}
+    menuBarChild = null;
+  }
+  try { fs.unlinkSync(path.join(os.tmpdir(), `dw_menubar-${process.pid}.jxa.js`)); } catch {}
 }
 function startMenuBar() {
   if (!isMac || menuBarChild) return;
-  const scriptPath = path.join(os.tmpdir(), 'dw_menubar.jxa.js');
-  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
+  // 每个伴侣写自己的脚本副本(PID 烙进去),不共用 /tmp 同名文件 —— 共享文件
+  // 会让旧实例的菜单栏读到新 PORT,对着新实例显示幽灵图标(双图标 bug)。
+  const scriptPath = path.join(os.tmpdir(), `dw_menubar-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
   const { spawn } = require('child_process');
   menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'pipe'] });
   menuBarChild.stderr.on('data', data => console.error('[companion] menu bar:', String(data).trim()));
@@ -1440,6 +1454,7 @@ let updateState = { applying: false, target: '', error: '', checked: false, avai
 function menuStatusPayload() {
   return {
     ok: true,
+    ownerPid: process.pid,   // 菜单栏 JXA 靠它校验归属:对不上号 = 我是幽灵,自毁
     pet: petVisible,
     appMode: APP_MODE,
     version: BUNDLED_VERSION,
@@ -1774,8 +1789,52 @@ function wallpaperSignature(picked, W, H) {
   return [W, H, CFG.theme, CFG.layout, CFG.bgPattern, s.anchorWords, s.anchorReminders,
     s.offWords.x, s.offWords.y, s.offReminders.x, s.offReminders.y, s.showReminders, epoch, words, rems].join('|');
 }
+/* ── 跨进程壁纸互斥(双伴侣保险丝)────────────────────────────────
+ * 正常情况下这台机器只有一个伴侣;但误启动/测试残留/看门狗竞态可能同时跑两份,
+ * 各持一份内存 state 轮流推壁纸 → 「点了词又被旧词盖回去」。macOS 桌面壁纸是
+ * 物理共享资源,这里用 O_EXCL 锁文件保证同一时刻只有一个进程在推:
+ * 锁 30s 自动过期(渲染一般 <3s;持锁进程崩溃也不会永久卡死),拿不到锁的
+ * 调用直接跳过 —— 正主会推最新状态,跳过者不必补。 */
+const WALLPAPER_LOCK_PATH = path.join(os.tmpdir(), 'dw_wallpaper.lock');
+const WALLPAPER_LOCK_MS = 30000;
+function acquireWallpaperLock() {
+  const now = Date.now();
+  try {
+    fs.writeFileSync(WALLPAPER_LOCK_PATH, JSON.stringify({ pid: process.pid, at: now }), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (e && e.code === 'EEXIST') {
+      try {
+        const holder = JSON.parse(fs.readFileSync(WALLPAPER_LOCK_PATH, 'utf8'));
+        if (now - holder.at > WALLPAPER_LOCK_MS) {   // 过期锁:接管
+          try { fs.unlinkSync(WALLPAPER_LOCK_PATH); } catch {}
+          try { fs.writeFileSync(WALLPAPER_LOCK_PATH, JSON.stringify({ pid: process.pid, at: now }), { flag: 'wx' }); return true; } catch { return false; }
+        }
+        if (holder.pid === process.pid) {   // 自己持有(串行渲染队列可重入)
+          try { fs.writeFileSync(WALLPAPER_LOCK_PATH, JSON.stringify({ pid: process.pid, at: now })); return true; } catch {}
+          return true;
+      }
+      } catch {}
+      return false;
+    }
+    return false;
+  }
+}
+function releaseWallpaperLock() {
+  try {
+    const holder = JSON.parse(fs.readFileSync(WALLPAPER_LOCK_PATH, 'utf8'));
+    if (holder.pid === process.pid) fs.unlinkSync(WALLPAPER_LOCK_PATH);
+  } catch {}
+}
+
 function pushWallpaper(cb, opts) {
   const force = !!(opts && opts.force);
+  // 双伴侣保险丝:拿不到锁 = 另一个伴侣正在/刚刚推过壁纸,跳过本次,
+  // 避免两份内存 state 互相覆盖(用户看到「点了词又被旧词盖回去」)。
+  if (!acquireWallpaperLock()) {
+    console.error('[companion] 另一个伴侣进程正在推壁纸,本次跳过(双实例保护)');
+    return cb && cb(null, null);
+  }
   const today = dateKey(new Date());
   // 同步开启时壁纸 = 小词灵当前页词（单一事实源）；否则回退原有按日期/种子随机。
   let picked;
@@ -1791,6 +1850,7 @@ function pushWallpaper(cb, opts) {
   // another desktop import — that import is what fills 你的照片.
   // Pet-click sync still forces a render when the epoch changes.
   if (!force && sig === lastWallpaperSig && lastWallpaperPath && fs.existsSync(lastWallpaperPath)) {
+    releaseWallpaperLock();
     return cb && cb(null, lastWallpaperPath);
   }
   const settings = buildSettings();
@@ -1802,13 +1862,19 @@ function pushWallpaper(cb, opts) {
   // macOS keep a new 你的照片 card.
   const out = freshWallpaperFile('wallpaper');
   rasterizeSVG(svg, out, W, H, (err, png) => {
-    if (err) { console.error('[companion] render failed:', err.message); return cb && cb(err); }
+    if (err) {
+      releaseWallpaperLock();
+      console.error('[companion] render failed:', err.message);
+      return cb && cb(err);
+    }
     if (!CFG.autoSetWallpaper) {
+      releaseWallpaperLock();
       lastWallpaperSig = sig; lastWallpaperPath = out;
       console.log('[companion] rendered', out, '(autoSet off)');
       return cb && cb(null, out);
     }
     setMacWallpaper(out, (e2) => {
+      releaseWallpaperLock();
       cleanupOldWallpapers('wallpaper', out);
       if (e2) console.error('[companion] set wallpaper failed:', e2.message);
       else {
