@@ -114,15 +114,32 @@ details.card[open] > .card-body { animation: wp-unfold .34s var(--ease-out); }
 .modal-overlay:not([hidden]) .modal-card > :nth-child(5) { animation-delay: .14s; }
 .modal-overlay:not([hidden]) .modal-card > :nth-child(n+6) { animation-delay: .17s; }
 
-/* 记忆本词卡像一摞索引卡依次摊开 */
-.memory-modal:not([hidden]) .memory-entry:not(.answered) { animation: wp-card-in .44s var(--ease-out) backwards; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(2) { animation-delay: .03s; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(3) { animation-delay: .06s; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(4) { animation-delay: .09s; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(5) { animation-delay: .12s; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(6) { animation-delay: .15s; }
-.memory-modal:not([hidden]) .memory-entry:nth-child(n+7) { animation-delay: .18s; }
-@keyframes wp-card-in { from { opacity: 0; translate: 0 10px; rotate: -.6deg; } }
+/* 记忆本是长列表阅读区：双层 backdrop + 3D 玻璃高光会在滚动时反复重采样。
+ * 使用不透明纸面、静止遮罩，只让列表滚动；词卡不再逐张淡入或在 700ms 后重播。
+ * ID 选择器也覆盖 Liquid 的窄屏模糊规则，作答后的单卡反馈仍保留。 */
+html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stable; }
+#memory-modal { animation: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+#memory-modal .memory-card {
+  display: flex;
+  flex-direction: column;
+  max-height: min(88vh, calc(100dvh - 40px));
+  overflow: hidden;
+  background: var(--memory-paper, var(--paper));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: none;
+  will-change: auto;
+  animation: none;
+}
+:root[data-ui-theme="liquid"] #memory-modal { --memory-paper: #f7f7fa; }
+:root[data-ui-theme="darkliquid"] #memory-modal { --memory-paper: #161b26; }
+#memory-modal .memory-card::before, #memory-modal .memory-card::after { display: none; }
+#memory-modal .memory-card > * { flex-shrink: 0; animation: none; }
+#memory-modal .memory-notebook-list { flex-shrink: 1; min-height: 0; overscroll-behavior: contain; isolation: isolate; }
+#memory-modal .memory-entry.due:hover { transform: none; }
+@media (forced-colors: active) {
+  #memory-modal .memory-card { background: Canvas; }
+}
 
 /* ---------- 同步状态：前置小圆点，保存中呼吸，保存完落定 ---------- */
 .sync-status { display: inline-flex; align-items: center; gap: 5px; }

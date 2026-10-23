@@ -622,6 +622,10 @@ body.live .app { display: none; }
 /* ---------- support & feedback ---------- */
 .support-nav { color: var(--accent); border-color: var(--accent); background: var(--paper); }
 .support-nav.on { color: var(--accent-ink); background: var(--accent); }
+/* 顶栏「有新版本」徽标:印泥红点缀,点击跳到支持视图的一键更新 */
+.update-badge { color: #B3402A; border-color: rgba(179, 64, 42, .45); background: rgba(179, 64, 42, .08); animation: wp-badge-pulse 2.4s ease-in-out infinite; }
+.update-badge:hover { color: #fff8f0; background: #B3402A; }
+@keyframes wp-badge-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(179, 64, 42, .28); } 50% { box-shadow: 0 0 0 5px rgba(179, 64, 42, 0); } }
 .support-view { width: min(1040px, calc(100% - 40px)); margin: 28px auto 54px; }
 .support-back { margin: 0 0 15px; padding: 0; border: 0; color: var(--sub); background: transparent; font: 800 13px/1.4 var(--font); cursor: pointer; }
 .support-back:hover { color: var(--accent); }

@@ -416,11 +416,6 @@
   background: transparent;
   box-shadow: none;
 }
-/* 卡片进场动画只在本体首次渲染时播(.fresh-open 由 JS 在打开时刻挂,700ms 后摘)。
- * 否则记忆本每 15s 轮询重绘都重播一遍 — 用户看到滚动/停留时「闪屏」。 */
-:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .memory-modal.fresh-open .memory-entry {
-  animation: liquid-content-in .34s cubic-bezier(.2,.75,.25,1) backwards;
-}
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .panel-col > .card:last-child { border-bottom-color: transparent; }
 /* 隐藏模块按钮 + 恢复托盘:中性白玻璃,贴合 liquid 去蓝的苹果质感 */
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .module-hide-btn {

@@ -273,7 +273,7 @@
    * samples add restrained dispersion in Chromium; Safari and Firefox retain
    * the same white material, highlight and depth without SVG displacement. */
   function bindLiquidGlassMotion() {
-    const opticalSelector = '.top-actions.layout-actions, .meta-actions, .pet-dock, .stage, .modal-card';
+    const opticalSelector = '.top-actions.layout-actions, .meta-actions, .pet-dock, .stage, .modal-card:not(.memory-card)';
     const interactiveSelector = 'button, .btn, .chip, .pattern-chip, .seg-btn, .ui-theme-option';
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const reducedTransparency = window.matchMedia('(prefers-reduced-transparency: reduce)');
@@ -1937,12 +1937,7 @@
 
   function openMemoryNotebook() {
     if (!window.Review) return;
-    // 进场动画只在「刚打开」这一刻播;之后 15s 轮询重绘不再重播(闪屏根源之一)
     const modal = $('#memory-modal');
-    if (modal) {
-      modal.classList.add('fresh-open');
-      setTimeout(() => modal.classList.remove('fresh-open'), 700);
-    }
     if (!settings.srsEnabled) {
       settings.srsEnabled = true;
       const toggle = $('#chk-srs'); if (toggle) toggle.checked = true;
@@ -2519,6 +2514,7 @@
     const row = $('#update-row');
     const btn = $('#btn-update');
     const status = $('#update-status');
+    const badge = $('#btn-update-badge');
     if (!row || !btn || !status) return;
     let check;
     try { check = await (await fetch('/api/update/check', { cache: 'no-store' })).json(); }
@@ -2528,13 +2524,24 @@
     row.hidden = false;
     const csrf = () => { try { return window.Store.csrfToken() || ''; } catch { return ''; } };
     const render = (label, disabled) => { btn.textContent = label; btn.disabled = !!disabled; };
+    const showBadge = () => {
+      if (!badge) return;
+      badge.hidden = false;
+      badge.onclick = () => {
+        const open = $('#btn-open-support');
+        if (open) open.click();
+        setTimeout(() => { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350);
+      };
+    };
     const refreshLine = () => {
       if (check.available && check.latest) {
         status.textContent = '检测到新版本 v' + check.latest + ' · 数据不受影响';
         render('一键更新到 v' + check.latest, false);
+        if (badge) { badge.textContent = '● 新版本 v' + check.latest; showBadge(); }
       } else {
         status.textContent = '当前已是最新 v' + check.current;
         render('检查新版本', false);
+        if (badge) badge.hidden = true;
       }
     };
     refreshLine();
@@ -2565,11 +2572,12 @@
     function startPolling(target) {
       clearInterval(updatePolling);
       render('正在更新…', true);
-      let ticks = 0;
+      let ticks = 0, reconnects = 0;
       updatePolling = setInterval(async () => {
         ticks++;
         try {
           const st = await (await fetch('/api/update/status', { cache: 'no-store' })).json();
+          reconnects = 0;
           if (st.applying) {
             const stage = st.progress && st.progress.stage || '';
             const label = stage === 'verify' ? '校验完整性…' : stage === 'mount' ? '挂载安装包…'
@@ -2578,7 +2586,7 @@
             status.textContent = '更新到 v' + (st.target || target) + ': ' + label;
           } else if (st.error) {
             clearInterval(updatePolling); updatePolling = null;
-            status.textContent = '更新失败,请到 GitHub Releases 手动下载';
+            status.textContent = '更新失败,请稍后重试或到 GitHub Releases 手动下载';
             render('重试', false);
             toast('更新失败: ' + st.error);
           } else if (ticks > 360) {   // 6 分钟墙钟:下载停滞/总超时应已被 server 端杀掉;这里是 UI 兜底
@@ -2587,9 +2595,26 @@
             render('重试', false);
           }
         } catch {
-          // server 正在重启,请求失败属预期:提示并停止轮询
-          clearInterval(updatePolling); updatePolling = null;
+          // server 正在重启:请求失败属预期。持续重连(最多 5 分钟),服务回来
+          // 且版本号已变成目标版本时自动刷新页面 —— 用户不用手动 F5。
+          if (ticks > 360 || ++reconnects > 300) {
+            clearInterval(updatePolling); updatePolling = null;
+            status.textContent = '更新后服务没有回来,请重新打开 WordPaper';
+            render('重试', false);
+            return;
+          }
           status.textContent = '更新完成,正在重启…';
+          try {
+            const re = await (await fetch('/api/update/check', { cache: 'no-store' })).json();
+            if (re && re.supported && re.current && re.current !== target) return;   // 还在旧版本?继续等
+            if (re && re.current === target) {
+              clearInterval(updatePolling); updatePolling = null;
+              status.textContent = '已更新到 v' + target + ' ✓';
+              render('已是最新', true);
+              toast('WordPaper 已更新到 v' + target + ',刷新页面');
+              setTimeout(() => window.location.reload(), 1200);
+            }
+          } catch { /* 还没起来,下一秒再试 */ }
         }
       }, 1000);
     }
