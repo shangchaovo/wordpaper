@@ -905,6 +905,7 @@ ObjC.import('Cocoa');
 ObjC.import('QuartzCore');
 function run(argv){
   var pngPath = argv[0], corner = argv[1], posFile = argv[2], savedPos = argv[3], closeFile = argv[4], W = ${W}, H = ${H};
+  var OWNER = argv[5] || '';   // 派生我的伴侣 PID;/pet-owner.json 对不上号 = 我是孤儿,自毁
   var TRANSITION = ${JSON.stringify(CFG.petTransition || 'dissolve-pop')};
   var META = ${meta};
   var BTN = META.btn, FRAME = META.frame, FOOTERH = META.footerH, RSZ = META.rsz, MINW = META.minW, MINH = META.minH, MAXS = META.max, PORT = META.port, COUNT = META.count, KEYS = META.wordKeys, skinDark = META.dark === true;
@@ -1202,6 +1203,32 @@ function run(argv){
     $.NSString.stringWithString(s).writeToFileAtomicallyEncodingError(posFile, true, $.NSUTF8StringEncoding, $());
   }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(3, true, function(){ savePos(); });
+  // 孤儿自毁心跳:每 2s 问一次「8771 上的伴侣还是派生我的那个吗」。伴侣已死
+  // (失联 ~16s)或端口被新伴侣接管(ownerPid 变了)时,本窗口立即退出 —— 否则
+  // 更新/重启后旧窗口残留,和新窗口一起抢同一份渲染文件,屏幕上「来回跳」。
+  // 自毁判定走**本地计数器**(timer 自身递增,网络回调只清零):实测对死端口
+  // sendAsynchronousRequest 的回调可能迟迟不来,靠回调数失联永远凑不满。
+  var lastOwnerGood = Date.now(), missTicks = 0;
+  var ownerReq = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/pet-owner.json'));
+  ownerReq.setTimeoutInterval(3);
+  var petSelfDestruct = function(){
+    win.orderOut($());
+    try { $.NSApplication.sharedApplication.terminate($()); } catch (e) {}
+    try { $.exit(0); } catch (e2) {}
+  };
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
+    missTicks++;
+    if (missTicks >= 8) petSelfDestruct();   // ~16s 没有一次成功响应
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(ownerReq, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      if (data) {
+        missTicks = 0;
+        try {
+          var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+          if (OWNER && o.ownerPid && String(o.ownerPid) !== OWNER) petSelfDestruct();
+        } catch (e2) {}
+      }
+    });
+  });
   $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   $.NSApplication.sharedApplication.run;
 }`;
@@ -1574,6 +1601,8 @@ function followServer() {
     serverMissCount++;
     if (serverMissCount >= 3) {
       console.log('[companion] 主服务已退出,伴侣跟随退出(服务链由 launcher 接管)');
+      stopPet();          // 先收自己的小词灵窗口,别让它变孤儿跟新伴侣抢屏(「跳动」根因)
+      stopMenuBar();
       try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}   // 跟随时收起小词灵,重启后由新链恢复
       process.exit(0);
     }
@@ -1658,7 +1687,7 @@ function startPet() {
     fs.writeFileSync(scriptPath, jxa);
     const { spawn } = require('child_process');
     petVisible = true;
-    const child = petChild = spawn('osascript', ['-l', 'JavaScript', scriptPath, pngPath, CFG.petCorner || 'top-right', posFile, savedPos, closeFile], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = petChild = spawn('osascript', ['-l', 'JavaScript', scriptPath, pngPath, CFG.petCorner || 'top-right', posFile, savedPos, closeFile, String(process.pid)], { stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr.on('data', data => console.error('[companion] pet window:', String(data).trim()));
     child.on('error', () => { if (petChild === child) { petChild = null; petVisible = false; } });
     child.on('exit', (code, signal) => {
@@ -1819,7 +1848,8 @@ function acquireWallpaperLock() {
     if (e && e.code === 'EEXIST') {
       try {
         const holder = JSON.parse(fs.readFileSync(WALLPAPER_LOCK_PATH, 'utf8'));
-        if (now - holder.at > WALLPAPER_LOCK_MS) {   // 过期锁:接管
+        const holderAlive = holder.pid !== process.pid && (() => { try { process.kill(holder.pid, 0); return true; } catch { return false; } })();
+        if (now - holder.at > WALLPAPER_LOCK_MS || !holderAlive) {   // 过期锁/持锁进程已死:接管
           try { fs.unlinkSync(WALLPAPER_LOCK_PATH); } catch {}
           try { fs.writeFileSync(WALLPAPER_LOCK_PATH, JSON.stringify({ pid: process.pid, at: now }), { flag: 'wx' }); return true; } catch { return false; }
         }
@@ -2503,6 +2533,11 @@ const server = http.createServer((req, res) => {
     if (req.headers['x-wordpaper-local'] !== '1') { res.writeHead(403); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify(menuStatusPayload()));
+  }
+  // 小词灵窗口的归属心跳(孤儿窗口靠它发现「伴侣已换人」并自毁)
+  if (url === '/pet-owner.json') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: true, ownerPid: process.pid }));
   }
   // 菜单栏点击:召唤/隐藏小词灵、换一组、检查更新、一键更新、退出
   if (url === '/menu.php') {
