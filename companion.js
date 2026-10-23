@@ -1454,8 +1454,9 @@ function startMenuBar() {
   const { spawn } = require('child_process');
   // stderr 丢弃('ignore')而非 pipe:父进程死后没人读管道,子进程写满 64KB
   // 缓冲会整体冻结(定时器停摆,失联自毁永远跑不到 → 幽灵图标)。
+  // stdio 'ignore' 时 child.stderr 为 null —— 不能再 .on('data')(真实崩溃:
+  // TypeError 阻断伴侣启动,小词灵直接消失)。
   menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'ignore'] });
-  menuBarChild.stderr.on('data', data => console.error('[companion] menu bar:', String(data).trim()));
   menuBarChild.on('exit', () => { menuBarChild = null; });
   menuBarChild.unref();
   console.log('[companion] 菜单栏图标已显示:小词灵/换一组/记忆本/检查更新/退出 都在这里');
