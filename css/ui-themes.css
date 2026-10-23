@@ -1579,3 +1579,134 @@
     0 20px 48px rgba(0,0,0,.24);
 }
 :root[data-ui-theme="darkliquid"] .support-icon { background: rgba(90,120,180,.24); }
+
+/* Identity and quieter workspace surfaces. Reuse the shipped WordPaper artwork. */
+:root .app .logo.brand-art {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  transform: none;
+  animation: none;
+}
+:root .app .logo.brand-art::before,
+:root .app .logo.brand-art::after { content: none; }
+.logo.brand-art img { display: block; width: 60px; height: 60px; max-width: none; }
+
+/* The book and orbit replace the character portrait, with one restrained status light. */
+:root .app .pet-dock .pet-dock-face {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent-2) 7%, var(--paper));
+  box-shadow: none;
+  overflow: hidden;
+  animation: none;
+  transform: none;
+  rotate: none;
+  scale: none;
+}
+:root .app .pet-dock-face::before,
+:root .app .pet-dock-face::after { content: none; }
+.pet-dock-face .pet-orbit { opacity: .38; }
+:root[data-ui-theme="anime"] .pet-dock::after { display: none; }
+:root .app .pet-dock-copy b { font-family: var(--font); font-weight: 650; letter-spacing: .025em; }
+:root .app .pet-dock-copy span { font-size: 11px; }
+:root .app .pet-dock-fx select { min-height: 30px; padding: 4px 8px; border-radius: 8px; }
+:root .app .pet-dock-fx select:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; }
+:root .app .pet-dock-fx select option { color: var(--ink); background: var(--paper); }
+.preview { container-type: inline-size; container-name: preview; }
+:root .app .pet-dock {
+  display: grid;
+  grid-template-columns: 44px minmax(130px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+@container preview (max-width: 760px) {
+  :root .app .pet-dock { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px 12px; }
+  .pet-dock-face { grid-column: 1; grid-row: 1; }
+  .pet-dock-copy { grid-column: 2; grid-row: 1; }
+  .pet-dock-actions { grid-column: 3; grid-row: 1; width: auto; }
+  .pet-dock-fx { grid-column: 2; grid-row: 2; }
+  .pet-dock-sync { grid-column: 3; grid-row: 2; justify-self: end; }
+}
+@container preview (max-width: 440px) {
+  .pet-dock-copy { grid-column: 2 / -1; }
+  .pet-dock-fx { grid-column: 1 / 3; }
+  .pet-dock-actions { grid-column: 1 / -1; grid-row: 3; width: 100%; }
+  .pet-dock-actions .btn { flex: 1; }
+}
+
+/* The selection moves between real button bounds; without JS, the original buttons remain. */
+:root .ui-theme-picker { position: relative; isolation: isolate; }
+:root .ui-theme-picker > * { position: relative; z-index: 1; }
+:root .ui-theme-picker.has-theme-pill::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--pill-width);
+  height: var(--pill-height);
+  translate: var(--pill-x) var(--pill-y);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-2) 12%, var(--paper));
+  box-shadow: 0 2px 7px color-mix(in srgb, var(--ink) 6%, transparent);
+  pointer-events: none;
+}
+:root .ui-theme-picker.theme-pill-ready::before { transition: translate .24s cubic-bezier(.22,1,.36,1), width .24s ease; }
+:root .ui-theme-picker.has-theme-pill .ui-theme-option.on {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+:root .ui-theme-picker .ui-theme-option:hover { transform: none; }
+
+/* Dark glass needs its own material, including the header and panel edge. */
+:root[data-ui-theme="darkliquid"] {
+  color-scheme: dark;
+  --studio-edge: rgba(164,184,220,.18);
+  --studio-panel: linear-gradient(150deg, #1d2535, #171e2c);
+  --studio-shadow: 0 8px 28px rgba(0,0,0,.15), inset 0 1px 0 rgba(194,211,244,.04);
+}
+:root[data-ui-theme="darkliquid"] .topbar { background: linear-gradient(to bottom, rgba(19,25,38,.9), transparent); }
+:root[data-ui-theme="darkliquid"] :is(.top-actions.layout-actions, .meta-actions, .panel-col, .pet-dock, .word-inspector) {
+  border-color: var(--studio-edge);
+  background: var(--studio-panel);
+  box-shadow: var(--studio-shadow);
+}
+:root[data-ui-theme="darkliquid"] .panel-col { border-radius: 20px; }
+:root[data-ui-theme="darkliquid"] :is(.top-actions.layout-actions, .meta-actions) { border-radius: 16px; }
+:root[data-ui-theme="darkliquid"] [data-liquid-optic]::before { opacity: .16; }
+:root[data-ui-theme="darkliquid"] [data-liquid-optic]::after { opacity: .18; }
+:root[data-ui-theme="darkliquid"] [data-liquid-optic].liquid-illuminated::after { opacity: .3; }
+:root[data-ui-theme="darkliquid"] .account-link { color: var(--sub); }
+:root[data-ui-theme="darkliquid"] .account-link:hover { color: var(--ink); }
+:root[data-ui-theme="darkliquid"] .pet-dock-main { box-shadow: none; }
+:root[data-ui-theme="darkliquid"] .btn.primary { box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 3px 10px rgba(0,0,0,.12); }
+:root[data-ui-theme="darkliquid"] :is(.btn.soft, .pet-memory-shortcut, .support-nav) { box-shadow: none; }
+:root[data-ui-theme="darkliquid"] .lib-card { box-shadow: none; }
+:root[data-ui-theme="darkliquid"] .lib-card.on { box-shadow: inset 2px 0 0 var(--accent-2); }
+:root[data-ui-theme="darkliquid"] .lib-icon { box-shadow: none; }
+:root[data-ui-theme="darkliquid"] .stage { border-color: var(--studio-edge); box-shadow: 0 16px 40px rgba(0,0,0,.25); }
+:root[data-ui-theme="darkliquid"] .tagline { color: var(--sub); }
+
+/* Keep accessibility material fallbacks stronger than the decorative pass. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-ui-theme="darkliquid"] { --studio-panel: #1b2332; }
+}
+@media (prefers-contrast: more) {
+  :root[data-ui-theme="darkliquid"] { --studio-edge: #a0b1cd; --studio-panel: #101723; }
+}
+@media (forced-colors: active) {
+  :root[data-ui-theme="darkliquid"] { --studio-edge: ButtonText; --studio-panel: Canvas; --studio-shadow: none; }
+  :root .app .pet-dock .pet-dock-face { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  :root .ui-theme-picker.has-theme-pill::before { background: Canvas; border-color: Highlight; }
+}

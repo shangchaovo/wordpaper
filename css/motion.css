@@ -21,22 +21,16 @@
    动画开始时逐张提升为合成层、结束时再合并回去，整片侧栏要重新光栅化两次。
    统一成同一个动画名，换主题时就不会重播。 */
 @keyframes wp-card-enter { from { opacity: 0; translate: 0 8px; } }
-:root:root .app .card { animation: wp-card-enter .38s var(--ease-out) backwards; }
+:root:root .app .card { animation: none; }
+:root:root .app .card.motion-enter { animation: wp-card-enter .36s var(--ease-out) backwards; }
 :root:root .app .panel-col > .card:nth-child(2) { animation-delay: .04s; }
 :root:root .app .panel-col > .card:nth-child(3) { animation-delay: .08s; }
 :root:root .app .panel-col > .card:nth-child(4) { animation-delay: .12s; }
 :root:root .app .panel-col > .card:nth-child(n+5) { animation-delay: .16s; }
 
-html.theme-switching *, html.theme-switching *::before, html.theme-switching *::after { transition: none !important; }
-
-/* ---------- 界面主题：新主题底色从点击处圆形铺满，再淡出（JS 驱动） ---------- */
-.theme-wash {
-  position: fixed;
-  z-index: 9999;
-  border-radius: 50%;
-  pointer-events: none;
-  transform: scale(0);
-  will-change: transform, opacity;
+/* Only small surfaces transition: no full-screen overlay or perpetual motion. */
+html.theme-switching :is(.topbar, .pet-dock, .lib-card, .ui-theme-option) {
+  transition: color .24s ease, border-color .24s ease, background-color .24s ease;
 }
 
 /* ---------- 预览换内容：旧画面虚化上飘，新画面从下方浮起 ---------- */
@@ -48,10 +42,10 @@ html.theme-switching *, html.theme-switching *::before, html.theme-switching *::
   box-shadow: none !important;
   animation: none;
 }
-.stage > canvas.preview-ghost.out { animation: wp-ghost-out .44s cubic-bezier(.4, 0, .2, 1) forwards; }
-@keyframes wp-ghost-out { to { opacity: 0; translate: 0 -12px; scale: 1.02; } }
-#preview-canvas.preview-swap-in { animation: wp-swap-in .6s .04s var(--ease-out) backwards; }
-@keyframes wp-swap-in { from { opacity: 0; translate: 0 16px; scale: .975; } }
+.stage > canvas.preview-ghost.out { animation: wp-ghost-out .28s cubic-bezier(.4, 0, .2, 1) forwards; }
+@keyframes wp-ghost-out { to { opacity: 0; translate: 0 -4px; } }
+#preview-canvas.preview-swap-in { animation: wp-swap-in .34s .02s var(--ease-out) backwards; }
+@keyframes wp-swap-in { from { opacity: 0; translate: 0 6px; } }
 
 /* 「换一组」的刷新图标每次点击转一圈 */
 .btn .btn-ic { display: inline-block; width: 13px; height: 13px; margin: -2px 5px -2px -1px; vertical-align: -2px; stroke-width: 2.3; }
@@ -73,20 +67,10 @@ html.theme-switching *, html.theme-switching *::before, html.theme-switching *::
   font-variant-numeric: tabular-nums;
 }
 .lib-card .lib-body .lib-count::after { content: "·"; margin: 0 3px; color: var(--sub); opacity: .55; font-weight: 400; }
-.lib-card.just-picked { animation: wp-pick .5s var(--ease-spring); }
-.lib-card.just-picked .lib-icon { animation: wp-pick-icon .62s var(--ease-spring); }
-.lib-card.just-picked::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  border: 2px solid var(--accent);
-  pointer-events: none;
-  animation: wp-ring .62s ease-out forwards;
-}
-@keyframes wp-pick { 0% { scale: .95; } 55% { scale: 1.035; } 100% { scale: 1; } }
-@keyframes wp-pick-icon { 0% { rotate: -16deg; scale: .78; } 60% { rotate: 7deg; scale: 1.16; } 100% { rotate: 0deg; scale: 1; } }
-@keyframes wp-ring { from { opacity: .75; scale: 1; } to { opacity: 0; scale: 1.1; } }
+.lib-card.just-picked { animation: wp-pick .26s var(--ease-out); }
+.lib-card.just-picked .lib-icon { animation: wp-pick-icon .32s var(--ease-out); }
+@keyframes wp-pick { from { scale: .985; } to { scale: 1; } }
+@keyframes wp-pick-icon { from { translate: 0 2px; } to { translate: 0 0; } }
 
 /* 配色 / 纹理选中后同样给一个落定的回弹 */
 .pattern-chip.on { animation: wp-pick .42s var(--ease-spring); }
@@ -157,9 +141,12 @@ html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stab
 @keyframes wp-settle { 0% { scale: .3; } 60% { scale: 1.45; } 100% { scale: 1; } }
 
 /* ---------- 桌面小词灵条 ---------- */
-.pet-dock-face { transition: rotate .4s var(--ease-spring), scale .4s var(--ease-spring); }
-.pet-dock:hover .pet-dock-face { rotate: -8deg; scale: 1.06; }
-.pet-dock[data-state="active"] .pet-dock-face { animation: wp-pick-icon .66s var(--ease-spring); }
+.pet-pages { transform-origin: center; transition: transform .25s var(--ease-out); }
+@media (hover: hover) {
+  .pet-dock:hover .pet-pages { transform: translateY(-1px); }
+}
+.pet-dock[data-state="checking"] .pet-orbit-point { animation: wp-pulse 1.4s ease-in-out infinite; }
+.pet-dock[data-state="active"] .pet-orbit-point { animation: wp-settle .4s var(--ease-out); }
 /* 状态文案允许折成两行，不再被省略号吃掉一半 */
 .pet-dock-copy span {
   display: -webkit-box;
@@ -171,7 +158,7 @@ html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stab
 /* 「换词特效 / 同步壁纸」的浅色字原本是给深色小词灵条用的；
    Liquid 与校样的小词灵条是浅底，需要换回正文色才看得见 */
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"], [data-ui-theme="editorial"]) :is(.pet-dock-fx, .pet-dock-sync) { color: var(--sub); }
-:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"], [data-ui-theme="editorial"]) .pet-dock-fx select {
+:root:is([data-ui-theme="liquid"], [data-ui-theme="editorial"]) .pet-dock-fx select {
   color: var(--ink);
   border-color: var(--line-strong);
   background: rgba(255, 255, 255, .72);
@@ -223,3 +210,14 @@ html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stab
 
 /* 手动添加单词：「释义」原本落单占半行 */
 .nw-grid #nw-meaning { grid-column: 1 / -1; }
+
+/* Motion preferences also cover transforms triggered by hover and JS state. */
+@media (prefers-reduced-motion: reduce) {
+  :root:root .app .card.motion-enter { animation: none; }
+  .pet-pages { transition: none; transform: none !important; }
+  .pet-orbit-point { animation: none !important; }
+  :root .ui-theme-picker::before { transition: none; }
+}
+@media print {
+  :root:root .app * { animation: none !important; opacity: 1; }
+}

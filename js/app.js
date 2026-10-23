@@ -67,7 +67,7 @@
   let activeLibraryBrowser = null;
   let activeLibraryWords = [];
   let moduleEditing = false;
-  let liquidTransitionTimer = null;
+  let themeTransitionTimer = null;
   const MODULE_DEFAULTS = {
     left: ['module-library', 'module-reminders', 'module-srs', 'module-automation'],
     right: ['module-appearance', 'module-custom'],
@@ -128,23 +128,12 @@
     const next = UI_THEMES.has(theme) ? theme : 'liquid';
     const root = document.documentElement;
     settings.uiTheme = next;
-    // 换主题时几百个控件的背景 / 阴影 / 圆角都配了 transition，会一起逐帧过渡重绘；
-    // 换的这两帧里先关掉过渡，让新主题一步到位。
     if (root.dataset.uiTheme !== next) {
+      clearTimeout(themeTransitionTimer);
       root.classList.add('theme-switching');
-      requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
+      themeTransitionTimer = setTimeout(() => root.classList.remove('theme-switching'), 280);
     }
     root.dataset.uiTheme = next;
-    clearTimeout(liquidTransitionTimer);
-    root.classList.remove('liquid-materializing');
-    if (persist && (next === 'liquid' || next === 'darkliquid') && !themeWashing
-      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      // Apple-style materialisation: the edge light resolves into place instead
-      // of treating the theme as a flat colour fade.
-      void root.offsetWidth;
-      root.classList.add('liquid-materializing');
-      liquidTransitionTimer = setTimeout(() => root.classList.remove('liquid-materializing'), 680);
-    }
     $$('.ui-theme-option').forEach(button => {
       const active = button.dataset.uiTheme === next;
       button.classList.toggle('on', active);
@@ -172,59 +161,38 @@
     document.dispatchEvent(new CustomEvent('wordpaper:ui-theme-change', { detail: { theme: next } }));
   }
 
-  /* 新主题的底色从点击处圆形铺满屏幕，在它下面换主题，再淡出露出新界面。
-   * 换主题要整页重算样式 + 重新光栅化（100–200ms），这段卡顿被纯色遮住；圆的放大
-   * 和淡出只动 transform / opacity，由合成线程驱动，主线程忙的时候也不掉帧。
-   * （View Transition 要截两张全屏快照、clip-path 还得主线程逐帧算，实测更卡。） */
-  const THEME_WASH = { anime: '#f4effe', editorial: '#efeae0', liquid: '#fbfbfc', darkliquid: '#141824' };
-  let themeWash = null;
-  let themeWashing = false;
-  function revealUITheme(theme, origin, event) {
-    const root = document.documentElement;
-    if (themeWash) themeWash.finish();
-    if (theme === root.dataset.uiTheme || window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      || typeof Element.prototype.animate !== 'function') { applyUITheme(theme, true); return; }
-    const rect = origin.getBoundingClientRect();
-    const x = event && event.detail > 0 ? event.clientX : rect.left + rect.width / 2;
-    const y = event && event.detail > 0 ? event.clientY : rect.top + rect.height / 2;
-    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
-    const size = 240;
-    const el = document.createElement('div');
-    el.className = 'theme-wash';
-    Object.assign(el.style, {
-      left: (x - size / 2) + 'px', top: (y - size / 2) + 'px',
-      width: size + 'px', height: size + 'px', background: THEME_WASH[theme] || '#fff',
-    });
-    document.body.appendChild(el);
-    let applied = false;
-    const apply = () => {
-      if (applied) return;
-      applied = true;
-      themeWashing = true;
-      applyUITheme(theme, true);
-      themeWashing = false;
+  function bindInterfaceMotion() {
+    const picker = $('#ui-theme-picker');
+    let frame = 0;
+    const positionPill = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const active = picker.querySelector('.ui-theme-option.on');
+        if (!active) return;
+        picker.style.setProperty('--pill-x', active.offsetLeft + 'px');
+        picker.style.setProperty('--pill-y', active.offsetTop + 'px');
+        picker.style.setProperty('--pill-width', active.offsetWidth + 'px');
+        picker.style.setProperty('--pill-height', active.offsetHeight + 'px');
+        picker.classList.add('has-theme-pill');
+        requestAnimationFrame(() => picker.classList.add('theme-pill-ready'));
+      });
     };
-    const wash = {
-      finish() { clearTimeout(wash.timer); apply(); el.remove(); if (themeWash === wash) themeWash = null; },
-    };
-    themeWash = wash;
-    const grow = el.animate(
-      [{ transform: 'scale(0)' }, { transform: `scale(${(radius * 2) / size + 0.15})` }],
-      { duration: 380, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' },
-    );
-    const reveal = () => {
-      if (themeWash !== wash) return;
-      apply();
-      // 等新主题至少画出两帧再淡出，免得露出还没光栅化完的半成品。
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (themeWash !== wash) return;
-        el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, easing: 'ease-out', fill: 'forwards' })
-          .finished.then(() => wash.finish(), () => wash.finish());
-      }));
-    };
-    grow.finished.then(reveal, reveal);
-    // 后台标签页的动画时间线会被节流，主题本身不能因此迟迟不换。
-    wash.timer = setTimeout(() => { apply(); setTimeout(() => wash.finish(), 800); }, 600);
+    positionPill();
+    document.addEventListener('wordpaper:ui-theme-change', positionPill);
+    if ('ResizeObserver' in window) new ResizeObserver(positionPill).observe(picker);
+    else window.addEventListener('resize', positionPill, { passive: true });
+
+    // Visible by default. Lower cards get one entrance when scrolled into view.
+    if (!('IntersectionObserver' in window)) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        if (!reduced.matches) entry.target.classList.add('motion-enter');
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: 0.08 });
+    $$('.panel-col > .card').forEach(card => observer.observe(card));
   }
 
   /* 内容真正换掉时（换一组 / 换词库 / 换配色），旧画面留一张快照淡出，新画面从下方浮上来。
@@ -621,8 +589,8 @@
   }
 
   function bindControls() {
-    $$('.ui-theme-option').forEach(button => button.addEventListener('click', e => {
-      revealUITheme(button.dataset.uiTheme, button, e);
+    $$('.ui-theme-option').forEach(button => button.addEventListener('click', () => {
+      applyUITheme(button.dataset.uiTheme, true);
       toast(`界面已切换为${button.textContent.trim()}主题`);
     }));
     $('#sel-size').addEventListener('change', e => { settings.size = e.target.value; $('#custom-size-row').hidden = settings.size !== 'custom'; commit(); });
@@ -2703,6 +2671,7 @@
     $$('input[type="range"]').forEach(syncRangeFill);
     bindControls();
     bindLiquidGlassMotion();
+    bindInterfaceMotion();
     initModuleLayout();
     renderReminderUI();
     loadLibraryCounts();
