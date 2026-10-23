@@ -73,18 +73,24 @@ function remap(p) {
 
 u.__setRunningFrom(resPath);  // the harness pretends the running app root is here
 
-// Stub execFile: hdiutil attach → populate mountpoint with dmgMount copy; rsync → cp.
+// Stub execFile: hdiutil attach → populate mountpoint with dmgMount copy;
+// rsync → 真实语义模拟:目录+尾斜杠 OK;**文件+尾斜杠必须报错**(macOS rsync
+// 对 "(l)stat: Not a directory")——正是 2.3.x/2.4.0 一键更新必失败的根因,
+// 回归锁:如果有人把文件路径再加回尾斜杠,这里立刻红。
 u.__setExecFile((cmd, args, opts, cb) => {
   if (cmd.endsWith('rsync')) {
-    const src = String(args[args.length - 2]).replace(/\/$/, '');
-    const dst = String(args[args.length - 1]).replace(/\/$/, '');
-    realFs.cpSync(src, dst, { recursive: true });
+    const src = String(args[args.length - 2]);
+    const dst = String(args[args.length - 1]);
+    const srcIsDir = realFs.existsSync(src) && realFs.statSync(src).isDirectory();
+    if (src.endsWith('/') && !srcIsDir) {
+      cb(new Error(`Command failed: /usr/bin/rsync ... ${src} ... rsync error: (l)stat: Not a directory`), '', '');
+      return;
+    }
+    realFs.cpSync(src.replace(/\/$/, ''), dst.replace(/\/$/, ''), { recursive: true });
     cb(null, '', '');
   } else if (cmd.endsWith('hdiutil')) {
     if (args[0] === 'attach') {
       const mountPoint = args[args.indexOf('-mountpoint') + 1];
-      // mountRes = .../dmgMount/WordPaper.app/Contents/Resources — the APP dir is two dirs up.
-      const appDir = realFs.realpathSync ? path.dirname(path.dirname(path.dirname(mountRes))) : null;
       realFs.cpSync(path.join(tmp, 'dmgMount', 'WordPaper.app'), path.join(String(mountPoint), 'WordPaper.app'), { recursive: true });
       cb(null, '', '');
     } else cb(null, '', '');

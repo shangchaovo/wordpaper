@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 `VERSION` 文件是唯一版本源。
 
+## [2.4.1] - 2026-10-23
+
+### 修复
+- **应用内更新第三根因(致命)**:更新器对单文件也按目录加 rsync 尾斜杠,
+  macOS rsync 报 `(l)stat: Not a directory`,下载/校验/挂载全部成功后在最后
+  一步必失败。2.3.x 全系与 2.4.0 均带此 bug(用户「更新失败,请到 GitHub
+  Releases 手动下载」的直接原因)。目录保留尾斜杠(`--delete` 语义需要)。
+- 回归锁:updater 测试的 rsync stub 改为真实语义(文件+尾斜杠必报错),
+  任何人加回尾斜杠测试立刻红。
+
 ## [2.4.0] - 2026-10-23
 
 ### 新增
