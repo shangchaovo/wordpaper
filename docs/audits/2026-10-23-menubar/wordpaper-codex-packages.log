@@ -1,0 +1,12 @@
+hdiutil: verify: checksum of "/Users/xieshangchao/daily-wallpaper/scripts/dist/WordPaper-macOS-AppleSilicon.dmg" is VALID
+hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.
+{"variant": "AppleSilicon", "version": "2.4.5", "payload_files": 39, "mismatches": [], "favicon_present": false, "universal_stub": "x86_64 arm64"}
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+hdiutil: verify: checksum of "/Users/xieshangchao/daily-wallpaper/scripts/dist/WordPaper-macOS-Intel.dmg" is VALID
+hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.
+{"variant": "Intel", "version": "2.4.5", "payload_files": 39, "mismatches": [], "favicon_present": false, "universal_stub": "x86_64 arm64"}
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+hdiutil: verify: checksum of "/Users/xieshangchao/daily-wallpaper/scripts/dist/WordPaper-macOS-Slim.dmg" is VALID
+hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.
+{"variant": "Slim", "version": "2.4.5", "payload_files": 39, "mismatches": [], "favicon_present": false, "universal_stub": "x86_64 arm64"}
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.

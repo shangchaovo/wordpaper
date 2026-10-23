@@ -1,0 +1,3 @@
+PASS favicon-32 served: 200 image/png 1945 bytes
+PASS icns rejected: 404
+PASS traversal blocked: 404

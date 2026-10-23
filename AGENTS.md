@@ -11,6 +11,7 @@ WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成手�
 ```bash
 npm start                      # 开发服务器 http://localhost:8770（端口占用时直接失败，不漂移 origin）
 npm test                       # 账号隔离/重启持久化/安全边界 + SRS + companion 测试
+npm run test:mac                # 隔离临时 App：启动器复用/原生窗口生命周期/真实 DMG 安装（macOS）
 python3 scripts/e2e.py         # 端到端验证（55 项断言，自带临时数据库/账号/端口，不碰 8770）
 python3 scripts/render_v3.py   # v3 渲染验证：真渲染 PNG 到 scripts/out_v3/ 并做像素级断言
 python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json（需 /tmp/ecdict.csv）
@@ -67,7 +68,7 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 
 **主账号镜像(卫星模式)**(`lib/upstream.js`,v2.1.0):另一台 Mac 的独立版可在登录页「连接到主账号」,与主力机共用同一工作区。**pull 模型**:卫星持有上游会话(cookie+csrf 存 app_meta `upstream_pairing`),读=先 flushQueue 再 pull 覆盖本地缓存、写=在线直推上游/断网落本地+排队补推、上游 409 上游赢、上游会话过期转 `reauth`(本机缓存仍可离线)。上游账号映射为本机**影子账号**(口令哈希 `mirror$…` 永不可本地登录,FK 级联供 unpair 整棵删除)。路由:`/api/pair`(可重复调用=重新验证/换绑)、`/api/unpair`、`/api/auth/resume`(回环免密恢复本机会话)——全部仅 local 模式+回环+Origin+限流;配对后 `/api/auth/register|login` 403 让位。`/api/state` GET/PUT 在 `mirroring()` 时走代理;后台 45s 节拍收敛两端。providers 带 `paired/pairingAllowed`,登录页据此渲染「已连接卡片」或配对表单;store.js 把 `session.mirrored+upstream!=='ok'` toast 出来。**坑**:`test_server.js`/`test_oauth.js` 对 `/api/auth/providers` 做 deepEqual,加字段必须同步改断言。上游 URL：公网仅允许 https；私有网络（LAN 10/8、172.16/12、192.168/16、Tailscale CGNAT 100.64/10、`.local` mDNS、`.ts.net`、链路本地/IPv6 ULA）与回环允许 http——真实使用走私有网络，公网只做展示。
 
-**版本与更新提示**:仓库根 `VERSION` 是唯一版本源(`package_app.py` 读它并打进 bundle);server.js 在 local 模式且存在 VERSION 时,每天与 GitHub main 的 VERSION 比对,`/api/session.update.latest` 带给页面 toast「重新下载即可更新」。独立版没有自动更新,内容/代码更新都要出新 DMG。
+**版本与应用内更新**：仓库根 `VERSION` 是唯一版本源（`package_app.py` 读它并打进 bundle）。server.js 在 local 模式每天检查 GitHub main 的 VERSION；用户可从网页或独立版菜单栏发起更新。两入口共用 `beginUpdate`，只有安装成功才退出并由 launcher 读重启旗标重启，失败保持服务在线。菜单通过仅回环的 `/api/update/status-local` 同步进度；网页每次拿到状态都比较目标版本，不能只在断线分支判成功。新包包含 assets、目标清单和带摘要的 launcher/Info.plist，updater 安装前备份、可捕获失败时恢复；不替换 Node 运行时或原生 stub。重启旗标在 `WORDPAPER_DATA_DIR`（默认 `~/.wordpaper`）原子写入。旧更新器不支持替换启动器，首次交付本轮启动器修复需完整安装新 DMG。详见 `docs/FIX-HANDOFF-2026-10-23.md`。
 
 **两条设计纪律**：
 - 壁纸正文只用本地系统字体栈（PingFang SC / Hiragino / Microsoft YaHei / Noto Sans CJK SC / Songti / Kaiti 等），**不引入网络字体**。

@@ -1,0 +1,27 @@
+ARTIFACT_DIR /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn
+UPDATE_START {'ok': True, 'started': True, 'target': '9.9.9'}
+UPDATE_FAILURE_SERVER_EXIT_CODE 0
+UPDATE_FAILURE_RESTART_FLAG False
+NATIVE_START {'ok': True, 'spawned': True}
+NATIVE_ALIVE {'pet': True, 'menuBar': True} CHILDREN [70019, 70025]
+INITIAL_UPDATE_STATE {'applying': False, 'target': '', 'error': '', 'checked': False, 'available': False, 'latest': '', 'checkedAt': 0}
+NATIVE_HIDE_REOPEN_PASS
+MENU_CHILDREN [70019]
+ORPHAN_ALL_EXITED False SECONDS 35.0 SURVIVORS [70019, 70079]
+CHILD_PROCESS 
+CHILD_PROCESS 70019     1 S    00:41   0.8 osascript -l JavaScript /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/tmp/dw_menubar-70009.jxa.js
+
+CHILD_PROCESS 70079     1 S    00:37   0.1 osascript -l JavaScript /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/tmp/dw_pet.jxa.js /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/tmp/dw_pet.png top-right /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/companion/pet-position.json {"x":2334,"y":200} /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/companion/pet-closed 70009
+
+COMPANION_LOG 
+  🌱 WordPaper · 桌面伴侣已启动
+  ────────────────────────────────
+  网站 + OCR：   http://localhost:55327
+  桌面壁纸自动换：关
+  配置：         /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-c59mplqn/native/config.json
+
+  静默启动（开机自启）：不打开浏览器
+[companion] 菜单栏图标已显示:小词灵/换一组/记忆本/检查更新/退出 都在这里
+[companion] 桌面小词灵已显示（词卡展示中文；点击词卡＝记住；按住空白处可拖动，右下角圆形把手可调大小；每 30 分钟刷新）
+[companion] 桌面小词灵已显示（词卡展示中文；点击词卡＝记住；按住空白处可拖动，右下角圆形把手可调大小；每 30 分钟刷新）
+

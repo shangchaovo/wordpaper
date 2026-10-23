@@ -1,0 +1,5 @@
+✓ 布局字段已同步并持久化到 companion-config.json
+默认布局单词 y 中位: 632.26px,自定义: 850.26px
+默认布局单词最小 x: 115px,自定义: 307px
+✓ buildSVG 应用了锚点+偏移,壁纸不再回默认布局
+ALL LAYOUT SYNC TESTS PASSED

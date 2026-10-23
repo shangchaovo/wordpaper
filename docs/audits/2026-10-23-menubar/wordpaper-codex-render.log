@@ -1,0 +1,13 @@
+PASS  song 字体栈存在
+PASS  inkOverride 已写入
+PASS  背景照片持久化
+PASS  背景照片生效(角落非奶油色)
+    [debug] first-dark-row neutral=0.443 lowered=0.892
+PASS  单词块随偏移下移 (0.44 -> 0.89)
+PASS  自定义文字拖动位置持久化(y=0.30)
+PASS  单词组 + 楷体渲染
+PASS  墨璃背景为深夜底色
+PASS  墨璃文字为浅色墨水
+
+==== 结果 ====
+通过 9/9   (PNGs -> /Users/xieshangchao/daily-wallpaper/scripts/out_v3)

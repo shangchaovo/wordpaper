@@ -1,0 +1,4 @@
+{"test":"menu_initial","items":[{"title":"隐藏小词灵","command":"pet-close"},{"title":"换一组词","command":"next"},{"title":"记忆复习本…","command":"open:http://localhost:8770/?openMemory=1"},{"title":"打开控制面板…","command":"open:http://localhost:8770"},{"title":"退出 WordPaper","command":"quit"}]}
+{"test":"menu_checked","items":[{"title":"隐藏小词灵","command":"pet-close"},{"title":"换一组词","command":"next"},{"title":"记忆复习本…","command":"open:http://localhost:8770/?openMemory=1"},{"title":"打开控制面板…","command":"open:http://localhost:8770"},{"title":"当前 v2.4.5(已是最新)","command":""},{"title":"退出 WordPaper","command":"quit"}]}
+{"test":"polling_fast_restart","reloads":0,"checks":1,"status":"更新卡住了,请重启应用后重试,或到 GitHub Releases 手动下载","button":"重试"}
+{"test":"polling_after_outage","reloads":0,"checks":1,"status":"更新卡住了,请重启应用后重试,或到 GitHub Releases 手动下载","button":"重试"}

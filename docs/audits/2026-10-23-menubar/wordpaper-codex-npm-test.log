@@ -1,0 +1,176 @@
+
+> wordpaper@1.0.0 test
+> node scripts/test_wallpaper_files.js && node scripts/test_server.js && node scripts/test_oauth.js && node scripts/test_review.js && node scripts/test_companion_learning.js && node scripts/test_pairing.js && node scripts/test_menubar.js && node scripts/test_updater_positive.js && node scripts/test_updater_negative.js && python3 scripts/test_update_api.py && python3 scripts/test_update_refresh.py && python3 scripts/test_memory_scroll.py && node scripts/test_assets_static.py
+
+wallpaper file checks ok
+(node:67753) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS server persistence, A/B state isolation, same-machine companion sharing, conflict/CSRF checks, auth hashing, secure proxy cookie, static containment, and public single-port mode
+(node:67766) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS email login, Google PKCE, WeChat website OAuth, state binding/replay/mix-up checks, session rotation, identity isolation, and restart persistence
+PASS review lifecycle (8 intervals, fail/reset, duplicate, early, mastered, library isolation)
+PASS companion learning (6 continuous slots, theme sync, repeated refill, prev/next, custom library, POST/local-only, stale retry, stream snapshot, library isolation, atomic JSON)
+PASS pairing: pair/mirror/push/conflict/offline-queue/resume/unpair/public-guard/register-guard
+PASS  status.json 暴露 menuBar 字段
+PASS  menu-status 无头=403
+PASS  menu-status 带头=200
+PASS  menu-status 结构完整
+PASS  menu.php GET=405
+PASS  menu.php 无头=403
+PASS  menu.php 未知命令=400
+PASS  pet-close ok
+PASS  pet-close 后 status.pet=false
+PASS  pet-close 写入标记文件
+PASS  pet-open ok
+PASS  pet-open 清除标记文件
+PASS  next ok
+PASS  开发模式 update-check 拒绝
+PASS  开发模式 update-apply 拒绝
+
+全部 15 项通过
+PASS  applyUpdate 返回 ok + 新版本号
+PASS  Resources VERSION 已替换
+PASS  Resources server.js 已替换(内容为新包)
+PASS  重启旗标已写入(from/to 正确)
+PASS  RELEASE_SHA256.json 同步成功
+PASS  同版本不重复安装(棘轮)
+PASS  降级被拒绝(棘轮)
+PASS  损坏的安装包被拒绝
+PASS  运行中 Resources 未被触碰
+PASS  失败时不写重启旗标
+PASS  注册成功
+PASS  session 提供 csrf
+PASS  无可用版本时 apply=409/404
+PASS  CSRF 校验拒绝=403
+PASS  status 响应结构完整
+PASS  check 响应含 supported/available/current
+PASS  public 模式 supported=false
+PASS  public 模式 apply 拒绝
+PASS  public 模式 apply-local 拒绝
+PASS  public 模式 quit 拒绝
+PASS  apply-local 缺头=403
+PASS  quit 缺头=403
+PASS  quit 带头=200 ok
+通过 13/13
+PASS  refresh=1 正常返回
+PASS  当前版本=2.4.5 时不提示更新
+PASS  refresh 限速内重复调用不崩
+PASS  status 端点无 applying 状态
+通过 4/4
+PASS  liquid 1460×980 词卡打开后不重复播放进场动画
+PASS  liquid 1460×980 关闭按钮完整可见且可点击
+PASS  liquid 1460×980 滚轮能滚动词卡列表
+PASS  liquid 1460×980 可滚到最后一张词卡
+PASS  liquid 1460×980 底部继续滚动不带动背景页面
+PASS  liquid 1460×980 顶部继续滚动不带动背景页面
+PASS  liquid 1460×980 滚动后已回答中文保持显示
+PASS  liquid 1460×980 可正常关闭记忆本
+PASS  liquid 390×650 词卡打开后不重复播放进场动画
+PASS  liquid 390×650 关闭按钮完整可见且可点击
+PASS  liquid 390×650 滚轮能滚动词卡列表
+PASS  liquid 390×650 可滚到最后一张词卡
+PASS  liquid 390×650 底部继续滚动不带动背景页面
+PASS  liquid 390×650 顶部继续滚动不带动背景页面
+PASS  liquid 390×650 滚动后已回答中文保持显示
+PASS  liquid 390×650 可正常关闭记忆本
+PASS  liquid 900×500 词卡打开后不重复播放进场动画
+PASS  liquid 900×500 关闭按钮完整可见且可点击
+PASS  liquid 900×500 滚轮能滚动词卡列表
+PASS  liquid 900×500 可滚到最后一张词卡
+PASS  liquid 900×500 底部继续滚动不带动背景页面
+PASS  liquid 900×500 顶部继续滚动不带动背景页面
+PASS  liquid 900×500 滚动后已回答中文保持显示
+PASS  liquid 900×500 可正常关闭记忆本
+PASS  darkliquid 1460×980 词卡打开后不重复播放进场动画
+PASS  darkliquid 1460×980 关闭按钮完整可见且可点击
+PASS  darkliquid 1460×980 滚轮能滚动词卡列表
+PASS  darkliquid 1460×980 可滚到最后一张词卡
+PASS  darkliquid 1460×980 底部继续滚动不带动背景页面
+PASS  darkliquid 1460×980 顶部继续滚动不带动背景页面
+PASS  darkliquid 1460×980 滚动后已回答中文保持显示
+PASS  darkliquid 1460×980 可正常关闭记忆本
+PASS  darkliquid 390×650 词卡打开后不重复播放进场动画
+PASS  darkliquid 390×650 关闭按钮完整可见且可点击
+PASS  darkliquid 390×650 滚轮能滚动词卡列表
+PASS  darkliquid 390×650 可滚到最后一张词卡
+PASS  darkliquid 390×650 底部继续滚动不带动背景页面
+PASS  darkliquid 390×650 顶部继续滚动不带动背景页面
+PASS  darkliquid 390×650 滚动后已回答中文保持显示
+PASS  darkliquid 390×650 可正常关闭记忆本
+PASS  darkliquid 900×500 词卡打开后不重复播放进场动画
+PASS  darkliquid 900×500 关闭按钮完整可见且可点击
+PASS  darkliquid 900×500 滚轮能滚动词卡列表
+PASS  darkliquid 900×500 可滚到最后一张词卡
+PASS  darkliquid 900×500 底部继续滚动不带动背景页面
+PASS  darkliquid 900×500 顶部继续滚动不带动背景页面
+PASS  darkliquid 900×500 滚动后已回答中文保持显示
+PASS  darkliquid 900×500 可正常关闭记忆本
+PASS  editorial 1460×980 词卡打开后不重复播放进场动画
+PASS  editorial 1460×980 关闭按钮完整可见且可点击
+PASS  editorial 1460×980 滚轮能滚动词卡列表
+PASS  editorial 1460×980 可滚到最后一张词卡
+PASS  editorial 1460×980 底部继续滚动不带动背景页面
+PASS  editorial 1460×980 顶部继续滚动不带动背景页面
+PASS  editorial 1460×980 滚动后已回答中文保持显示
+PASS  editorial 1460×980 可正常关闭记忆本
+PASS  editorial 390×650 词卡打开后不重复播放进场动画
+PASS  editorial 390×650 关闭按钮完整可见且可点击
+PASS  editorial 390×650 滚轮能滚动词卡列表
+PASS  editorial 390×650 可滚到最后一张词卡
+PASS  editorial 390×650 底部继续滚动不带动背景页面
+PASS  editorial 390×650 顶部继续滚动不带动背景页面
+PASS  editorial 390×650 滚动后已回答中文保持显示
+PASS  editorial 390×650 可正常关闭记忆本
+PASS  editorial 900×500 词卡打开后不重复播放进场动画
+PASS  editorial 900×500 关闭按钮完整可见且可点击
+PASS  editorial 900×500 滚轮能滚动词卡列表
+PASS  editorial 900×500 可滚到最后一张词卡
+PASS  editorial 900×500 底部继续滚动不带动背景页面
+PASS  editorial 900×500 顶部继续滚动不带动背景页面
+PASS  editorial 900×500 滚动后已回答中文保持显示
+PASS  editorial 900×500 可正常关闭记忆本
+PASS  anime 1460×980 词卡打开后不重复播放进场动画
+PASS  anime 1460×980 关闭按钮完整可见且可点击
+PASS  anime 1460×980 滚轮能滚动词卡列表
+PASS  anime 1460×980 可滚到最后一张词卡
+PASS  anime 1460×980 底部继续滚动不带动背景页面
+PASS  anime 1460×980 顶部继续滚动不带动背景页面
+PASS  anime 1460×980 滚动后已回答中文保持显示
+PASS  anime 1460×980 可正常关闭记忆本
+PASS  anime 390×650 词卡打开后不重复播放进场动画
+PASS  anime 390×650 关闭按钮完整可见且可点击
+PASS  anime 390×650 滚轮能滚动词卡列表
+PASS  anime 390×650 可滚到最后一张词卡
+PASS  anime 390×650 底部继续滚动不带动背景页面
+PASS  anime 390×650 顶部继续滚动不带动背景页面
+PASS  anime 390×650 滚动后已回答中文保持显示
+PASS  anime 390×650 可正常关闭记忆本
+PASS  anime 900×500 词卡打开后不重复播放进场动画
+PASS  anime 900×500 关闭按钮完整可见且可点击
+PASS  anime 900×500 滚轮能滚动词卡列表
+PASS  anime 900×500 可滚到最后一张词卡
+PASS  anime 900×500 底部继续滚动不带动背景页面
+PASS  anime 900×500 顶部继续滚动不带动背景页面
+PASS  anime 900×500 滚动后已回答中文保持显示
+PASS  anime 900×500 可正常关闭记忆本
+PASS  浏览器无 pageerror / console.error
+PASS  memory notebook scrolling across four themes and three viewport sizes
+node:internal/modules/esm/get_format:219
+  throw new ERR_UNKNOWN_FILE_EXTENSION(ext, filepath);
+        ^
+
+TypeError [ERR_UNKNOWN_FILE_EXTENSION]: Unknown file extension ".py" for /Users/xieshangchao/daily-wallpaper/scripts/test_assets_static.py
+    at Object.getFileProtocolModuleFormat [as file:] (node:internal/modules/esm/get_format:219:9)
+    at defaultGetFormat (node:internal/modules/esm/get_format:245:36)
+    at defaultLoadSync (node:internal/modules/esm/load:162:16)
+    at ModuleLoader.load (node:internal/modules/esm/loader:831:12)
+    at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:609:31)
+    at #createModuleJob (node:internal/modules/esm/loader:640:36)
+    at #getJobFromResolveResult (node:internal/modules/esm/loader:353:34)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:321:41)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:25) {
+  code: 'ERR_UNKNOWN_FILE_EXTENSION'
+}
+
+Node.js v22.23.2

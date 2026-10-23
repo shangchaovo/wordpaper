@@ -1,0 +1,16 @@
+
+> wordpaper@1.0.0 test:mac
+> python3 scripts/test_launcher.py && python3 scripts/test_native_lifecycle.py && python3 scripts/test_package_update.py
+
+PASS repeat open reuses saved server and preserves pending update flag
+PASS update restarts complete launcher/server/companion chain on same port
+NATIVE_START {'ok': True, 'spawned': True}
+NATIVE_ALIVE {'pet': True, 'menuBar': True} CHILDREN [13251, 13263]
+PASS initial menu update state synchronized
+NATIVE_HIDE_REOPEN_PASS
+MENU_CHILDREN [13251]
+PASS menu subprocess crash recovers
+PASS SIGKILL + same-port replacement: old native children exited in 5.0 seconds
+PASS built app contains assets, complete manifest and universal stub
+PASS real hdiutil + rsync install
+PASS installed server, favicon, launcher, Info.plist, manifest and user-data preservation

@@ -1,0 +1,10 @@
+ARTIFACT_DIR /var/folders/_7/bdtzzx_s7js0yk0kmvtjtkqw0000gn/T/wordpaper-native-audit-wgeebo4c
+UPDATE_START {'ok': True, 'started': True, 'target': '9.9.9'}
+UPDATE_FAILURE_SERVER_EXIT_CODE 0
+UPDATE_FAILURE_RESTART_FLAG False
+NATIVE_START {'ok': True, 'spawned': True}
+NATIVE_ALIVE {'pet': True, 'menuBar': True} CHILDREN [69138, 69145]
+INITIAL_UPDATE_STATE {'applying': False, 'target': '', 'error': '', 'checked': False, 'available': False, 'latest': '', 'checkedAt': 0}
+NATIVE_HIDE_REOPEN_PASS
+MENU_CHILDREN [69138]
+ORPHAN_ALL_EXITED False SECONDS 24.1 SURVIVORS [69138, 69171]

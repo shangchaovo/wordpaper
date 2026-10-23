@@ -1,0 +1,14 @@
+PASS  applyUpdate 返回 ok + 新版本号
+PASS  Resources VERSION 已替换
+PASS  Resources server.js 已替换(内容为新包)
+PASS  重启旗标已写入(from/to 正确)
+PASS  RELEASE_SHA256.json 同步成功
+PASS  网页图标随更新安装
+PASS  启动器与 Info.plist 随更新安装
+PASS  中途安装失败被报告
+PASS  失败恢复已覆盖的服务器与网页文件
+PASS  失败保留旧版本且不写旗标
+PASS  最后写旗标失败也回滚启动器与元数据
+PASS  回滚保留启动器执行权限且清理不完整旗标
+PASS  同版本不重复安装(棘轮)
+PASS  降级被拒绝(棘轮)

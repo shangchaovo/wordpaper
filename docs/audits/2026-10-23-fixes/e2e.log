@@ -1,0 +1,81 @@
+PASS  页面标题
+PASS  换一组按钮
+PASS  词库卡片渲染(13张)
+PASS  词书搜索过滤(雅思)
+PASS  清空搜索恢复全部词书
+PASS  默认手机画布 1080×2400
+PASS  点卡片切四级词库
+PASS  背景纹理切换
+PASS  点击画布单词打开就地排版
+PASS  字号缩放实时生效
+PASS  字重切换
+PASS  字体风格切换(宋体)
+PASS  文字颜色选择生效
+PASS  整组样式恢复默认
+PASS  日期/时间开关已移除
+PASS  背景照片上传入口
+PASS  锚点预设卡片已移除
+PASS  切桌面 1920×1080
+PASS  导入按钮存在
+PASS  导入弹窗打开
+PASS  粘贴导入切到我的词库
+PASS  我的词库卡片有计数
+PASS  截图导入入口
+PASS  导入弹窗可关闭
+PASS  提醒出现在列表
+PASS  换一组后仍有画布
+PASS  预览拖动单词块
+PASS  PNG 下载
+PASS  下载的 PNG 是壁纸原尺寸(非预览分辨率)
+PASS  记忆复习卡片存在
+PASS  切到内置词库(四级)
+PASS  记住单词登记复习
+PASS  复习倒计时出现
+PASS  记忆本打开
+PASS  记忆本遮盖中文
+PASS  到期词显示双向作答
+PASS  没记住后重置第一周期
+PASS  没记住后展示中文
+PASS  作答中文不会自动消失
+PASS  重复首轮事件不推进周期
+PASS  记住了推进下一周期
+PASS  全部周期后才真正巩固
+PASS  关闭艾宾浩斯后倒计时隐藏
+PASS  周期切换间隔行显示
+PASS  设为桌面壁纸按钮
+PASS  小词灵主入口
+PASS  小词灵已整合在预览上方且可点击
+PASS  小词灵共享测试账号创建
+PASS  同机第二个账号伴侣状态可用
+PASS  同机第二个账号直接看到可用的小词灵入口
+PASS  点击直接启用/控制小词灵而不踢去登录
+PASS  伴侣一键包(zip含启动器+当前词库)
+PASS  启动器可执行(+x)
+PASS  一键启用端点(dry)
+PASS  一键启用非POST返回405
+PASS  伴侣服务同款一键/下载端点
+PASS  动漫主题可切换
+PASS  校样主题可切换
+PASS  Liquid Glass 主题可切换
+PASS  Liquid 壁纸配色已加入并自动联动
+PASS  Liquid 光学折射已挂载
+PASS  中央展示板光学稳定(大面板免折射,性能优化)
+PASS  Liquid 大面板点亮且静态高光(性能优化)
+PASS  Liquid 小控件跟随光与轻微视差可用
+PASS  Liquid 控件按压产生弹性状态
+PASS  Liquid 控件松开恢复
+PASS  界面主题刷新后保持
+PASS  暗夜主题可切换
+PASS  暗夜联动墨璃壁纸配色
+PASS  暗夜界面呈深色材质
+PASS  暗夜光学控件已点亮结构就绪
+PASS  暗夜主题刷新后保持
+PASS  无 pageerror / console.error(可选 CDN 失败不计)
+
+==== 结果 ====
+通过 73/73
+
+捕获错误:
+  console.error: Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED @ https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
+  console.error: Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED @ https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
+全部通过 ✅
