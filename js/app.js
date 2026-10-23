@@ -68,6 +68,8 @@
   let activeLibraryWords = [];
   let moduleEditing = false;
   let themeTransitionTimer = null;
+  let themeTransition = null;
+  let queuedUITheme = null;
   const MODULE_DEFAULTS = {
     left: ['module-library', 'module-reminders', 'module-srs', 'module-automation'],
     right: ['module-appearance', 'module-custom'],
@@ -75,6 +77,27 @@
 
   const $ = sel => document.querySelector(sel);
   const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+  /* 弹窗统一走这里关闭：先播一小段落回动画再 hidden，避免"啪一下消失"。
+     动画结束时机用 animationend + 兜底定时器，双保险都不会卡住 hidden。 */
+  function closeModal(el) {
+    if (!el || el.hidden) return;
+    if (el.classList.contains('modal-closing')) return;
+    const card = el.querySelector('.modal-card');
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      el.classList.remove('modal-closing');
+      el.hidden = true;
+    };
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const duration = reduced || !card || !el.getAnimations ? 0 : 200;
+    if (!duration) { finish(); return; }
+    el.classList.add('modal-closing');
+    const timer = setTimeout(finish, duration + 40);
+    if (card) card.addEventListener('animationend', () => { clearTimeout(timer); finish(); }, { once: true });
+  }
 
   function loadSettings() {
     settings = window.Store.getSettings();
@@ -128,10 +151,11 @@
     const next = UI_THEMES.has(theme) ? theme : 'liquid';
     const root = document.documentElement;
     settings.uiTheme = next;
-    if (root.dataset.uiTheme !== next) {
+    let painted = Promise.resolve();
+    if (root.dataset.uiTheme !== next && !root.classList.contains('theme-snapshot')) {
       clearTimeout(themeTransitionTimer);
       root.classList.add('theme-switching');
-      themeTransitionTimer = setTimeout(() => root.classList.remove('theme-switching'), 280);
+      themeTransitionTimer = setTimeout(() => root.classList.remove('theme-switching'), 460);
     }
     root.dataset.uiTheme = next;
     $$('.ui-theme-option').forEach(button => {
@@ -154,11 +178,55 @@
       }
       window.Store.setUITheme(next);
       saveSettings();
-      refresh(false);
+      painted = refresh(false);
       // 界面主题同时驱动桌面小词灵；伴侣未运行时保持静默降级。
       syncCompanionLearningContext();
     }
     document.dispatchEvent(new CustomEvent('wordpaper:ui-theme-change', { detail: { theme: next } }));
+    return painted;
+  }
+
+  // One composed dissolve includes gradients, glass and the newly painted canvas.
+  // Keep only the latest click during a capture; never replay a queue of themes.
+  function switchUITheme(theme) {
+    queuedUITheme = UI_THEMES.has(theme) ? theme : 'liquid';
+    if (themeTransition) {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) themeTransition.skipTransition();
+      return;
+    }
+    const next = queuedUITheme;
+    queuedUITheme = null;
+    const root = document.documentElement;
+    if (root.dataset.uiTheme === next) return;
+    const settle = () => document.dispatchEvent(new CustomEvent('wordpaper:ui-theme-settled'));
+    if (!document.startViewTransition || document.hidden || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      applyUITheme(next, true).then(settle);
+      return;
+    }
+    clearTimeout(themeTransitionTimer);
+    root.classList.remove('theme-switching');
+    root.classList.add('theme-snapshot');
+    try {
+      themeTransition = document.startViewTransition(async () => {
+        await applyUITheme(next, true);
+      });
+    } catch {
+      root.classList.remove('theme-snapshot');
+      applyUITheme(next, true).then(settle);
+      return;
+    }
+    const transition = themeTransition;
+    const finish = () => {
+      if (themeTransition !== transition) return;
+      themeTransition = null;
+      root.classList.remove('theme-snapshot');
+      if (queuedUITheme && queuedUITheme !== root.dataset.uiTheme) switchUITheme(queuedUITheme);
+      else { queuedUITheme = null; settle(); }
+    };
+    // A hidden tab or interrupted capture may skip animation, but still applies
+    // the theme. Consume that expected rejection and always release the layer.
+    transition.ready.catch(() => {});
+    transition.finished.then(finish, finish);
   }
 
   function bindInterfaceMotion() {
@@ -166,7 +234,7 @@
     let frame = 0;
     const positionPill = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      const measure = () => {
         const active = picker.querySelector('.ui-theme-option.on');
         if (!active) return;
         picker.style.setProperty('--pill-x', active.offsetLeft + 'px');
@@ -175,7 +243,11 @@
         picker.style.setProperty('--pill-height', active.offsetHeight + 'px');
         picker.classList.add('has-theme-pill');
         requestAnimationFrame(() => picker.classList.add('theme-pill-ready'));
-      });
+      };
+      // Rendering is paused inside the native update callback; awaiting rAF
+      // there deadlocks capture until the browser's timeout skips the effect.
+      if (document.documentElement.classList.contains('theme-snapshot')) measure();
+      else frame = requestAnimationFrame(measure);
     };
     positionPill();
     document.addEventListener('wordpaper:ui-theme-change', positionPill);
@@ -496,9 +568,9 @@
     }
 
     activateOptics();
-    document.addEventListener('wordpaper:ui-theme-change', event => {
-      // 测量光学面板会强制同步布局；放到换完主题后的下一帧，别拖慢切换本身。
-      if (event.detail && event.detail.theme === 'liquid') requestAnimationFrame(() => setTimeout(activateOptics, 0));
+    document.addEventListener('wordpaper:ui-theme-settled', () => {
+      // Optical map measurements wait until the composed transition has ended.
+      if (document.documentElement.dataset.uiTheme === 'liquid') requestAnimationFrame(() => setTimeout(activateOptics, 0));
       else motionState.forEach((_, surface) => resetSurface(surface));
     });
     document.addEventListener('pointerover', event => {
@@ -590,9 +662,19 @@
 
   function bindControls() {
     $$('.ui-theme-option').forEach(button => button.addEventListener('click', () => {
-      applyUITheme(button.dataset.uiTheme, true);
-      toast(`界面已切换为${button.textContent.trim()}主题`);
+      switchUITheme(button.dataset.uiTheme);
     }));
+    // Native snapshots suppress hit-testing of captured DOM (including the
+    // picker) and retarget pointer clicks to <html>. Preserve this one visible
+    // selector's input while dissolving; normal/keyboard clicks use its buttons.
+    document.addEventListener('click', event => {
+      if (!themeTransition || event.target !== document.documentElement || !event.detail) return;
+      const button = $$('.ui-theme-option').find(option => {
+        const r = option.getBoundingClientRect();
+        return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+      });
+      if (button) { button.focus({ preventScroll: true }); switchUITheme(button.dataset.uiTheme); }
+    });
     $('#sel-size').addEventListener('change', e => { settings.size = e.target.value; $('#custom-size-row').hidden = settings.size !== 'custom'; commit(); });
     $('#inp-cw').addEventListener('change', e => { settings.customW = clampInt(e.target.value, 100, 8000, 1080); commit(); });
     $('#inp-ch').addEventListener('change', e => { settings.customH = clampInt(e.target.value, 100, 8000, 1920); commit(); });
@@ -673,8 +755,8 @@
     const openImport = $('#btn-open-import');
     if (openImport && modal) openImport.addEventListener('click', () => { modal.hidden = false; });
     const closeImport = $('#btn-close-import');
-    if (closeImport && modal) closeImport.addEventListener('click', () => { modal.hidden = true; });
-    if (modal) modal.addEventListener('click', e => { if (e.target === modal) modal.hidden = true; });
+    if (closeImport && modal) closeImport.addEventListener('click', () => closeModal(modal));
+    if (modal) modal.addEventListener('click', e => { if (e.target === modal) closeModal(modal); });
     const libraryModal = $('#library-modal');
     const closeLibrary = $('#btn-close-library');
     if (closeLibrary && libraryModal) closeLibrary.addEventListener('click', closeLibraryBrowser);
@@ -696,7 +778,7 @@
     });
     document.addEventListener('keydown', e => {
       if (e.key !== 'Escape') return;
-      if (modal && !modal.hidden) modal.hidden = true;
+      if (modal && !modal.hidden) closeModal(modal);
       if (libraryModal && !libraryModal.hidden) closeLibraryBrowser();
       if (memoryModal && !memoryModal.hidden) closeMemoryNotebook();
     });
@@ -1054,8 +1136,7 @@
   }
 
   function closeLibraryBrowser() {
-    const modal = $('#library-modal');
-    if (modal) modal.hidden = true;
+    closeModal($('#library-modal'));
   }
 
   function visibleLibraryWords() {
@@ -1915,7 +1996,7 @@
     if (!modal) return;
     renderMemoryNotebook(); modal.hidden = false;
   }
-  function closeMemoryNotebook() { const modal = $('#memory-modal'); if (modal) modal.hidden = true; }
+  function closeMemoryNotebook() { closeModal($('#memory-modal')); }
 
   function openRequestedMemoryNotebook() {
     const url = new URL(window.location.href);
@@ -2208,7 +2289,7 @@
       if (badge) badge.hidden = false;
     });
   }
-  function closeDlModal() { const modal = $('#dl-modal'); if (modal) modal.hidden = true; }
+  function closeDlModal() { closeModal($('#dl-modal')); }
   function downloadCompanion() {
     openDlModal();
   }
@@ -2388,7 +2469,13 @@
   function exitLive() {
     liveActive = false;
     document.body.classList.remove('live');
-    $('#live-overlay').hidden = true;
+    const overlay = $('#live-overlay');
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const hideNow = () => { overlay.hidden = true; overlay.classList.remove('live-exiting'); };
+    if (!reduced && !overlay.hidden) {
+      overlay.classList.add('live-exiting');
+      setTimeout(hideNow, 290);
+    } else hideNow();
     clearTimeout(liveTimer); clearInterval(clockTimer); clearInterval(cycleTimer);
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
   }

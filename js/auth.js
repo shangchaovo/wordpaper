@@ -61,6 +61,17 @@
     }
   }
 
+  // 登录/注册的白色指示块随选择滑过去；测量失败或窄屏异常时静默退回按钮自带底色。
+  function positionAuthPill() {
+    const tabs = document.querySelector('.auth-tabs');
+    if (!tabs || !tabs.offsetParent) return;
+    const active = tabs.querySelector('.auth-tab.active');
+    if (!active) return;
+    tabs.style.setProperty('--tab-x', active.offsetLeft + 'px');
+    tabs.style.setProperty('--tab-w', active.offsetWidth + 'px');
+    requestAnimationFrame(function () { tabs.classList.add('auth-pill-ready'); });
+  }
+
   function setMode(next, focusTab) {
     mode = next === 'register' ? 'register' : 'login';
     const registering = mode === 'register';
@@ -85,6 +96,7 @@
     hint.textContent = registering ? '验证邮箱后创建账号，并迁入这个浏览器里的旧数据。' : '登录后会从服务器恢复你的全部 WordPaper 数据。';
     showError('', false);
     updateEmailRegistrationState();
+    positionAuthPill();
     if (focusTab) (registering ? registerTab : loginTab).focus();
   }
 
@@ -310,6 +322,7 @@
 
   setMode('login');
   loadProviders();
+  window.addEventListener('resize', positionAuthPill);
 
   const params = new URLSearchParams(location.search);
   const callbackError = oauthErrors[params.get('authError')];

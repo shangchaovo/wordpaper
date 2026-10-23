@@ -11,8 +11,9 @@ WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成手�
 ```bash
 npm start                      # 开发服务器 http://localhost:8770（端口占用时直接失败，不漂移 origin）
 npm test                       # 账号隔离/重启持久化/安全边界 + SRS + companion 测试
+npm run test:motion             # 主题整页过渡、连续点击、减少动态效果和浏览器降级（隔离服务）
 npm run test:mac                # 隔离临时 App：启动器复用/原生窗口生命周期/真实 DMG 安装（macOS）
-python3 scripts/e2e.py         # 端到端验证（55 项断言，自带临时数据库/账号/端口，不碰 8770）
+python3 scripts/e2e.py         # 端到端验证（73 项断言，自带临时数据库/账号/端口，不碰 8770）
 python3 scripts/render_v3.py   # v3 渲染验证：真渲染 PNG 到 scripts/out_v3/ 并做像素级断言
 python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json（需 /tmp/ecdict.csv）
 ```
@@ -87,7 +88,7 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 
 ## 验证矩阵
 
-`scripts/e2e.py`（55 项）覆盖主路径 + v3 控件存在性 + 完整可迁移伴侣 zip + 一键启用端点 + 记忆复习（SRS）；`scripts/render_v3.py`（7 项）真渲染 PNG 并做像素级断言（字体栈写入、文字颜色持久化、背景照片铺满且非主题色、**锚点真的移动单词块**、自定义文字拖拽位置持久化、海报+楷体）。账号/隔离/重启/静态目录安全另由 `scripts/test_server.js` 与 `scripts/test_accounts_browser.py` 覆盖。
+`scripts/e2e.py`（73 项）覆盖主路径 + v3 控件存在性 + 完整可迁移伴侣 zip + 一键启用端点 + 记忆复习（SRS）；`scripts/render_v3.py`（9 项）真渲染 PNG 并做像素级断言（字体栈写入、文字颜色持久化、背景照片铺满且非主题色、**锚点真的移动单词块**、自定义文字拖拽位置持久化、海报+楷体）。账号/隔离/重启/静态目录安全另由 `scripts/test_server.js` 与 `scripts/test_accounts_browser.py` 覆盖。
 
 ## 模块整理
 

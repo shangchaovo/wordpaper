@@ -180,10 +180,17 @@ def main():
 
             # screenshot import affordance present (inside modal)
             check("截图导入入口", page.locator("#file-screenshot").count() == 1)
-            # close modal
+            # close modal (关闭带落回动画，hidden 在动画结束后置位)
             page.click("#btn-close-import")
-            page.wait_for_timeout(150)
-            check("导入弹窗可关闭", page.locator("#import-modal").evaluate("e=>e.hidden"))
+            check("导入弹窗可关闭", page.locator("#import-modal").evaluate(
+                """e => new Promise(resolve => {
+                  const started = performance.now();
+                  (function poll() {
+                    if (e.hidden) { resolve(true); return; }
+                    if (performance.now() - started > 800) { resolve(false); return; }
+                    requestAnimationFrame(poll);
+                  })();
+                })"""))
 
             # add reminder
             page.fill("#inp-reminder", "下午 3 点开组会")

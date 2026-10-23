@@ -160,8 +160,17 @@ def main():
                                       and not answered.locator(".memory-meaning").evaluate(
                                           "element => element.classList.contains('locked')"))
                                 close.click()
-                                check(label + " 可正常关闭记忆本",
-                                      page.locator("#memory-modal").evaluate("element => element.hidden"))
+                                # 关闭现在带一段落回动画，hidden 在动画结束后置位；轮询等待而不是立即断言。
+                                closed_hidden = page.locator("#memory-modal").evaluate(
+                                    """element => new Promise(resolve => {
+                                      const started = performance.now();
+                                      (function poll() {
+                                        if (element.hidden) { resolve(true); return; }
+                                        if (performance.now() - started > 800) { resolve(false); return; }
+                                        requestAnimationFrame(poll);
+                                      })();
+                                    })""")
+                                check(label + " 可正常关闭记忆本", closed_hidden)
                         check("浏览器无 pageerror / console.error", not errors, errors)
                         context.close()
                     finally:

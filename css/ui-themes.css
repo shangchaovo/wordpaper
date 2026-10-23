@@ -1661,7 +1661,10 @@
   box-shadow: 0 2px 7px color-mix(in srgb, var(--ink) 6%, transparent);
   pointer-events: none;
 }
-:root .ui-theme-picker.theme-pill-ready::before { transition: translate .24s cubic-bezier(.22,1,.36,1), width .24s ease; }
+:root .ui-theme-picker.theme-pill-ready::before {
+  transition: translate .46s cubic-bezier(.22,1,.36,1), width .46s cubic-bezier(.22,1,.36,1),
+    height .46s cubic-bezier(.22,1,.36,1), background-color .36s ease, border-color .36s ease;
+}
 :root .ui-theme-picker.has-theme-pill .ui-theme-option.on {
   border-color: transparent;
   background: transparent;

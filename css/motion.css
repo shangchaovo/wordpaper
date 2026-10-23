@@ -28,9 +28,38 @@
 :root:root .app .panel-col > .card:nth-child(4) { animation-delay: .12s; }
 :root:root .app .panel-col > .card:nth-child(n+5) { animation-delay: .16s; }
 
-/* Only small surfaces transition: no full-screen overlay or perpetual motion. */
-html.theme-switching :is(.topbar, .pet-dock, .lib-card, .ui-theme-option) {
-  transition: color .24s ease, border-color .24s ease, background-color .24s ease;
+/* Snapshot only for the duration of a theme change. Opacity runs on the
+   compositor; gradients and glass don't repaint independently on every frame. */
+html.theme-snapshot::view-transition,
+html.theme-snapshot::view-transition-group(*),
+html.theme-snapshot::view-transition-image-pair(*),
+html.theme-snapshot::view-transition-old(*),
+html.theme-snapshot::view-transition-new(*) { pointer-events: none; }
+html.theme-snapshot::view-transition-group(*) {
+  animation-duration: .46s;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+}
+html.theme-snapshot::view-transition-image-pair(root) { isolation: isolate; }
+html.theme-snapshot::view-transition-old(root) {
+  animation: wp-theme-dissolve .46s cubic-bezier(.4, 0, .2, 1) both;
+  mix-blend-mode: normal;
+  z-index: 2;
+}
+html.theme-snapshot::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+@keyframes wp-theme-dissolve { to { opacity: 0; } }
+/* Keep the picker crisp and interactive above the dissolving page. Its live
+   destination retains the spring-like indicator instead of double exposure. */
+html.theme-snapshot #ui-theme-picker { view-transition-name: theme-picker; }
+html.theme-snapshot::view-transition-old(theme-picker) { display: none; }
+html.theme-snapshot::view-transition-new(theme-picker) { animation: none; }
+html.theme-snapshot::view-transition-group(theme-picker) { z-index: 3; }
+html.theme-snapshot .app :is(.panel-col, .card, .stage, .topbar, .pet-dock, .lib-card, .swatch, .pattern-chip) {
+  transition: none !important;
+}
+/* Older browsers retain a bounded color fade. No animated blur or blanket
+   transition:all across the thousands of elements in the word library. */
+html.theme-switching :is(body, .topbar, .panel-col, .card, .stage, .pet-dock, .lib-card, .ui-theme-option) {
+  transition: color .46s ease, border-color .46s ease, background-color .46s ease;
 }
 
 /* ---------- 预览换内容：旧画面虚化上飘，新画面从下方浮起 ---------- */
@@ -213,11 +242,30 @@ html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stab
 
 /* Motion preferences also cover transforms triggered by hover and JS state. */
 @media (prefers-reduced-motion: reduce) {
+  html.theme-switching .app, html.theme-switching .app *, html.theme-switching body { transition: none !important; }
+  html.theme-snapshot::view-transition-group(*),
+  html.theme-snapshot::view-transition-old(*),
+  html.theme-snapshot::view-transition-new(*) { animation-duration: .01ms !important; }
   :root:root .app .card.motion-enter { animation: none; }
   .pet-pages { transition: none; transform: none !important; }
   .pet-orbit-point { animation: none !important; }
-  :root .ui-theme-picker::before { transition: none; }
+  :root .ui-theme-picker.theme-pill-ready::before { transition: none !important; }
 }
 @media print {
   :root:root .app * { animation: none !important; opacity: 1; }
 }
+
+/* ---------- 弹窗退场：打开有浮起，关闭也要有落回，才不会"啪一下消失" ---------- */
+/* JS 在 hidden 前加 .modal-closing；动画结束再真正隐藏。只动透明度与位移，合成器友好。 */
+.modal-overlay.modal-closing { animation: wp-overlay-out .19s ease-in forwards; }
+.modal-overlay.modal-closing .modal-card {
+  animation: wp-card-out .19s cubic-bezier(.4, 0, .2, 1) forwards;
+}
+@keyframes wp-overlay-out { to { opacity: 0; } }
+@keyframes wp-card-out { to { opacity: 0; translate: 0 10px; scale: .97; } }
+
+/* ---------- 实时模式：全屏壁纸淡入合拢 / 退出舒展 ---------- */
+#live-canvas { animation: wp-live-in .42s var(--ease-out) backwards; }
+@keyframes wp-live-in { from { opacity: 0; scale: .988; } }
+.live-overlay.live-exiting { animation: wp-overlay-out .26s ease-in forwards; }
+.live-overlay.live-exiting #live-canvas { animation: none; }
