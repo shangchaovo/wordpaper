@@ -241,24 +241,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-server_up() { curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; }
-companion_up() { curl -fsS "http://127.0.0.1:$COMP_PORT/status.json" >/dev/null 2>&1; }
+server_up() { curl -fsS -m 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; }
+companion_up() { curl -fsS -m 3 "http://127.0.0.1:$COMP_PORT/status.json" >/dev/null 2>&1; }
 
 # ── 版本闸门:在跑的实例版本和本包不一致时(比如没退旧版就装了新版),
-#    只替换从某个 WordPaper.app 启动的进程——别人/开发版实例绝不乱动。
+#    清掉**所有**从某个 WordPaper.app 启动的 server/companion —— 不按端口找,
+#    因为旧实例端口可能漂移(8770 被占时 launcher 会顺延),按端口扫会漏。
+#    别人/开发版实例(node 直接跑仓库目录)绝不乱动。
 #    旧版 healthz 不带 version 字段,读到空串也算不一致。────────────────
 bundle_process() {  # $1=pid;该进程的工作目录在某个 WordPaper.app 里才算我们的实例
   lsof -a -p "$1" -d cwd -Fn 2>/dev/null | grep -q "WordPaper.app/Contents/Resources"
 }
+sweep_old_bundle_instances() {
+  # pgrep 是 ERE:交替用 (server|companion),别用 BRE 转义 \(..\|..\) — 实测不匹配
+  for p in $(pgrep -f "WordPaper.app/Contents/Resources.*[sc](erver|ompanion)\\.js" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    bundle_process "$p" && kill "$p" 2>/dev/null
+  done
+}
 if server_up; then
-  RUNNING_VER="$(curl -fsS "http://127.0.0.1:$PORT/healthz" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  RUNNING_VER="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
   MY_VER="$(cat "$RES/VERSION" 2>/dev/null)"
   if [ -n "$MY_VER" ] && [ "$RUNNING_VER" != "$MY_VER" ]; then
-    for port in "$PORT" "$COMP_PORT"; do
-      for p in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
-        bundle_process "$p" && kill "$p" 2>/dev/null
-      done
-    done
+    sweep_old_bundle_instances
     sleep 1
   fi
 fi
@@ -310,7 +315,7 @@ if [ -n "$STALE" ]; then
   done
 fi
 
-# ── 桌面伴侣(小词灵 / 自动壁纸 / 热键,并打开网页) ────────────
+# ── 桌面伴侣(小词灵 / 菜单栏图标 / 自动壁纸 / 热键,并打开网页) ─────
 "$NODE" companion.js >>"$LOG_DIR/companion.log" 2>&1 &
 COMP_PID=$!
 sleep 1.5
@@ -318,7 +323,28 @@ if ! kill -0 "$COMP_PID" 2>/dev/null; then
   wp_alert "$(printf '小词灵启动失败。\n请把日志文件发给开发者:\n%s/companion.log' "$LOG_DIR")"
   exit 1
 fi
-wait "$COMP_PID"
+# ── wait server(核心守护循环)──────────────────────────────────
+# 生命周期以主 server 为准:server 正常退出(应用内更新落旗标 / 菜单栏「退出」/
+# SIGTERM),伴侣靠 companion.js 的 follow-server 在数秒内跟随退出;这里
+# wait 的是 SERVER_PID 而非 COMP_PID —— 旧版等伴侣,但更新后只有 server 退,
+# 伴侣不死 → launcher 永远等不到 → 重启旗标永远没人处理(「点了更新没反应」
+# 的根因)。server 死后最多再给伴侣 15s 收尾,超时强杀,防止孤儿图标。
+if [ -n "$SERVER_PID" ]; then
+  wait "$SERVER_PID"
+else
+  # server 已在跑(同版本、只缺伴侣的半死状态):等它退出,不要误杀新伴侣
+  while server_up; do sleep 2; done
+fi
+echo "server exited; waiting for companion to follow" >>"$LOG_DIR/server.log"
+for _ in $(seq 1 60); do
+  kill -0 "$COMP_PID" 2>/dev/null || break
+  sleep 0.25
+done
+if kill -0 "$COMP_PID" 2>/dev/null; then
+  kill "$COMP_PID" 2>/dev/null
+  sleep 1
+  kill -9 "$COMP_PID" 2>/dev/null
+fi
 # 服务链退出后:若是应用内更新的预期退出(UPDATE_FLAG 在),exec 重入本脚本,
 # 重新走一遍完整启动流程(含版本闸门 + 端口清理 + 小词灵复活)。
 if restart_requested; then
@@ -351,14 +377,19 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
 
 {extra}
 跑起来之后:
+  • Mac 屏幕上方菜单栏会出现一个「词」小图标 —— 它亮着就说明 WordPaper
+    正在正常运行。点开它:
+      召唤/隐藏小词灵 · 换一组词 · 记忆复习本 · 打开控制面板 ·
+      检查更新 / 一键更新 · 退出 WordPaper
   • 自动把桌面壁纸换成今天的单词,每 30 分钟换一组。
-  • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习。
+  • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习;关掉后随时从菜单栏召回。
   • 浏览器会打开本机端口(默认 8770;若被 AirPlay 等占用会自动换下一个可用口),首次使用请创建账号。
   • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。
   • 已经在运行时再次双击图标,会重新打开浏览器里的页面,
     不会重复启动——看到「没反应」时先看浏览器是不是已经开着了。
 
-退出:程序坞(Dock)里右键 WordPaper 图标 →「退出」。
+退出:点菜单栏「词」图标 → 「退出 WordPaper」。(主服务与桌面小词灵
+  会一起干净退出;再次双击 App 即可重新打开。)
 
 不想自动换桌面壁纸?
   编辑 ~/Library/Application Support/WordPaper/companion/companion-config.json,

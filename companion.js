@@ -46,6 +46,12 @@ const CUSTOM_WORDS_PATH = process.env.WORDPAPER_CUSTOM_WORDS_PATH || migratedRun
 const PET_CLOSED_PATH = migratedRuntimePath('pet-closed');
 const PET_POSITION_PATH = migratedRuntimePath('pet-position.json');
 
+/* 独立版(App)检测与内置版本号:菜单栏「检查更新 / 一键更新 / 退出」的闸门。
+ * APP_MODE = 进程确实长在某个 WordPaper.app bundle 里(开发目录跑时为 false)。 */
+let BUNDLED_VERSION = '';
+try { BUNDLED_VERSION = fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch {}
+const APP_MODE = (() => { try { return fs.realpathSync(ROOT).includes('WordPaper.app'); } catch { return false; } })();
+
 /* ---------------- config ---------------- */
 const CONFIG_PATH = process.env.WORDPAPER_CONFIG_PATH || migratedRuntimePath('companion-config.json');
 function loadConfig() {
@@ -1276,8 +1282,275 @@ function startHotkey() {
   hotkeyChild.unref();
   hotkeyAlive = true;
   const label = fwd.label + (back ? ' / ' + back.label : '');
-  console.log(`[companion] 全局快捷键已开启：${label}（需在 系统设置→隐私与安全性→输入监控 里给 osascript 授权才生效，否则热键无响应）`);
+  console.log(`[companion] 全局快捷键已开启：${label}（需在 系统设置→隐私与安全性→输入监控 里给 osascript 才生效，否则热键无响应）`);
 }
+
+/* ---------------- menu bar item (zero-dep, via a JXA status item) --------
+ * 常驻菜单栏「词」图标 = App 正在运行的可见指示。菜单提供:
+ *   召唤/隐藏小词灵 · 换一组词 · 记忆复习本 · 打开控制面板 ·
+ *   检查更新/一键更新(独立版) · 退出 WordPaper
+ * 点击经 127.0.0.1:PORT/menu.php 回到本进程执行;菜单内容 10s 刷新一次 +
+ * 每次命令完成后立即刷新。菜单栏脚本随伴侣进程存活,server 死亡时伴侣
+ * follow-server 自杀,图标随 App 一同消失(不再有「看不见的僵尸实例」)。 */
+function serverBase() {
+  const origin = localWebOrigin(CFG.webOrigin);
+  return origin || `http://localhost:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
+}
+
+function buildMenuBarJXA(port) {
+  return `ObjC.import('Cocoa');
+function run(argv){
+  var PORT = '${port}';
+  var item = $.NSStatusBar.systemStatusBar.statusItemWithLength($.NSVariableStatusItemLength);
+  var btn = item.button;
+  btn.toolTip = 'WordPaper · 每日壁纸(点击打开菜单)';
+  // 图标:黑描边小圆点+词签,走 template 模式自动适配明暗菜单栏;渲染失败退化为文字「词」
+  (function(){
+    try {
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"><circle cx="9" cy="9" r="7.2" fill="none" stroke="black" stroke-width="1.6"/><rect x="5" y="6.4" width="8" height="1.7" rx="0.85" fill="black"/><rect x="5" y="9.9" width="5.2" height="1.7" rx="0.85" fill="black"/></svg>';
+      var b64 = $.NSString.stringWithString(svg).dataUsingEncodingAllowLossyConversion($.NSUTF8StringEncoding, true);
+      var img = $.NSImage.alloc.initWithData(b64);
+      if (img && !img.isNil()) { img.setSize($.NSMakeSize(16, 16)); img.setTemplate(true); btn.image = img; }
+      else btn.title = '词';
+    } catch (e) { btn.title = '词'; }
+  })();
+
+  var lastMenuSig = '', lastGoodAt = Date.now();
+  var LOCAL_HEADER = 'X-WordPaper-Local';
+  function markLocal(req){ req.setValueForHTTPHeaderField('1', LOCAL_HEADER); }
+  function post(cmd){
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/menu.php?cmd=' + cmd));
+    req.setHTTPMethod('POST');
+    markLocal(req);
+    req.setTimeoutInterval(8);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      rebuildMenu(true);
+    });
+  }
+  function openURL(u){
+    $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString(u));
+  }
+  var MenuTarget = ObjC.registerSubclass({ name: 'DWMenuBarTarget', methods: {
+    // JXA 无法从 JS 函数推断 ObjC 签名,必须显式 types(['void', ['id']]),否则 -2700
+    'fire:': { types: ['void', ['id']], implementation: function(sender) {
+      var cmd = ObjC.unwrap(sender.representedObject) || '';
+      if (cmd === '') return;
+      if (cmd.indexOf('open:') === 0) { openURL(cmd.slice(5)); return; }
+      if (cmd === 'quit') {
+        item.menu = $();             // 先摘菜单再退出,图标立刻消失(nil 用 $())
+        $.NSStatusBar.systemStatusBar.removeStatusItem(item);
+        post('quit');
+        return;
+      }
+      post(cmd);
+    } }
+  }});
+  var target = $.DWMenuBarTarget.alloc.init;   // 注册类挂在 $ 全局,返回值不可用(与 DWGrip 同)
+
+  function addItem(menu, title, cmd, disabled){
+    var it = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(title, cmd === '' ? $() : 'fire:', '');
+    if (cmd !== '') { it.setTarget(target); it.setRepresentedObject($.NSString.stringWithString(cmd)); }
+    if (disabled) it.setEnabled(false);
+    menu.addItem(it);
+    return it;
+  }
+  function sep(menu){ menu.addItem($.NSMenuItem.separatorItem); }
+
+  function rebuildMenu(force){
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/menu-status.json'));
+    markLocal(req);
+    req.setTimeoutInterval(4);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      var st = null;
+      if (data) {
+        lastGoodAt = Date.now();
+        try { st = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js); } catch (e) {}
+      }
+      var sig = data ? $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js : '';
+      if (!force && sig === lastMenuSig) return;
+      lastMenuSig = sig;
+      if (!st || !st.ok) {          // 服务不可达:降级为「重启 WordPaper」
+        var m2 = $.NSMenu.alloc.init;
+        addItem(m2, 'WordPaper 暂时没有响应…', '', true);
+        addItem(m2, '重新打开 WordPaper', 'open:' + (st && st.web ? st.web : 'http://localhost:8770'), false);
+        item.menu = m2;
+        return;
+      }
+      var menu = $.NSMenu.alloc.init;
+      menu.setAutoenablesItems(false);
+      if (st.pet) addItem(menu, '隐藏小词灵', 'pet-close', false);
+      else addItem(menu, '召唤小词灵', 'pet-open', false);
+      addItem(menu, '换一组词', 'next', false);
+      addItem(menu, '记忆复习本…', 'open:' + st.web + '/?openMemory=1', false);
+      addItem(menu, '打开控制面板…', 'open:' + st.web, false);
+      sep(menu);
+      var u = st.update || {};
+      if (u.applying) {
+        addItem(menu, '正在更新到 v' + (u.target || '…') + '…', '', true);
+      } else if (u.error) {
+        addItem(menu, '更新失败:' + String(u.error).slice(0, 40), '', true);
+        addItem(menu, '重试检查更新', 'update-check', false);
+      } else if (u.available && u.latest) {
+        addItem(menu, '一键更新到 v' + u.latest, 'update-apply', false);
+        addItem(menu, '当前 v' + u.current, '', true);
+      } else if (u.current) {
+        addItem(menu, u.checked ? '当前 v' + u.current + '(已是最新)' : '检查更新…', u.checked ? '' : 'update-check', false);
+      }
+      if (u.available || u.applying) sep(menu);
+      sep(menu);
+      addItem(menu, '退出 WordPaper', 'quit', false);
+      item.menu = menu;
+    });
+  }
+  rebuildMenu(true);
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(10, true, function(){ rebuildMenu(false); });
+  // 伴侣进程崩溃/被杀后图标绝不能残留:连续 15s 拿不到状态就自我了断
+  // (正常周期 10s;0.5s 一轮 runUntilDate 保证能走到这里)。
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5, true, function(){
+    if (Date.now() - lastGoodAt > 15000) {
+      try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e) {}
+      $.NSApplication.sharedApplication.terminate($());
+    }
+  });
+  while (true) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); }
+}
+`;
+}
+
+let menuBarChild = null;
+function stopMenuBar() {
+  if (menuBarChild) { try { menuBarChild.kill(); } catch {} menuBarChild = null; }
+}
+function startMenuBar() {
+  if (!isMac || menuBarChild) return;
+  const scriptPath = path.join(os.tmpdir(), 'dw_menubar.jxa.js');
+  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
+  const { spawn } = require('child_process');
+  menuBarChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+  menuBarChild.stderr.on('data', data => console.error('[companion] menu bar:', String(data).trim()));
+  menuBarChild.on('exit', () => { menuBarChild = null; });
+  menuBarChild.unref();
+  console.log('[companion] 菜单栏图标已显示:小词灵/换一组/记忆本/检查更新/退出 都在这里');
+}
+
+/* 菜单栏命令与状态(仅本机回环,见 /menu.php) */
+let updateState = { applying: false, target: '', error: '', checked: false, available: false, latest: '', checkedAt: 0 };
+function menuStatusPayload() {
+  return {
+    ok: true,
+    pet: petVisible,
+    appMode: APP_MODE,
+    version: BUNDLED_VERSION,
+    web: localWebOrigin(CFG.webOrigin) || `http://localhost:${serverWebPort()}`,
+    update: updateState,
+  };
+}
+function serverWebPort() {
+  try { return Number(new URL(CFG.webOrigin).port) || 8770; } catch { return 8770; }
+}
+/* 向主服务查询更新状态(/api/update/check 是免登录只读端点)。 */
+function fetchServerUpdate(cb) {
+  const req = http.get(`${serverBase()}/api/update/check?refresh=1`, { timeout: 15000 }, res => {
+    let body = '';
+    res.on('data', c => { body += c; });
+    res.on('end', () => {
+      try {
+        const d = JSON.parse(body);
+        cb(null, { available: !!d.available, latest: d.latest || '', current: d.current || '' });
+      } catch (e) { cb(e); }
+    });
+  });
+  req.on('error', err => cb(err));
+  req.on('timeout', () => { req.destroy(new Error('超时')); });
+}
+function handleMenuCommand(cmd, res) {
+  const jsonOut = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+  switch (cmd) {
+    case 'pet-open':
+      try { fs.unlinkSync(PET_CLOSED_PATH); } catch {}
+      startPet();
+      return jsonOut({ ok: true, pet: petVisible });
+    case 'pet-close':
+      try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}
+      stopPet();
+      return jsonOut({ ok: true, pet: false });
+    case 'next': {
+      const now = Date.now();
+      if (now - lastAdvanceAt >= 500) { lastAdvanceAt = now; bumpDelta(1); if (advancing) pendingDir = 1; else runAdvance(1); }
+      return jsonOut({ ok: true });
+    }
+    case 'update-check': {
+      if (!APP_MODE || !BUNDLED_VERSION) return jsonOut({ ok: false, error: '开发模式不支持检查更新' });
+      fetchServerUpdate((err, info) => {
+        if (err) { updateState.error = '无法连接主服务'; }
+        else {
+          updateState.error = '';
+          updateState.available = info.available; updateState.latest = info.latest;
+          updateState.current = info.current || BUNDLED_VERSION; updateState.checked = true; updateState.checkedAt = Date.now();
+        }
+      });
+      return jsonOut({ ok: true, checking: true });
+    }
+    case 'update-apply': {
+      if (!APP_MODE || !BUNDLED_VERSION) return jsonOut({ ok: false, error: '开发模式不支持内置更新' });
+      if (updateState.applying) return jsonOut({ ok: true, applying: true });
+      fetchServerUpdate((err, info) => {
+        if (err || !info.available) { updateState.error = err ? '无法连接主服务' : '没有可用的新版本'; updateState.checked = true; return; }
+        updateState.applying = true; updateState.error = ''; updateState.target = info.latest;
+        const req = http.request(`${serverBase()}/api/update/apply-local`, { method: 'POST', timeout: 15000, headers: { 'X-WordPaper-Local': '1' } }, resp => {
+          resp.resume();
+          resp.on('end', () => {
+            if (resp.statusCode !== 200) { updateState.applying = false; updateState.error = '主服务拒绝更新(' + resp.statusCode + ')'; }
+          });
+        });
+        req.on('error', () => { updateState.applying = false; updateState.error = '更新请求失败'; });
+        req.end();
+        // server 落盘重启旗标后 hardExit;follow-server 会让本进程跟随退出,
+        // launcher 重入后新链接管 —— 菜单栏图标短暂消失再回来属预期。
+        setTimeout(() => { if (updateState.applying) updateState.error = '更新超时(6 分钟无进展)'; updateState.applying = false; }, 6 * 60 * 1000).unref();
+      });
+      return jsonOut({ ok: true, applying: true });
+    }
+    case 'quit': {
+      console.log('[companion] 收到菜单栏退出命令:请求主服务一同退出');
+      const req = http.request(`${serverBase()}/api/quit`, { method: 'POST', timeout: 8000, headers: { 'X-WordPaper-Local': '1' } }, resp => resp.resume());
+      req.on('error', () => {});
+      req.end();
+      // server 会自行 shutdown;无论如何本进程稍后自杀,避免孤儿图标
+      setTimeout(() => process.exit(0), 1500).unref();
+      return jsonOut({ ok: true, quitting: true });
+    }
+    default:
+      res.writeHead(400); return res.end();
+  }
+}
+
+/* follow-server:主服务一旦死亡,伴侣在 3 个探测周期内跟随退出 —— 服务链
+ * 的生命周期由 server 决定(launcher wait server)。这也是应用内更新重启链
+ * 得以在**旧 launcher**上成立的关键:更新后 server 退出 → 伴侣退出 → 旧
+ * launcher 的 wait 返回 → 看到重启旗标 → 重入拉起新版本。
+ * 的生命周期由 server 决定(launcher wait server)。这也是应用内更新重启链
+ * 得以在**旧 launcher**上成立的关键:更新后 server 退出 → 伴侣退出 → 旧
+ * launcher 的 wait 返回 → 看到重启旗标 → 重入拉起新版本。
+ * 闸门:独立版(APP_MODE)恒开;开发目录手动跑伴侣不开(防误杀)。 */
+let serverMissCount = 0;
+function followServer() {
+  if (!APP_MODE && process.env.WORDPAPER_FOLLOW_SERVER !== '1') return;
+  const req = http.get(`${serverBase()}/healthz`, { timeout: 4000 }, res => {
+    res.resume();
+    serverMissCount = 0;
+  });
+  req.on('error', () => {
+    serverMissCount++;
+    if (serverMissCount >= 3) {
+      console.log('[companion] 主服务已退出,伴侣跟随退出(服务链由 launcher 接管)');
+      try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}   // 跟随时收起小词灵,重启后由新链恢复
+      process.exit(0);
+    }
+  });
+  req.on('timeout', () => req.destroy(new Error('healthz 超时')));
+}
+
 /* Render the pet card PNG at a given size (shared by spawn + live resize +
  * shape change). sips is fast (~50ms), so it can run during a resize drag.
  * Serialized: concurrent POSTs during a fast drag would otherwise race on the
@@ -2129,7 +2402,22 @@ const server = http.createServer((req, res) => {
   // status endpoint
   if (url === '/status.json') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ mac: isMac, config: CFG, pet: petVisible, hotkey: hotkeyStatus() }));
+    return res.end(JSON.stringify({ mac: isMac, config: CFG, pet: petVisible, hotkey: hotkeyStatus(), menuBar: Boolean(menuBarChild) }));
+  }
+
+  // 菜单栏图标的数据源(JXA 子进程 10s 拉一次;密钥头防其它本机进程干扰显示)
+  if (url === '/menu-status.json') {
+    if (req.headers['x-wordpaper-local'] !== '1') { res.writeHead(403); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(menuStatusPayload()));
+  }
+  // 菜单栏点击:召唤/隐藏小词灵、换一组、检查更新、一键更新、退出
+  if (url === '/menu.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (req.headers['x-wordpaper-local'] !== '1') { res.writeHead(403); return res.end(); }
+    let cmd = '';
+    try { cmd = new URL(req.url, 'http://localhost').searchParams.get('cmd') || ''; } catch {}
+    return handleMenuCommand(cmd, res);
   }
 
   // one-click enable: this server IS the companion, so it's already running.
@@ -2182,8 +2470,15 @@ server.listen(CFG.port, '127.0.0.1', () => {
     }
     // global hotkey listener (independent of the pet; survives pet ✕ close)
     startHotkey();
+    // menu bar status item:「App 在跑」的可见指示 + 召唤/退出/更新入口。
+    // 开机静默自启也显示(这正是用户要的「后台运行也看得见」)。
+    if (process.env.WORDPAPER_TEST_MODE !== '1') startMenuBar();
+    // follow-server:主服务死亡 → 伴侣跟随退出(独立版恒开)
+    followServer();
+    setInterval(followServer, 5000).unref();
     const cleanup = () => {
       stopPet();
+      stopMenuBar();
       if (hotkeyChild) { try { hotkeyChild.kill(); } catch {} }
       process.exit(0);
     };

@@ -243,7 +243,7 @@
     currentUser = session.user;
     csrfToken = session.csrfToken;
     if (session.update && session.update.latest) {
-      emit('wordpaper:storage-warning', { message: 'WordPaper 有新版本 v' + session.update.latest + ':重新下载安装即可,数据不受影响' });
+      emit('wordpaper:storage-warning', { message: 'WordPaper 有新版本 v' + session.update.latest + ':在「支持与反馈」里点「一键更新」即可,数据不受影响' });
     }
     if (session.mirrored && session.upstream && session.upstream !== 'ok') {
       emit('wordpaper:storage-warning', { message: session.upstream === 'reauth'

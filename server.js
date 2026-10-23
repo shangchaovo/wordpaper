@@ -800,6 +800,10 @@ function spawnCompanion(extraEnv) {
     env: Object.assign({}, process.env, {
       WORDPAPER_PORT: String(COMPANION_PORT),
       WORDPAPER_WEB_ORIGIN: `http://localhost:${PORT}`,
+      // 伴侣跟随本 server 生命周期:server 退出(update/菜单栏退出/被杀)后
+      // 伴侣 3 个探测周期内自杀,服务链由 launcher 接管。launchd/server 派生
+      // 的伴侣才带这个标记;开发目录手动 `node companion.js` 不带,防误杀。
+      WORDPAPER_FOLLOW_SERVER: '1',
     }, extraEnv),
   });
   child.unref();
@@ -1042,7 +1046,7 @@ async function handle(req, res) {
   // ── 应用内自更新(独立版专属):检查 + 安装。棘轮与权限校验都在 POST /apply
   //    里重做一遍,GET /check 只读无副作用。 ──────────────────────────────
   if (pathname === '/api/update/check' && req.method === 'GET') {
-    // ?refresh=1: 请求方明确要新探测(点击「重新检查」时)。限速 30s 防滥用。
+    // ?refresh=1: 请求方明确要新探测(点击「重新检查」/菜单栏更新时)。限速 30s 防滥用。
     if (parsed.searchParams.get('refresh') === '1' && BUNDLED_VERSION && MODE === 'local') {
       const now = Date.now();
       if (now - lastRefreshProbe > 30000) {
@@ -1105,6 +1109,49 @@ async function handle(req, res) {
       current: BUNDLED_VERSION || '',
       target: latestVersion || '',
     });
+    return;
+  }
+
+  /* ── 菜单栏专用(伴侣子进程 JXA 调用;仅本机回环 + 共享密钥头)────────
+   * /api/update/apply-local:与 /api/update/apply 相同的安装流程,但不要求
+   * 浏览器登录会话 —— 菜单栏没有 cookie,靠「回环来源 + X-WordPaper-Local」
+   * 闸门(与伴侣 mutation 端点同一信任级别)。菜单栏先经 /api/update/check
+   * 拿到 latest 才会触发这里。 */
+  if (pathname === '/api/update/apply-local' && req.method === 'POST') {
+    if (!isLoopbackRequest(req) || req.headers['x-wordpaper-local'] !== '1') { json(res, 403, { error: '仅限本机菜单栏调用' }); return; }
+    if (MODE !== 'local' || !BUNDLED_VERSION) { json(res, 404, { error: '只有本机安装的 WordPaper.app 支持内置更新' }); return; }
+    if (updateApplying) { json(res, 429, { error: '更新正在进行中,请勿重复点击' }); return; }
+    if (!latestVersion || !versionNewer(latestVersion, BUNDLED_VERSION)) {
+      json(res, 409, { error: '没有可安装的新版本(已是最新,或尚未检查到更新)' });
+      return;
+    }
+    const targetLocal = latestVersion;
+    updateApplying = true;
+    updater.applyUpdate(BUNDLED_VERSION, targetLocal, (fraction, stage) => {
+      updateProgress = { fraction, stage };
+    }).then(() => {
+      updateProgress = { fraction: 1, stage: 'restart' };
+    }).catch(error => {
+      updateApplying = false;
+      updateProgress = null;
+      updateError = String(error.message || error);
+      console.error('[update] apply-local failed:', error.message || error);
+    }).then(() => {
+      setTimeout(() => { try { shutdown(); } catch {} }, 1200);
+    });
+    json(res, 200, { ok: true, started: true, target: targetLocal });
+    return;
+  }
+
+  /* ── 菜单栏「退出 WordPaper」:server 先走正常 shutdown(存库/关连接),
+   *    伴侣经 follow-server 探测到死亡后跟随退出,launcher 的 wait 返回,
+   *    服务链整体干净收场。闸门同上。 ─────────────────────────────── */
+  if (pathname === '/api/quit' && req.method === 'POST') {
+    if (!isLoopbackRequest(req) || req.headers['x-wordpaper-local'] !== '1') { json(res, 403, { error: '仅限本机菜单栏调用' }); return; }
+    if (MODE !== 'local') { json(res, 404, { error: '公网部署不响应退出命令' }); return; }
+    json(res, 200, { ok: true });
+    console.log('[server] 菜单栏请求退出:1.2s 后 shutdown');
+    setTimeout(() => { try { shutdown(); } catch {} }, 1200);
     return;
   }
 

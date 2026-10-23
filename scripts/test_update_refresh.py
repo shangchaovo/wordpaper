@@ -27,10 +27,12 @@ try:
     opener = build_opener(HTTPCookieProcessor(jar))
     opener.open(Request(base + "/api/auth/register", method="POST", data=json.dumps({"username": "ref1", "password": "refresh-test-1"}).encode(), headers={"Content-Type": "application/json", "Origin": base}), timeout=10)
 
-    # current=2.3.1 (repo VERSION) → upstream 2.3.1 → NOT available
+    # current=repo VERSION → upstream 同版本 → NOT available
+    # (不钉死具体版本号,VERSION 前进时测试不用改)
+    repo_version = open("/Users/xieshangchao/daily-wallpaper/VERSION", encoding="utf-8").read().strip()
     d = json.loads(opener.open(base + "/api/update/check?refresh=1", timeout=20).read())
     check("refresh=1 正常返回", "available" in d)
-    check("当前版本=2.3.1 时不提示更新", d["available"] is False and d["current"] == "2.3.1")
+    check(f"当前版本={repo_version} 时不提示更新", d["available"] is False and d["current"] == repo_version)
     # second refresh within 30s rate limit — should not crash, still fine
     d2 = json.loads(opener.open(base + "/api/update/check?refresh=1", timeout=20).read())
     check("refresh 限速内重复调用不崩", "available" in d2)

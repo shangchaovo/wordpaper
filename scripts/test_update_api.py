@@ -83,11 +83,44 @@ try:
     check("public 模式 supported=false", data["supported"] is False)
     code, _ = http_post(base2, "/api/update/apply", {"Origin": base2}, b"{}")
     check("public 模式 apply 拒绝", code in (401, 404))
+    # 菜单栏端点在 public 模式必须拒绝(非回环场景;MODE 非 local 先被挡)
+    code, _ = http_post(base2, "/api/update/apply-local", {"X-WordPaper-Local": "1"}, b"{}")
+    check("public 模式 apply-local 拒绝", code in (403, 404))
+    code, _ = http_post(base2, "/api/quit", {"X-WordPaper-Local": "1"}, b"{}")
+    check("public 模式 quit 拒绝", code in (403, 404))
 finally:
     server2.terminate()
     try: server2.wait(timeout=5)
     except Exception: server2.kill()
     shutil.rmtree(data_dir2, ignore_errors=True)
+
+# ── local 模式下的菜单栏端点闸门:缺头 403,带头放行到版本/限额检查 ──
+def free_port3():
+    s3 = socket.socket(); s3.bind(("127.0.0.1", 0)); p3 = s3.getsockname()[1]; s3.close(); return p3
+port3 = free_port3()
+data_dir3 = tempfile.mkdtemp(prefix="wp-upd-api3-")
+env3 = dict(os.environ, PORT=str(port3), HOST="127.0.0.1", WORDPAPER_MODE="local", WORDPAPER_DATA_DIR=data_dir3, NODE_ENV="test")
+env3.pop("WORDPAPER_COMPANION_ENABLED", None)
+server3 = subprocess.Popen(["node", "server.js"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env3, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+try:
+    base3 = f"http://127.0.0.1:{port3}"
+    for _ in range(50):
+        try: urlopen(base3 + "/login.html", timeout=1); break
+        except Exception: time.sleep(0.2)
+    # 开发目录跑:ROOT 不在 WordPaper.app?BUNDLED_VERSION 取决于 VERSION 文件是否被 rsync 过。
+    # 仓库里 VERSION 存在 → BUNDLED_VERSION 非空 → apply-local 走到 ratchet 检查;
+    # latestVersion 为空(测试环境连不上 GitHub 或版本相同)→ 409。
+    code, _ = http_post(base3, "/api/update/apply-local", {}, b"{}")
+    check("apply-local 缺头=403", code == 403)
+    code, _ = http_post(base3, "/api/quit", {}, b"{}")
+    check("quit 缺头=403", code == 403)
+    code, data = http_post(base3, "/api/quit", {"X-WordPaper-Local": "1"}, b"{}")
+    check("quit 带头=200 ok", code == 200 and data.get("ok") is True)
+finally:
+    server3.terminate()
+    try: server3.wait(timeout=5)
+    except Exception: server3.kill()
+    shutil.rmtree(data_dir3, ignore_errors=True)
 
 passed = sum(1 for _, ok in results if ok)
 print(f"通过 {passed}/{len(results)}")
