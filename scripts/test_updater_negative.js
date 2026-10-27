@@ -1,5 +1,7 @@
 'use strict';
 /* Negative test: mounted DMG payload corrupted → per-file SHA mismatch → abort. */
+// Exercise the mocked Mac update path on every CI host.
+Object.defineProperty(process, 'platform', { value: 'darwin' });
 const path = require('path');
 const fs = require('fs');
 const os = require('os');

@@ -1,5 +1,8 @@
 'use strict';
 /* Updater e2e harness: fake DMG mount + rsync through stubbed execFile/fs. */
+// The harness emulates a Mac app; mounting and rsync are already stubbed.
+// Keep the production platform guard while allowing this fixture on Linux CI.
+Object.defineProperty(process, 'platform', { value: 'darwin' });
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
