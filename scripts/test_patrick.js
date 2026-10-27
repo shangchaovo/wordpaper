@@ -54,7 +54,24 @@ async function waitQuizGeom(base, predicate = () => true) {
   const statePath = path.join(temp, 'state.json');
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, [path.join(__dirname, '..', 'companion.js')], {
+  const runtimeArgs = [];
+  if (process.platform !== 'darwin' || process.env.WORDPAPER_TEST_STUB_RASTERIZER === '1') {
+    // Endpoint tests need asynchronous publication, not actual pixels. macOS
+    // exercises real sips; Linux uses opaque fixture bytes. Visual rendering
+    // remains covered separately by test_quiz_layout.py on macOS.
+    const preload = path.join(temp, 'rasterizer-fixture.cjs');
+    fs.writeFileSync(preload, `
+      const cp = require('node:child_process'), fs = require('node:fs');
+      const original = cp.execFile;
+      cp.execFile = function(command, args, options, callback) {
+        if (command !== 'sips') return original.apply(this, arguments);
+        fs.copyFile(args[3], args[args.indexOf('--out') + 1], error => callback(error, '', ''));
+        return { kill() {} };
+      };
+    `);
+    runtimeArgs.push('--require', preload);
+  }
+  const child = spawn(process.execPath, [...runtimeArgs, path.join(__dirname, '..', 'companion.js')], {
     cwd: path.join(__dirname, '..'), stdio: 'ignore',
     env: Object.assign({}, process.env, {
       WORDPAPER_TEST_MODE: '1', WORDPAPER_PORT: String(port),
