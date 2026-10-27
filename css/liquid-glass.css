@@ -1,0 +1,197 @@
+/* Shared optical material for Liquid and Dark Liquid. Loaded after motion.css.
+ * Refraction is restricted to small toolbars; reading surfaces stay still. */
+:root[data-ui-theme="liquid"] {
+  --lg-base: #e8e8eb;
+  --lg-solid: #f6f6f7;
+  --lg-panel: linear-gradient(145deg, #ffffffa8, #ffffff52 46%, #ffffff85);
+  --lg-control: linear-gradient(160deg, #ffffffdb, #ffffff60 52%, #ffffff94);
+  --lg-recess: #ffffff45;
+  --lg-edge: #ffffffc7;
+  --lg-highlight: #ffffffed;
+  --lg-lowlight: #0000001c;
+  --lg-sheen: .5;
+  --lg-shadow: #1c1c2420;
+  --lg-dot: #20202714;
+  --lg-focus: #49494f;
+}
+:root[data-ui-theme="darkliquid"] {
+  --bg: #111214; --bg-2: #1a1b1e;
+  --panel: #292a2f99; --paper: #222327; --paper-muted: #27282c;
+  --ink: #f1f1f3; --sub: #afb0b8;
+  --line: #ffffff1c; --line-strong: #ffffff38;
+  --glass-shadow: 0 12px 30px #00000030, inset 0 1px 0 #ffffff21;
+  --lg-base: #141517;
+  --lg-solid: #242529;
+  --lg-panel: linear-gradient(145deg, #55565b70, #24252980 46%, #37383d73);
+  --lg-control: linear-gradient(160deg, #ffffff24, #ffffff08 52%, #ffffff15);
+  --lg-recess: #00000020;
+  --lg-edge: #ffffff38;
+  --lg-highlight: #ffffff64;
+  --lg-lowlight: #0000006b;
+  --lg-sheen: .16;
+  --lg-shadow: #00000055;
+  --lg-dot: #ffffff0e;
+  --lg-focus: #e8e8ee;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) body {
+  background: radial-gradient(ellipse at 12% 0, #ffffff15, transparent 48%),
+    radial-gradient(ellipse at 88% 75%, #88888814, transparent 48%), var(--lg-base);
+  background-attachment: scroll;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) body::before,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) body::after { content: none; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .topbar { background: transparent; }
+
+/* A rounded outer lens, a second inset edge and a dark lower lip. */
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is(.top-actions.layout-actions, .meta-actions, .panel-col, .pet-dock, .stage, .word-inspector, .modal-card) {
+  border: 1px solid var(--lg-edge);
+  border-radius: 26px;
+  background: var(--lg-panel);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight),
+    inset 2px 0 2px #ffffff16, inset -2px 0 2px #ffffff0c,
+    0 2px 3px #00000008, 0 14px 32px var(--lg-shadow);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is(.top-actions.layout-actions, .meta-actions) { border-radius: 24px; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is(.top-actions.layout-actions, .meta-actions, .pet-dock, .word-inspector) {
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic] {
+  --optic-blur: 7px;
+  will-change: auto;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic].liquid-refraction-ready {
+  -webkit-backdrop-filter: blur(var(--optic-blur)) var(--liquid-refraction);
+  backdrop-filter: blur(var(--optic-blur)) var(--liquid-refraction);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic="deep"] {
+  transform: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::before {
+  background: radial-gradient(ellipse at 15% 0, #ffffff85, transparent 48%),
+    linear-gradient(118deg, transparent 35%, #ffffff18 47%, transparent 59%);
+  opacity: var(--lg-sheen);
+  mix-blend-mode: normal;
+  filter: none;
+  transform: translate(var(--glass-sheen-x, 0px), var(--glass-sheen-y, 0px));
+  transition: opacity .22s ease;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic].liquid-illuminated::before,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]:has(.btn:active)::before {
+  opacity: calc(var(--lg-sheen) + .12); filter: none;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::after {
+  inset: 3px;
+  width: auto; height: auto; border: 0; box-shadow: none;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, var(--lg-highlight), transparent 26% 65%, var(--lg-highlight));
+  opacity: .72;
+  filter: none;
+  transition: opacity .22s ease;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic].liquid-illuminated::after { opacity: 1; filter: none; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .stage {
+  background: radial-gradient(ellipse at 15% 0, #ffffff0f, transparent 55%),
+    radial-gradient(circle, var(--lg-dot) 1px, transparent 1.5px) 0 0 / 20px 20px, var(--lg-panel);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) #preview-canvas {
+  box-shadow: 0 22px 46px var(--lg-shadow), 0 0 0 1px var(--lg-edge);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .panel-col > .card,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .panel-col > .card:hover { background: transparent; box-shadow: none; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is(.lib-card, .lib-icon, .library-current, .memory-summary) {
+  background: var(--lg-recess);
+  border-color: var(--line);
+  box-shadow: inset 0 1px 0 #ffffff0d;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .lib-card.on {
+  background: var(--lg-control);
+  border-color: var(--line-strong);
+  box-shadow: inset 2px 0 0 var(--accent-2), inset 0 1px 0 var(--lg-highlight);
+}
+
+/* Controls carry the elastic feedback; the surrounding text never warps. */
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.btn, .chip, .pattern-chip, .seg-btn) {
+  color: var(--ink);
+  border-color: var(--lg-edge);
+  border-radius: 14px;
+  background: var(--lg-control);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight), 0 3px 7px #0000000c;
+  transition: transform .24s var(--ease-out), box-shadow .2s ease, border-color .2s ease;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.btn, .chip, .pattern-chip, .seg-btn)::after {
+  background: linear-gradient(115deg, transparent 15%, #ffffff20 45%, transparent 75%);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.btn, .chip, .pattern-chip, .seg-btn):hover {
+  color: var(--ink); background: var(--lg-control);
+  border-color: var(--lg-highlight);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight), 0 5px 12px var(--lg-shadow);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.pattern-chip.on, .seg-btn.on) {
+  background: var(--lg-control); color: var(--ink); border-color: var(--lg-focus);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .btn.primary {
+  color: var(--accent-ink);
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent-2), white 25%), var(--accent-2));
+  border-color: var(--lg-edge);
+  box-shadow: inset 0 1px 0 #ffffff70, inset 0 -1px 0 #00000018, 0 5px 12px var(--lg-shadow);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.btn.ghost, .support-nav) { background: var(--lg-recess); color: var(--sub); }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .btn.danger { color: var(--danger); }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .liquid-control-pressed { transform: none; border-radius: 14px; }
+
+/* The selected theme is a glass capsule. Keyboard focus is a separate thin ring. */
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker {
+  gap: 3px; padding: 4px; border-radius: 19px;
+  border-color: var(--line); background: var(--lg-recess);
+  box-shadow: inset 0 1px 3px #0000000c, 0 1px 0 #ffffff14;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-option {
+  min-height: 32px; border-radius: 14px; color: var(--sub); background: transparent;
+  border-color: transparent; box-shadow: none;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker.has-theme-pill::before {
+  border-radius: 14px; border-color: var(--lg-edge); background: var(--lg-control);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight), 0 3px 8px #00000014;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker.has-theme-pill .ui-theme-option.on {
+  color: var(--ink); border-color: transparent; background: transparent; box-shadow: none;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .theme-orb.darkliquid {
+  border-color: #ffffff3d; background: radial-gradient(circle at 28% 22%, #d6d7db, #4b4c52 40%, #1a1b1f 75%);
+  box-shadow: inset 0 1px 1px #ffffff70, 0 1px 2px #00000030;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is(button, input, select, textarea, summary, a):focus-visible {
+  outline: 2px solid var(--lg-focus); outline-offset: 3px;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-option:focus-visible { outline-offset: -3px; }
+:root[data-ui-theme="darkliquid"] :is(select, textarea, input[type="text"], input[type="search"], input[type="number"], input[type="time"]) {
+  color: var(--ink); background: #11121480; border-color: var(--line-strong);
+  box-shadow: inset 0 1px 3px #00000030;
+}
+:root[data-ui-theme="darkliquid"] .modal-card { background: #26272bf5; }
+:root[data-ui-theme="darkliquid"] #memory-modal { --memory-paper: #222327; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic],
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::before { transform: none; transition: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) :is([data-liquid-optic], .panel-col, .word-inspector, .modal-card) {
+    background: var(--lg-solid); -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  }
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::before { display: none; }
+}
+@media (prefers-contrast: more) {
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) { --sub: var(--ink); --lg-edge: var(--ink); --line: var(--ink); --line-strong: var(--ink); }
+}
+@media (forced-colors: active) {
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) { --lg-base: Canvas; --lg-panel: Canvas; --lg-solid: Canvas; --lg-control: ButtonFace; --lg-recess: Canvas; --lg-edge: ButtonText; --lg-focus: Highlight; }
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic] { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::before,
+  :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) [data-liquid-optic]::after { display: none; }
+}

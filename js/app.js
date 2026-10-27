@@ -309,19 +309,20 @@
   }
 
   /* Liquid Glass progressive enhancement. The rounded-rect SDF keeps the
-   * content stable and refracts only the optical rim. Three sub-pixel RGB
-   * samples add restrained dispersion in Chromium; Safari and Firefox retain
-   * the same white material, highlight and depth without SVG displacement. */
+   * content stable and refracts only the optical rim. A neutral displacement
+   * pass adds edge refraction in Chromium; Safari and Firefox retain the
+   * same light / dark material, highlight and depth without SVG displacement. */
   function bindLiquidGlassMotion() {
     const opticalSelector = '.top-actions.layout-actions, .meta-actions, .pet-dock, .stage, .modal-card:not(.memory-card)';
     const interactiveSelector = 'button, .btn, .chip, .pattern-chip, .seg-btn, .ui-theme-option';
+    const isLiquid = () => ['liquid', 'darkliquid'].includes(document.documentElement.dataset.uiTheme);
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const reducedTransparency = window.matchMedia('(prefers-reduced-transparency: reduce)');
     const supportsBackdrop = CSS.supports('backdrop-filter', 'blur(1px)') || CSS.supports('-webkit-backdrop-filter', 'blur(1px)');
     const supportsSvgBackdrop = supportsBackdrop
       && CSS.supports('backdrop-filter', 'url("#wp-liquid-probe") blur(1px)')
       && /(?:Chrome|Chromium|Edg)\//.test(navigator.userAgent)
-      && !reducedTransparency.matches;
+      && typeof ResizeObserver !== 'undefined';
     const ns = 'http://www.w3.org/2000/svg';
     const opticalState = new WeakMap();
     const motionState = new Map();
@@ -403,26 +404,23 @@
     }
 
     function rebuildOptic(surface, entry) {
-      const rect = surface.getBoundingClientRect();
-      const width = Math.max(1, Math.round(rect.width));
-      const height = Math.max(1, Math.round(rect.height));
+      const width = surface.clientWidth;
+      const height = surface.clientHeight;
       const radius = Math.max(0, Math.round(parseFloat(getComputedStyle(surface).borderRadius) || 0));
-      if (width < 16 || height < 16 || (entry.width === width && entry.height === height && entry.radius === radius)) return;
+      if (reducedTransparency.matches || width < 16 || height < 16 || (entry.width === width && entry.height === height && entry.radius === radius)) return;
       entry.width = width; entry.height = height; entry.radius = radius;
       entry.filter.setAttribute('width', width);
       entry.filter.setAttribute('height', height);
       entry.image.setAttribute('width', width);
       entry.image.setAttribute('height', height);
       entry.image.setAttribute('href', displacementMap(width, height, radius));
-      const optic = surface.dataset.liquidOptic;
-      const scale = optic === 'deep' ? 22 : optic === 'thick' ? 17 : height < 90 ? 15 : 13;
-      entry.displaces.forEach((node, index) => node.setAttribute('scale', scale + (index === 0 ? 1.15 : index === 2 ? -1.15 : 0)));
+      entry.displace.setAttribute('scale', surface.dataset.liquidOptic === 'thick' ? 24 : 28);
       surface.style.setProperty('--liquid-refraction', `url(#${entry.id})`);
       surface.classList.add('liquid-refraction-ready');
     }
 
     const resizeObserver = supportsSvgBackdrop ? new ResizeObserver(entries => {
-      if (document.documentElement.dataset.uiTheme !== 'liquid') return;
+      if (!isLiquid() || reducedTransparency.matches) return;
       entries.forEach(({ target }) => {
         const entry = opticalState.get(target);
         if (!entry) return;
@@ -437,8 +435,12 @@
         ? 'deep'
         : surface.matches('.pet-dock') ? 'thick' : 'regular';
       const existing = opticalState.get(surface);
-      if (existing) { rebuildOptic(surface, existing); return; }
-      if (!supportsSvgBackdrop) return;
+      if (existing) {
+        rebuildOptic(surface, existing);
+        surface.classList.toggle('liquid-refraction-ready', !reducedTransparency.matches);
+        return;
+      }
+      if (!supportsSvgBackdrop || reducedTransparency.matches) return;
       // 大面板(.stage/.modal-card,deep)不建 SVG 折射滤镜:它们面积占屏最大,折射+backdrop
       // blur 每帧对背景重采样是卡顿主因。按设计意图(折射只给小控件,大面板光学稳定),
       // 大面板只用 shell 渐变+静态高光,外观几乎无差但流畅度天差地别。
@@ -451,36 +453,22 @@
         'color-interpolation-filters': 'sRGB',
       });
       const image = svgNode('feImage', { x: 0, y: 0, width: 1, height: 1, result: 'map', preserveAspectRatio: 'none' });
-      const channels = [
-        ['red-shift', '1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0'],
-        ['green-shift', '0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0'],
-        ['blue-shift', '0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0'],
-      ];
-      const displaces = [];
-      const isolated = [];
-      filter.appendChild(image);
-      channels.forEach(([result, values], index) => {
-        const displace = svgNode('feDisplacementMap', {
-          in: 'SourceGraphic', in2: 'map', scale: 10,
-          xChannelSelector: 'R', yChannelSelector: 'G', result,
-        });
-        const channel = svgNode('feColorMatrix', { in: result, type: 'matrix', values, result: `channel-${index}` });
-        displaces.push(displace);
-        isolated.push(channel);
-        filter.append(displace, channel);
+      // One neutral displacement pass keeps the centre and text stable. A
+      // small rounded rim provides refraction without tinted RGB fringes.
+      const displace = svgNode('feDisplacementMap', {
+        in: 'SourceGraphic', in2: 'map', scale: 28,
+        xChannelSelector: 'R', yChannelSelector: 'G',
       });
-      const redGreen = svgNode('feBlend', { in: 'channel-0', in2: 'channel-1', mode: 'screen', result: 'red-green' });
-      const rgb = svgNode('feBlend', { in: 'red-green', in2: 'channel-2', mode: 'screen' });
-      filter.append(redGreen, rgb);
+      filter.append(image, displace);
       opticalDefs.appendChild(filter);
-      const entry = { id, filter, image, displaces, width: 0, height: 0, radius: -1, timer: 0 };
+      const entry = { id, filter, image, displace, width: 0, height: 0, radius: -1, timer: 0 };
       opticalState.set(surface, entry);
       resizeObserver.observe(surface);
       rebuildOptic(surface, entry);
     }
 
     function activateOptics() {
-      if (document.documentElement.dataset.uiTheme !== 'liquid') return;
+      if (!isLiquid() || reducedTransparency.matches) return;
       document.querySelectorAll(opticalSelector).forEach(ensureOptic);
     }
 
@@ -513,7 +501,7 @@
         tiltX: 0, tiltY: 0, targetTiltX: 0, targetTiltY: 0,
         // 大面板(.stage/.modal-card)不倾斜:倾斜每帧改变 backdrop 内容,触发整面
         // 玻璃的折射+模糊重采样,是大屏卡顿主因。小控件面积小,保留倾斜代价可忽略。
-        tiltStrength: staticSheen ? 0 : .72,
+        tiltStrength: staticSheen ? 0 : .55,
         staticSheen,
         active: false,
       };
@@ -523,7 +511,7 @@
 
     function animateMotion() {
       motionFrame = 0;
-      const motionAllowed = document.documentElement.dataset.uiTheme === 'liquid' && !reducedMotion.matches;
+      const motionAllowed = isLiquid() && !reducedMotion.matches && !document.hidden;
       let needsFrame = false;
       motionState.forEach((state, surface) => {
         if (!surface.isConnected) { motionState.delete(surface); return; }
@@ -532,12 +520,14 @@
         state.y += (state.targetY - state.y) * ease;
         state.tiltX += (state.targetTiltX - state.tiltX) * ease;
         state.tiltY += (state.targetTiltY - state.tiltY) * ease;
-        // 只有值实质变化才写 DOM。CSS 变量写入会让依赖它的玻璃背景/折射样式失效重算,
-        // 原先每帧无条件写 4 个变量(连 staticSheen 大面板的 0deg tilt 也写),是纯浪费。
+        // Only translate the prepainted sheen. Gradients and blur remain static;
+        // stop scheduling as soon as the small interaction spring settles.
         if (!state.staticSheen) {
-          const gx = `${state.x.toFixed(1)}px`, gy = `${state.y.toFixed(1)}px`;
-          if (gx !== state._gx) { surface.style.setProperty('--glass-x', gx); state._gx = gx; }
-          if (gy !== state._gy) { surface.style.setProperty('--glass-y', gy); state._gy = gy; }
+          const rect = rectOf(surface);
+          const gx = `${((state.x / Math.max(1, rect.width) - .5) * 12).toFixed(1)}px`;
+          const gy = `${((state.y / Math.max(1, rect.height) - .5) * 6).toFixed(1)}px`;
+          if (gx !== state._gx) { surface.style.setProperty('--glass-sheen-x', gx); state._gx = gx; }
+          if (gy !== state._gy) { surface.style.setProperty('--glass-sheen-y', gy); state._gy = gy; }
         }
         const tx = motionAllowed ? `${state.tiltX.toFixed(3)}deg` : '0deg';
         const ty = motionAllowed ? `${state.tiltY.toFixed(3)}deg` : '0deg';
@@ -551,7 +541,7 @@
     }
 
     function scheduleMotion() {
-      if (!motionFrame) motionFrame = requestAnimationFrame(animateMotion);
+      if (!motionFrame && !document.hidden && !reducedMotion.matches && isLiquid()) motionFrame = requestAnimationFrame(animateMotion);
     }
 
     function resetSurface(surface) {
@@ -570,11 +560,11 @@
     activateOptics();
     document.addEventListener('wordpaper:ui-theme-settled', () => {
       // Optical map measurements wait until the composed transition has ended.
-      if (document.documentElement.dataset.uiTheme === 'liquid') requestAnimationFrame(() => setTimeout(activateOptics, 0));
+      if (isLiquid()) requestAnimationFrame(() => setTimeout(activateOptics, 0));
       else motionState.forEach((_, surface) => resetSurface(surface));
     });
     document.addEventListener('pointerover', event => {
-      if (document.documentElement.dataset.uiTheme !== 'liquid' || reducedMotion.matches || !(event.target instanceof Element)) return;
+      if (!isLiquid() || document.hidden || reducedMotion.matches || !(event.target instanceof Element)) return;
       invalidateRects();
       const surface = event.target.closest(opticalSelector);
       if (!surface) return;
@@ -588,9 +578,8 @@
       if (!surface || (event.relatedTarget instanceof Node && surface.contains(event.relatedTarget))) return;
       resetSurface(surface);
     }, { passive: true });
-    // pointermove 触发极密(每帧多次)。原先每个事件都 getBoundingClientRect(强制同步
-    // 布局)。这里:rAF 合帧到每帧最多处理一次、只更新命中小控件的高光/倾斜,功能不变
-    // 但主线程压力大减。(--liquid-ambient-x/y 已无消费者,全屏环境层改为纯时间漂移。)
+    // Coalesce pointer events and reuse cached bounds. Only small surfaces
+    // move their sheen; the page environment and reading surfaces stay still.
     let moveScheduled = false;
     let lastMoveEvent = null;
     function processMove(event) {
@@ -611,39 +600,76 @@
         state.targetTiltY = nx * state.tiltStrength * 1.15;
       }
       surface.classList.add('liquid-illuminated');
-      const control = event.target.closest(interactiveSelector);
-      if (control && surface.contains(control)) {
-        const controlRect = rectOf(control);
-        control.style.setProperty('--liquid-control-x', `${Math.max(0, Math.min(controlRect.width, event.clientX - controlRect.left)).toFixed(1)}px`);
-        control.style.setProperty('--liquid-control-y', `${Math.max(0, Math.min(controlRect.height, event.clientY - controlRect.top)).toFixed(1)}px`);
-      }
       scheduleMotion();
     }
     document.addEventListener('pointermove', event => {
-      if (document.documentElement.dataset.uiTheme !== 'liquid' || reducedMotion.matches || event.pointerType === 'touch' || !(event.target instanceof Element)) return;
+      if (!isLiquid() || document.hidden || reducedMotion.matches || event.pointerType === 'touch' || !(event.target instanceof Element)) return;
       lastMoveEvent = event;
       if (moveScheduled) return;
       moveScheduled = true;
-      requestAnimationFrame(() => { moveScheduled = false; if (lastMoveEvent) processMove(lastMoveEvent); });
+      requestAnimationFrame(() => { moveScheduled = false; if (lastMoveEvent && isLiquid() && !document.hidden && !reducedMotion.matches) processMove(lastMoveEvent); });
     }, { passive: true });
+    const pressAnimations = new Map();
     document.addEventListener('pointerdown', event => {
-      if (document.documentElement.dataset.uiTheme !== 'liquid' || reducedMotion.matches || !(event.target instanceof Element)) return;
+      if (!isLiquid() || document.hidden || reducedMotion.matches || !(event.target instanceof Element)) return;
       const control = event.target.closest(interactiveSelector);
-      if (!control) return;
+      if (!control || control.matches(':disabled, [aria-disabled="true"]')) return;
+      pressAnimations.get(control)?.cancel();
       control.classList.add('liquid-control-pressed');
+      if (control.animate) pressAnimations.set(control, control.animate([{ scale: '1' }, { scale: '.955 .97' }], { duration: 120, fill: 'forwards', easing: 'ease-out' }));
       const surface = control.closest(opticalSelector);
       if (surface) surface.classList.add('liquid-pressed', 'liquid-illuminated');
     }, { passive: true });
-    const releasePressed = () => {
+    const releasePressed = (rebound = true) => {
       document.querySelectorAll('.liquid-pressed').forEach(surface => surface.classList.remove('liquid-pressed'));
-      document.querySelectorAll('.liquid-control-pressed').forEach(control => control.classList.remove('liquid-control-pressed'));
+      document.querySelectorAll('.liquid-control-pressed').forEach(control => {
+        const current = getComputedStyle(control).scale;
+        pressAnimations.get(control)?.cancel();
+        pressAnimations.delete(control);
+        control.classList.remove('liquid-control-pressed');
+        if (rebound && !document.hidden && !reducedMotion.matches && isLiquid() && control.animate) {
+          const animation = control.animate([{ scale: current === 'none' ? '1' : current }, { scale: '1.025 .99', offset: .55 }, { scale: '1' }], { duration: 330, easing: 'cubic-bezier(.22,1,.36,1)' });
+          pressAnimations.set(control, animation);
+          animation.onfinish = () => { if (pressAnimations.get(control) === animation) pressAnimations.delete(control); };
+        }
+      });
     };
-    document.addEventListener('pointerup', releasePressed, { passive: true });
-    document.addEventListener('pointercancel', releasePressed, { passive: true });
-    window.addEventListener('blur', releasePressed);
-    reducedMotion.addEventListener('change', () => {
-      motionState.forEach((_, surface) => resetSurface(surface));
+    document.addEventListener('pointerup', () => releasePressed(), { passive: true });
+    document.addEventListener('pointercancel', () => releasePressed(false), { passive: true });
+    function stopMotion() {
+      cancelAnimationFrame(motionFrame);
+      motionFrame = 0;
+      lastMoveEvent = null;
+      pressAnimations.forEach(animation => animation.cancel());
+      pressAnimations.clear();
+      releasePressed(false);
+      motionState.forEach((state, surface) => {
+        state.active = false;
+        state.tiltX = state.tiltY = state.targetTiltX = state.targetTiltY = 0;
+        const rect = rectOf(surface);
+        state.x = state.targetX = rect.width / 2;
+        state.y = state.targetY = rect.height / 2;
+        state._gx = state._gy = state._tx = state._ty = null;
+        ['--glass-sheen-x', '--glass-sheen-y', '--glass-tilt-x', '--glass-tilt-y'].forEach(key => surface.style.removeProperty(key));
+        surface.classList.remove('liquid-illuminated', 'liquid-pressed');
+      });
+    }
+    window.addEventListener('blur', stopMotion);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopMotion(); });
+    document.addEventListener('wordpaper:ui-theme-change', stopMotion);
+    reducedMotion.addEventListener('change', stopMotion);
+    reducedTransparency.addEventListener('change', () => {
+      document.querySelectorAll(opticalSelector).forEach(surface => {
+        if (reducedTransparency.matches) surface.classList.remove('liquid-refraction-ready');
+      });
+      activateOptics();
     });
+    if ('IntersectionObserver' in window) {
+      const visibility = new IntersectionObserver(entries => {
+        entries.forEach(({ target, isIntersecting }) => { if (!isIntersecting) resetSurface(target); });
+      });
+      document.querySelectorAll(opticalSelector).forEach(surface => visibility.observe(surface));
+    }
   }
 
   function updateTypoLabels() {
