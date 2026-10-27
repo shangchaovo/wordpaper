@@ -451,7 +451,7 @@ def main():
                 page.wait_for_timeout(220)
                 toolbar_motion = page.eval_on_selector(".meta-actions", """e => ({
                   lit: e.classList.contains('liquid-illuminated'),
-                  x: e.style.getPropertyValue('--glass-x'),
+                  x: e.style.getPropertyValue('--glass-sheen-x'),
                   tilt: e.style.getPropertyValue('--glass-tilt-y')
                 })""")
                 if toolbar_motion["x"] != "" and toolbar_motion["tilt"] not in ("", "0deg", "0.000deg"):
@@ -485,18 +485,14 @@ def main():
             check("暗夜联动墨璃壁纸配色",
                   page.locator('#theme-swatches .swatch[title="墨璃"]').evaluate("e=>e.classList.contains('on')"))
             check("暗夜界面呈深色材质", page.evaluate("""() => {
-              // 计算后的 backgroundImage 是 rgb()/rgba() 形式。深色材质的三个
-              // 渐变端色 rgb(16,19,28)/rgb(12,15,23)/rgb(10,13,19) 都是 R、G 很小
-              // 且 B 略大的冷色。直接切分数字，不写反斜杠正则（Python 字符串转义）。
-              const groups = (getComputedStyle(document.body).backgroundImage || '').split('rgb(').slice(1);
-              let dark = false;
-              for (const gtext of groups) {
-                const parts = gtext.split(')')[0].split(',').map(v => parseFloat(v));
-                if (parts.length < 3) continue;
-                const r = parts[0], g = parts[1], b = parts[2];
-                if (r < 40 && g < 50 && b > r && b < 110) { dark = true; break; }
-              }
-              return dark;
+              // The shared glass material now paints a dark solid base under
+              // translucent highlights. Check the actual background and text
+              // contrast instead of requiring the former gradient structure.
+              const style = getComputedStyle(document.body);
+              const channels = value => value.slice(value.indexOf('(') + 1, value.indexOf(')')).split(',').map(Number);
+              const bg = channels(style.backgroundColor), ink = channels(style.color);
+              return bg.length >= 3 && bg.slice(0, 3).every(v => v < 50)
+                && ink.length >= 3 && ink.slice(0, 3).every(v => v > 180);
             }"""))
             check("暗夜光学控件已点亮结构就绪", page.locator(".liquid-refraction-ready").count() >= 3)
             page.reload(wait_until="domcontentloaded")

@@ -42,7 +42,14 @@ require('https').get=(url,opts,cb)=>{
            'NODE_OPTIONS': '--require=' + str(preload)}
     proc = subprocess.Popen([str(app / 'Contents/MacOS/WordPaper')], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        stdout, stderr = proc.communicate(timeout=35)
+        try:
+            stdout, stderr = proc.communicate(timeout=35)
+        except subprocess.TimeoutExpired as error:
+            for log in (folder / 'logs').glob('*.log'):
+                print(log.name + ':\n' + log.read_text(errors='replace')[-5000:], flush=True)
+            if error.stderr:
+                print(error.stderr.decode(errors='replace')[-3000:], flush=True)
+            raise
         assert proc.returncode == 0, stderr.decode()[-2000:]
         assert report.exists(), 'No WebKit report: ' + stderr.decode()[-2000:]
         result = json.loads(report.read_text())
