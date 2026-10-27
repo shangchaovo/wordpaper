@@ -182,8 +182,10 @@ childProcess.execFile = function (command, args, ...rest) {
     vm.runInNewContext(menuFactory, menuContext);
     const menuJXA = menuContext.buildMenuBarJXA(18125, 1234);
     new vm.Script(menuJXA);
-    assert.match(menuJXA, /addItem\(menu, '记忆复习本…', 'workspace-memory'/);
-    assert.match(menuJXA, /addItem\(menu, '打开控制面板…', 'workspace-home'/);
+    assert.match(menuJXA, /var allowed = .*'workspace-memory','workspace-home'/);
+    const menuHTML = fs.readFileSync(path.join(ROOT, 'assets/pet-voices.html'), 'utf8');
+    assert.match(menuHTML, /data-command="workspace-memory"/);
+    assert.match(menuHTML, /data-command="workspace-home"/);
     passed('generated menu uses the same home and memory commands as the word card');
 
     await start();

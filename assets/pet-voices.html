@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WordPaper · 状态栏</title>
+  <link rel="stylesheet" href="/css/pet-voices.css">
+  <script src="/js/pet-voices.js" defer></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-pet" viewBox="0 0 20 20"><path d="m10 2 2.3 5 5.5.6-4 3.8 1.1 5.4-4.9-2.7-4.9 2.7 1.1-5.4-4-3.8 5.5-.6Z"/><path d="M8 10h.1m3.8 0h.1M8 12c1.3 1 2.7 1 4 0"/></symbol>
+    <symbol id="i-switch" viewBox="0 0 20 20"><path d="M3 6h14m-3-3 3 3-3 3M17 14H3m3-3-3 3 3 3"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 20 20"><path d="M3 5h3l8 10h3m-3-3 3 3-3 3M3 15h3l3-4m2-3 3-3h3m-3-3 3 3-3 3"/></symbol>
+    <symbol id="i-book" viewBox="0 0 20 20"><path d="M10 5C7 3 5 3 2 4v12c3-1 5-1 8 1 3-2 5-2 8-1V4c-3-1-5-1-8 1Zm0 0v12"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="3"/><path d="M7 3v14m4-9h3m-3 4h3"/></symbol>
+    <symbol id="i-voice" viewBox="0 0 20 20"><path d="M3 8v4m3-7v10m4-13v16m4-12v8m3-6v4"/></symbol>
+    <symbol id="i-exit" viewBox="0 0 20 20"><path d="M10 2v8m-4-6a7 7 0 1 0 8 0"/></symbol>
+  </defs></svg>
+  <main id="panel">
+    <header><span class="brand"><svg class="ic"><use href="#i-pet"/></svg>WordPaper</span><span class="connection"><i></i>桌面陪伴</span></header>
+    <nav class="actions" aria-label="桌面操作">
+      <button id="pet-toggle" data-command="pet-close" type="button"><svg class="ic"><use href="#i-pet"/></svg><span>隐藏小词灵</span></button>
+      <button id="pet-mode" data-command="pet-mode" type="button"><svg class="ic"><use href="#i-switch"/></svg><span>切换到词卡形态</span></button>
+      <button data-command="next" type="button"><svg class="ic"><use href="#i-shuffle"/></svg><span>换一组词</span></button>
+      <button data-command="workspace-memory" type="button"><svg class="ic"><use href="#i-book"/></svg><span>记忆复习本</span></button>
+      <button data-command="workspace-home" type="button"><svg class="ic"><use href="#i-panel"/></svg><span>打开控制面板</span><span class="arrow" aria-hidden="true">↗</span></button>
+    </nav>
+    <section class="voice-section" aria-labelledby="voice-heading">
+      <div class="section-head"><h1 id="voice-heading"><svg class="ic"><use href="#i-voice"/></svg>朗读音色</h1><span id="selection" aria-live="polite">加载中…</span></div>
+      <fieldset id="voices"><legend class="sr-only">选择朗读音色</legend></fieldset>
+      <div class="save-line"><span id="save-status" role="status">选择即保存</span><span>点 <span aria-hidden="true">▷</span> 试听</span></div>
+      <section id="preview" class="preview" aria-label="音色试听" hidden>
+        <div class="preview-head"><b id="preview-title">试听</b><button id="stop" type="button" aria-label="停止试听">停止 <span aria-hidden="true">■</span></button></div>
+        <p id="sample" lang="en">Every little step brings you closer to your goal.</p>
+        <div class="progress" aria-hidden="true"><i id="progress-fill"></i></div>
+        <span id="play-status" role="status"></span>
+      </section>
+    </section>
+    <footer>
+      <div id="update-row"><span id="version">WordPaper</span><button id="update" type="button" data-command="update-check">检查更新</button></div>
+      <p id="menu-message" role="status" hidden></p>
+      <button class="quit" data-command="quit" type="button"><svg class="ic"><use href="#i-exit"/></svg>退出 WordPaper</button>
+    </footer>
+  </main>
+</body>
+</html>

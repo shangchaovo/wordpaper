@@ -2,9 +2,9 @@
 """Build WordPaper.app (zero-install Mac companion) and package it as DMGs.
 
 Variants (uploaded to GitHub Releases, linked from the site's download modal):
-  WordPaper-macOS-AppleSilicon.dmg  — bundled node-arm64, ~44MB, offline-ready
-  WordPaper-macOS-Intel.dmg         — bundled node-x64,   ~45MB, offline-ready
-  WordPaper-macOS-Slim.dmg          — no runtime, ~1.6MB; launcher downloads Node
+  WordPaper-macOS-AppleSilicon.dmg  — bundled node-arm64, ~79MB, bundled speech runtime
+  WordPaper-macOS-Intel.dmg         — bundled node-x64,   ~80MB, bundled speech runtime
+  WordPaper-macOS-Slim.dmg          — no Node, ~65MB; includes both speech runtimes; launcher downloads Node
                                       on first launch (npmmirror CDN first,
                                       nodejs.org fallback, SHA256-verified)
 
@@ -55,13 +55,14 @@ ROOT = os.path.dirname(HERE)
 BUILD = os.path.join(HERE, "build")
 DIST = os.path.join(HERE, "dist")
 NODE_DIST = os.path.join(HERE, "node-dist")
+SPEECH_DIST = os.path.join(HERE, "speech-dist")
 ICON = os.path.join(ROOT, "assets", "icon.icns")
 DMG_BG = os.path.join(ROOT, "assets", "dmg-background.png")
 
 APP_NAME = "WordPaper.app"
 EXEC_NAME = "WordPaper"
 BUNDLE_ID = "cc.cd.wordpaper.companion"
-# 版本号唯一来源是仓库根的 VERSION 文件;独立版启动后拿它跟 GitHub main 比对出新版本提示。
+# VERSION is the build source; update discovery only uses complete stable releases.
 VERSION = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
 VOLNAME = "WordPaper 每日壁纸"
 
@@ -426,7 +427,7 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
   • Mac 屏幕上方菜单栏会出现一个「词」小图标 —— 它亮着就说明 WordPaper
     正在正常运行。点开它:
       召唤/隐藏小词灵 · 换一组词 · 记忆复习本 · 打开控制面板 ·
-      检查更新 / 一键更新 · 退出 WordPaper
+      音色选择 / 试听 · 检查更新 / 一键更新 · 退出 WordPaper
   • 自动把桌面壁纸换成今天的单词,每 30 分钟换一组。
   • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习;关掉后随时从菜单栏召回。
   • 工作区在独立的 WordPaper 窗口打开，Dock、⌘Q、关闭/重新显示窗口均按 Mac App 使用。
@@ -475,7 +476,7 @@ def run(cmd, **kw):
     return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
 
 
-def build_app(dest, bundled_arch):
+def build_app(dest, bundled_arch, include_speech=True):
     """Create WordPaper.app at dest; bundled_arch='arm64'|'x64'|None."""
     if os.path.exists(dest):
         shutil.rmtree(dest)
@@ -523,6 +524,16 @@ def build_app(dest, bundled_arch):
             ignore=shutil.ignore_patterns(".*", "__pycache__"),
         )
     shutil.copy2(ICON, os.path.join(res, "icon.icns"))
+
+    # This lives under lib/, which even the released 2.6.2 updater copies. A
+    # root-level new payload file would be omitted by its fixed allowlist.
+    if include_speech:
+        for arch in ([bundled_arch] if bundled_arch else ["arm64", "x64"]):
+            source = os.path.join(SPEECH_DIST, arch)
+            if not os.path.isfile(os.path.join(source, "WORDPAPER_RUNTIME.json")):
+                raise SystemExit("缺语音运行时，请先运行 python3 scripts/build_speech_runtime.py")
+            shutil.copytree(source, os.path.join(res, "lib", "tts-runtime", arch),
+                            symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
     # RELEASE_SHA256.json — 应用内自更新(/api/update/apply)用它在 rsync 后
     # 校验各文件完整落地。逐文件记录「刚拷进本 bundle 的那一份」的摘要。

@@ -188,6 +188,10 @@ const COMPANION_METHODS = new Map([
   ['/pet.php', new Set(['POST'])],
   ['/pet-mode.php', new Set(['POST'])],
   ['/pet-speak.php', new Set(['POST'])],
+  ['/pet-voices.json', new Set(['GET'])],
+  ['/pet-voice.php', new Set(['POST'])],
+  ['/pet-voice-preview.php', new Set(['POST'])],
+  ['/pet-voice-audio.php', new Set(['GET', 'HEAD'])],
   ['/pet-quiz.php', new Set(['POST'])],
   ['/pet-quiz-shown.php', new Set(['POST'])],
   ['/pet-sentence-window.php', new Set(['POST'])],
@@ -843,6 +847,7 @@ function safeStaticPath(pathname) {
   if (decoded === '/login' || decoded === '/login.html') return path.join(ROOT, 'login.html');
   if (decoded === '/connect.html') return path.join(ROOT, 'connect.html');
   if (decoded === '/pet-sentence.html') return path.join(ROOT, 'pet-sentence.html');
+  if (decoded === '/pet-voices.html') return path.join(ROOT, 'assets', 'pet-voices.html');
 
   const segments = decoded.split('/').filter(Boolean);
   if (segments.length < 2 || segments.some(segment => segment === '.' || segment === '..' || segment.startsWith('.'))) return null;
@@ -903,19 +908,26 @@ function companionAllowed(req, session, claimOwner) {
 
 async function proxyToCompanion(req, res, session) {
   const body = ['GET', 'HEAD'].includes(req.method) ? Buffer.alloc(0) : await readBody(req, MAX_PROXY_BYTES);
-  const gracefulWhenStopped = !['/ocr.php', '/set-wallpaper.php'].includes(new URL(req.url, 'http://wordpaper.invalid').pathname);
+  const endpoint = new URL(req.url, 'http://wordpaper.invalid').pathname;
+  const audioRequest = endpoint === '/pet-voice-audio.php';
+  const gracefulWhenStopped = !['/ocr.php', '/set-wallpaper.php'].includes(endpoint);
   await new Promise(resolve => {
     const headers = { 'X-WordPaper-User-Id': String(session.user.id) };
     if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+    if (audioRequest && req.headers.range) headers.Range = req.headers.range;
     if (body.length) headers['Content-Length'] = body.length;
     const upstream = http.request({
       host: '127.0.0.1', port: COMPANION_PORT, path: req.url,
-      method: req.method, headers, timeout: 30000,
+      method: req.method, headers, timeout: endpoint === '/pet-voice-preview.php' ? 60000 : 30000,
     }, response => {
-      res.writeHead(response.statusCode || 502, {
+      const responseHeaders = {
         'Content-Type': response.headers['content-type'] || 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
-      });
+      };
+      if (audioRequest) for (const name of ['content-length','content-range','accept-ranges']) {
+        if (response.headers[name]) responseHeaders[name] = response.headers[name];
+      }
+      res.writeHead(response.statusCode || 502, responseHeaders);
       response.pipe(res);
       response.on('end', resolve);
     });

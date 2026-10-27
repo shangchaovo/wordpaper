@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build an isolated Slim app, then install it with real hdiutil and rsync."""
 import hashlib
+import argparse
 import importlib.util
 import json
 import os
@@ -22,11 +23,28 @@ def run(args, **kw):
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--baseline-dmg', type=Path, help='Test the updater from a real previously published package')
+parser.add_argument('--candidate-dmg', type=Path, help='Install the exact release candidate, without rebuilding it')
+parser.add_argument('--speech', action='store_true', help='Verify all four voices using only the installed runtime')
+args = parser.parse_args()
+
+def copy_app(dmg, destination, mount):
+    run(['hdiutil', 'attach', '-nobrowse', '-noautoopen', '-readonly', '-mountpoint', mount, dmg.resolve()])
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        run(['ditto', mount / 'WordPaper.app', destination])
+    finally:
+        run(['hdiutil', 'detach', mount, '-force'])
+
 with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
     temp = Path(folder)
     package.BUILD = str(temp / 'build'); Path(package.BUILD).mkdir()
     source = temp / 'image/WordPaper.app'
-    package.build_app(str(source), None)
+    if args.candidate_dmg:
+        copy_app(args.candidate_dmg, source, temp / 'candidate-mount')
+    else:
+        package.build_app(str(source), None)
     res = source / 'Contents/Resources'
     manifest = json.loads((res / 'RELEASE_SHA256.json').read_text())
     assert (res / 'assets/favicon-32.png').is_file()
@@ -36,18 +54,27 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
         assert hashlib.sha256((source / 'Contents' / name).read_bytes()).hexdigest() == digest
     assert {'arm64', 'x86_64'} <= set(run(['lipo', '-archs', source / 'Contents/MacOS/WordPaper']).split())
     print('PASS built app contains assets, complete manifest and universal stub', flush=True)
-    dmg = temp / 'candidate.dmg'
-    run(['hdiutil', 'create', '-srcfolder', source.parent, '-fs', 'HFS+', '-format', 'UDZO', dmg])
+    dmg = args.candidate_dmg.resolve() if args.candidate_dmg else temp / 'candidate.dmg'
+    if not args.candidate_dmg:
+        run(['hdiutil', 'create', '-srcfolder', source.parent, '-fs', 'HFS+', '-format', 'UDZO', dmg])
     installed = temp / 'installed/WordPaper.app/Contents'
-    oldres = installed / 'Resources'; oldres.mkdir(parents=True)
-    (installed / 'MacOS').mkdir()
-    (installed / 'MacOS/launcher.sh').write_text('#!/bin/bash\necho old\n')
-    (installed / 'MacOS/WordPaper').write_text('old native binary')
-    (installed / 'MacOS/WordPaper').chmod(0o755)
-    (installed / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleVersion': '0.0.1'}))
-    (oldres / 'VERSION').write_text('0.0.1')
-    (oldres / 'server.js').write_text('old server')
-    (oldres / 'RELEASE_SHA256.json').write_text('{"version":"0.0.1","files":{}}')
+    oldres = installed / 'Resources'
+    if args.baseline_dmg:
+        copy_app(args.baseline_dmg, installed.parent, temp / 'baseline-mount')
+        current = (oldres / 'VERSION').read_text().strip()
+        updater_root = oldres
+        assert not (oldres / 'assets/pet-voices.html').exists(), 'Baseline must predate the new menu page'
+        print('PASS using released updater from v' + current, flush=True)
+    else:
+        oldres.mkdir(parents=True); (installed / 'MacOS').mkdir()
+        (installed / 'MacOS/launcher.sh').write_text('#!/bin/bash\necho old\n')
+        (installed / 'MacOS/WordPaper').write_text('old native binary')
+        (installed / 'MacOS/WordPaper').chmod(0o755)
+        (installed / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleVersion': '0.0.1'}))
+        (oldres / 'VERSION').write_text('0.0.1')
+        (oldres / 'server.js').write_text('old server')
+        (oldres / 'RELEASE_SHA256.json').write_text('{"version":"0.0.1","files":{}}')
+        current = '0.0.1'; updater_root = ROOT
     state = temp / 'state'; state.mkdir()
     (state / 'user-data.txt').write_text('keep user data')
     runner = temp / 'apply.cjs'
@@ -69,9 +96,9 @@ u.__setHttpsGet((url, cb)=>{
     stream.statusCode=200;cb(stream);
   });return req;
 });
-u.applyUpdate('0.0.1',process.env.WP_PACKAGE_VERSION,()=>{}).then(()=>console.log('PASS real hdiutil + rsync install')).catch(e=>{console.error(e);process.exitCode=1;});
+u.applyUpdate(process.env.WP_PACKAGE_CURRENT,process.env.WP_PACKAGE_VERSION,()=>{}).then(()=>console.log('PASS real hdiutil + rsync install')).catch(e=>{console.error(e);process.exitCode=1;});
 ''')
-    env = {**os.environ, 'WORDPAPER_DATA_DIR': str(state), 'WP_PACKAGE_ROOT': str(ROOT),
+    env = {**os.environ, 'WORDPAPER_DATA_DIR': str(state), 'WP_PACKAGE_ROOT': str(updater_root), 'WP_PACKAGE_CURRENT': current,
            'WP_PACKAGE_DEST': str(oldres), 'WP_PACKAGE_DMG': str(dmg), 'WP_PACKAGE_VERSION': package.VERSION}
     print(run(['node', runner], env=env).strip(), flush=True)
     assert (installed / 'MacOS/launcher.sh').read_text() == package.LAUNCHER
@@ -99,8 +126,26 @@ u.applyUpdate('0.0.1',process.env.WP_PACKAGE_VERSION,()=>{}).then(()=>console.lo
         assert health['version'] == package.VERSION
         with opener.open(f'http://127.0.0.1:{port}/assets/favicon-32.png') as response:
             assert response.status == 200 and response.read() == (ROOT / 'assets/favicon-32.png').read_bytes()
+        for route, file in [('pet-voices.html', 'assets/pet-voices.html'), ('css/pet-voices.css', 'css/pet-voices.css'), ('js/pet-voices.js', 'js/pet-voices.js')]:
+            with opener.open(f'http://127.0.0.1:{port}/' + route) as response:
+                assert response.status == 200 and response.read() == (res / file).read_bytes()
         print('PASS installed server, favicon, launcher, Info.plist, manifest and user-data preservation', flush=True)
     finally:
         proc.terminate()
         try: proc.wait(timeout=8)
         except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+    if args.baseline_dmg:
+        print(run(['python3', ROOT / 'scripts/test_native_app.py'], env={**os.environ, 'WORDPAPER_TEST_APP': str(installed.parent)}).strip(), flush=True)
+    if args.speech:
+        speech = temp / 'speech.cjs'
+        speech.write_text('''
+const {createSpeechService,VOICES,SAMPLE}=require(process.env.WP_SPEECH_ROOT+'/lib/speech');
+const service=createSpeechService({cacheDir:process.env.WP_SPEECH_CACHE,edgeBin:'/nonexistent/developer/edge-tts',execFile:require('child_process').execFile});
+if(!service.available())throw new Error('Installed speech runtime unavailable');
+(async()=>{for(const voice of VOICES){
+  const audio=await new Promise((resolve,reject)=>service.prepare(SAMPLE,voice.id,(err,value)=>err?reject(err):resolve(value)));
+  if(audio.fallback || audio.cues.length!==9)throw new Error('Installed voice failed: '+voice.id);
+  console.log('PASS installed '+voice.name+' audio and nine real word boundaries');
+}})().catch(error=>{console.error(error);process.exitCode=1});
+''')
+        print(run(['node', speech], env={**os.environ, 'WP_SPEECH_ROOT': str(oldres), 'WP_SPEECH_CACHE': str(temp / 'speech-cache')}).strip(), flush=True)

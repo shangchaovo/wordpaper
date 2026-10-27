@@ -145,8 +145,8 @@ if (process.env.WORDPAPER_PORT) CFG.port = Math.max(1, Number(process.env.WORDPA
 if (process.env.WORDPAPER_TEST_MODE === '1') { CFG.autoSetWallpaper = false; CFG.petEnabled = false; CFG.hotkeyEnabled = false; }
 function saveConfig() {
   const tmp = `${CONFIG_PATH}.tmp-${process.pid}`;
-  try { fs.writeFileSync(tmp, JSON.stringify(CFG, null, 2)); fs.renameSync(tmp, CONFIG_PATH); }
-  catch { try { fs.unlinkSync(tmp); } catch {} }
+  try { fs.writeFileSync(tmp, JSON.stringify(CFG, null, 2)); fs.renameSync(tmp, CONFIG_PATH); return true; }
+  catch { try { fs.unlinkSync(tmp); } catch {} return false; }
 }
 
 /* Manual-advance state: each "next" (pet click or global hotkey) bumps the
@@ -798,54 +798,24 @@ let ttsGen = 0;                // 代际:每次掐断 +1,旧的异步回调看�
  * 只用于英文(单词/例句);中文释义不朗读。
  * opts.gen:调用时的代际;播放前若代际已变(用户掐断了)就丢弃,绝不播旧内容。 */
 function ttsSpeak(text, cb, opts) {
-  const safe = String(text || '').replace(/["\\]/g, '').trim();
+  const safe = String(text || '').trim();
   if (!safe || !isMac) return cb && cb(new Error('empty text'));
-  const myGen = (opts && typeof opts.gen === 'number') ? opts.gen : ttsGen;
-  const stale = () => myGen !== ttsGen;
-  const playFile = (file, done, keep) => {
-    if (stale()) { if (!keep) { try { fs.unlinkSync(file); } catch {} } return done && done(new Error('stale')); }
-    const child = execFile('/usr/bin/afplay', [file], { timeout: 30000 }, (e) => {
+  const myGen = opts && typeof opts.gen === 'number' ? opts.gen : ttsGen;
+  speechAudio.prepare(safe, selectedVoice().id, (err, audio) => {
+    if (myGen !== ttsGen) return;
+    if (err) return cb && cb(err);
+    const child = execFile('/usr/bin/afplay', [audio.file], {timeout:120000}, error => {
       if (ttsProc === child) ttsProc = null;
-      if (!keep) { try { fs.unlinkSync(file); } catch {} }
-      done && done(e);
+      if (myGen === ttsGen && cb) cb(error);
     });
     ttsProc = child;
-  };
-  // 命中预合成缓存 → 直接播,省掉 300–800ms 合成时间(卡片上屏即出声靠这条)
-  const cached = ttsCacheFile(safe);
-  try {
-    if (fs.existsSync(cached) && fs.statSync(cached).size > 0) return playFile(cached, cb, true);
-  } catch {}
-  const useSay = () => {
-    if (stale()) return cb && cb(new Error('stale'));
-    const aiff = path.join(os.tmpdir(), `dw_tts_${process.pid}_${Date.now()}.aiff`);
-    // macOS say 的输出选项是 -o(不是 -w),写错会静默失败。
-    const child = execFile('/usr/bin/say', ['-v', PATRICK_TTS.fallbackVoice, '-r', String(PATRICK_TTS.fallbackRate), '-o', aiff, safe],
-      { timeout: 20000 }, (err) => {
-        if (ttsProc === child) ttsProc = null;
-        if (err) return cb && cb(err);
-        playFile(aiff, cb);
-      });
-    ttsProc = child;
-  };
-  if (PATRICK_TTS.engine === 'edge' && fs.existsSync(PATRICK_TTS.edgeBin)) {
-    const mp3 = path.join(os.tmpdir(), `dw_tts_${process.pid}_${Date.now()}.mp3`);
-    const child = execFile(PATRICK_TTS.edgeBin, [
-      '--voice', PATRICK_TTS.edgeVoice, '--rate', PATRICK_TTS.edgeRate,
-      '--text', safe, '--write-media', mp3,
-    ], { timeout: 25000 }, (err) => {
-      if (ttsProc === child) ttsProc = null;
-      if (err || !fs.existsSync(mp3)) { try { fs.unlinkSync(mp3); } catch {} return useSay(); }
-      playFile(mp3, cb);
-    });
-    ttsProc = child;
-  } else {
-    useSay();
-  }
+    if (opts && opts.onStart) opts.onStart();
+  });
 }
 /* 立刻掐断:停掉正在播的那一条 + 清空队列 + 换代际(排队中的合成/播放全部作废)。
  * 抽查卡弹出、切词、提问时用——用户要"只有按钮上这个词的声音",旧声音必须先死。 */
-function ttsStopNow() {
+function ttsStopNow(reason = 'cancelled') {
+  finishSpeakCard(reason);
   ttsGen++;
   ttsQueue.length = 0;
   const child = ttsProc;
@@ -857,51 +827,24 @@ function ttsStopNow() {
  * 现场跑 edge-tts 要 300–800ms,音画就对不上了。出题时先**预合成**到缓存,
  * 卡片滑入动画一结束直接 afplay,声音和卡片同时出现。 */
 const TTS_CACHE_DIR = path.join(RUNTIME_ROOT, 'tts-cache');
-function ttsCacheFile(text) {
-  const key = require('crypto').createHash('sha1')
-    .update([PATRICK_TTS.edgeVoice, PATRICK_TTS.edgeRate, String(text).trim()].join('|'))
-    .digest('hex');
-  return path.join(TTS_CACHE_DIR, key + (PATRICK_TTS.engine === 'edge' ? '.mp3' : '.aiff'));
+const speechModule = require('./lib/speech');
+const mouthModule = require('./lib/patrick-mouth');
+function selectedVoice() {
+  return speechModule.voiceById(CFG.speechVoice)
+    || speechModule.VOICES.find(v => v.voice === process.env.WORDPAPER_TTS_VOICE)
+    || speechModule.VOICES[0];
 }
-const ttsPrewarming = new Map();   // text → 等待回调列表(避免同一句话并发出两次 edge-tts)
+const speechAudio = speechModule.createSpeechService({
+  cacheDir:TTS_CACHE_DIR, edgeBin:PATRICK_TTS.edgeBin, execFile,
+  rate:PATRICK_TTS.edgeRate, fallbackVoice:PATRICK_TTS.fallbackVoice, fallbackRate:PATRICK_TTS.fallbackRate,
+});
 function ttsPrewarm(text, cb) {
-  const safe = String(text || '').replace(/["\\]/g, '').trim();
-  if (!safe || !isMac) return cb && cb(new Error('empty text'));
-  const file = ttsCacheFile(safe);
-  try { if (fs.existsSync(file) && fs.statSync(file).size > 0) return cb && cb(null, file); } catch {}
-  // 已经在合成了 → 挂在同一批回调上,不重复起进程
-  const waiting = ttsPrewarming.get(safe);
-  if (waiting) { if (cb) waiting.push(cb); return; }
-  ttsPrewarming.set(safe, cb ? [cb] : []);
-  const settle = (err) => {
-    const cbs = ttsPrewarming.get(safe) || [];
-    ttsPrewarming.delete(safe);
-    for (const fn of cbs) { try { fn(err, err ? null : file); } catch {} }
-  };
-  try { fs.mkdirSync(TTS_CACHE_DIR, { recursive: true, mode: 0o700 }); } catch {}
-  const tmp = file + '.' + process.pid + '.tmp';
-  const finish = (err) => {
-    if (err) { try { fs.unlinkSync(tmp); } catch {} return settle(err); }
-    try { fs.renameSync(tmp, file); } catch {}
-    settle(null);
-  };
-  if (PATRICK_TTS.engine === 'edge' && fs.existsSync(PATRICK_TTS.edgeBin)) {
-    execFile(PATRICK_TTS.edgeBin, [
-      '--voice', PATRICK_TTS.edgeVoice, '--rate', PATRICK_TTS.edgeRate,
-      '--text', safe, '--write-media', tmp,
-    ], { timeout: 25000 }, (err) => finish(err || !fs.existsSync(tmp) ? new Error('edge failed') : null));
-  } else {
-    execFile('/usr/bin/say', ['-v', PATRICK_TTS.fallbackVoice, '-r', String(PATRICK_TTS.fallbackRate), '-o', tmp, safe],
-      { timeout: 20000 }, (err) => finish(err || !fs.existsSync(tmp) ? new Error('say failed') : null));
-  }
+  speechAudio.prepare(String(text || '').trim(), selectedVoice().id, (err,audio) => cb && cb(err,audio && audio.file));
 }
 
-/* 清空待播队列:用户切词/提问时,旧的朗读不该继续播(否则卡片显示 A,
- * 耳朵里还在读 B —— "单词跟读音对不上"就是这个)。当前正在播的那条不打断
- * (打断 afplay 会有爆音),只丢弃后面排队的。 */
+/* 切词/提问时同时结束当前播放与气泡,避免队列换代后完成回调失效而悬挂。 */
 function ttsClear() {
-  ttsQueue.length = 0;
-  ttsGen++;            // 排队中/正在合成的那条看到代际变了就自我作废
+  ttsStopNow();
 }
 /* 当前桌面上**看得见**的文本:小词灵这一页的 6 个词 + 各自的英文例句。
  * 用户要求:只朗读当前显示的单词;没显示的词(比如抽查里别的到期词)一律不发声,
@@ -940,15 +883,18 @@ function ttsEnqueue(items, opts) {
   const extra = new Set(((opts && opts.allow) || []).map(t => String(t || '').trim().toLowerCase()).filter(Boolean));
   // ── 抽查硬锁 ──
   // 抽查卡在屏(= patrickQuizState 存在)期间,**只有卡上被考的那个词**可以发声。
-  // 其它任何文本(上一题的词、例句、Nice/Oops、别的到期词)一律丢弃。
-  // 这就是用户反复反馈的"弹出考问时却听到别的单词"的最终防线。
+  // 只有用户点击当前题目所创建的朗读会话,可以额外读它自己的例句。
+  // 普通 allow 不能绕过这道锁,旧会话或其它题目的例句仍会被丢弃。
   const lockWord = patrickQuizState && patrickQuizState.word
     ? String(patrickQuizState.word.word || '').trim().toLowerCase() : '';
   items.forEach(item => {
     if (!item || !item.text) return;
     const t = String(item.text || '').trim().toLowerCase();
     if (lockWord) {
-      if (t !== lockWord) {
+      const speech = speakCardState;
+      const currentExample = speech && speech.id === opts?.speechId && speech.quizId === patrickQuizState.id
+        && t === String(speech.example?.en || '').trim().toLowerCase();
+      if (t !== lockWord && !currentExample) {
         console.error('[companion] TTS 丢弃(抽查中只读考题词):', String(item.text).slice(0, 40));
         return;
       }
@@ -966,17 +912,17 @@ function ttsEnqueue(items, opts) {
 }
 function pumpTts() {
   // 守卫:派大星窗口不在(被关/崩溃)时丢弃队列,避免"看不见人却在说话"。
-  if (!patrickVisible && !petVisible) { ttsQueue.length = 0; return; }
+  if (!patrickVisible && !petVisible) { ttsQueue.length = 0; finishSpeakCard('cancelled'); return; }
   if (ttsBusy || !ttsQueue.length) return;
   ttsBusy = true;
   const item = ttsQueue.shift();
   const gen = ttsGen;
-  ttsSpeak(item.text, () => {
+  ttsSpeak(item.text, (err) => {
     if (gen !== ttsGen) return;   // 这一代已被掐断:别把新的队列当成自己的继续泵
     ttsBusy = false;
-    if (item.after) { try { item.after(); } catch {} }
+    if (item.after) { try { item.after(err); } catch {} }
     pumpTts();
-  }, { gen });
+  }, { gen, onStart: () => { if (gen === ttsGen && item.onStart) item.onStart(); } });
 }
 
 /* 词→例句:优先读预生成 data/examples_<lib>.json(离线词典缓存);custom 词库
@@ -1015,12 +961,13 @@ function buildPatrickJXA(opts) {
     statusUrl: 'http://127.0.0.1:' + CFG.port + '/pet-word-status.json',
     statusBubblePng: path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`),
     speakUrl: 'http://127.0.0.1:' + CFG.port + '/pet-speak.php',
+    speakShownUrl: 'http://127.0.0.1:' + CFG.port + '/pet-speak-shown.php',
+    speakFinishedUrl: 'http://127.0.0.1:' + CFG.port + '/pet-speak-finished.php',
     morphUrl: 'http://127.0.0.1:' + CFG.port + '/pet-mode.php?mode=card',
     quizPng: CARD_PNG.quiz,
     quizW: PET_QUIZ_W, quizH: PET_QUIZ_H,
     quizBtnTop: QUIZ_BTN_TOP, quizBtnBottom: QUIZ_BTN_BOTTOM, quizBtnSkipX1: QUIZ_BTN_SKIP_X1,
     speakPng: CARD_PNG.speak,
-    speakW: SPEAK_CARD_W, speakH: SPEAK_CARD_H,
     answerPng: CARD_PNG.answer,
     answerW: ANSWER_CARD_W, answerH: ANSWER_CARD_H,
     keys: opts.keys,
@@ -1029,6 +976,7 @@ function buildPatrickJXA(opts) {
     exampleLines: opts.exampleLines || [],
   };
   return `ObjC.import('Cocoa');
+ObjC.import('AVFoundation');
 ObjC.import('stdlib');
 ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
@@ -1075,10 +1023,13 @@ function run(argv){
   var quizWin = null;     // 抽查卡子窗(点选项作答)
   var quizGripView = null;   // 子窗的绘图视图(mtime 轮询重绘目标)
   var quizScrollView = null;
-  var cardKind = '';         // 'quiz' | 'speak' —— 决定 mtime 轮询看哪个 PNG
+  var cardKind = '';         // 'quiz' | 'answer' —— 朗读气泡有自己的窗口
   var lastQuizGeom = null;   // 伴侣按内容算的命中区 {w,h,optTop,optH,optCount,btnTop,btnBottom}
   var downState = null;
   var darkSkin = M.dark === true;
+  function reduceMotion(){
+    try { return !!$.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion; } catch (e) { return false; }
+  }
 
   function setFrame(){ win.setFrameDisplay($.NSMakeRect(x, y, W, H), true); }
   setFrame();
@@ -1089,6 +1040,63 @@ function run(argv){
     var col = idx % cols, row = Math.floor(idx / cols);
     var sy = sheet.size.height - (row + 1) * srcH;   // 源图上而下 → Cocoa 下而上
     sheet.drawInRectFromRectOperationFraction(R, $.NSMakeRect(col * srcW, sy, srcW, srcH), $.NSCompositeSourceOver, 1);
+  }
+  // Prepare small masks from the original ink pixels once. This preserves the
+  // cheek texture and avoids painting a rectangular pink patch over the face.
+  var mouthFaces=${JSON.stringify(mouthModule.FRAMES)}, mouthMasks={};
+  function prepareMouthMasks(){
+    try {
+      var bitmap=$.NSBitmapImageRep.imageRepWithData(sheet.TIFFRepresentation);
+      Object.keys(mouthFaces).forEach(function(key){
+        var face=mouthFaces[key],idx=Number(key),ox=(idx%CELL.cols)*CELL.w,oy=Math.floor(idx/CELL.cols)*CELL.h;
+        var mask=$.NSBezierPath.bezierPath;
+        for(var py=face.y;py<face.y+face.h;py++){
+          var run=-1;
+          for(var px=face.x;px<=face.x+face.w;px++){
+            var ink=false;
+            if(px<face.x+face.w){
+              var color=bitmap.colorAtXY(ox+px,oy+py);
+              ink=color.redComponent<.97 && color.greenComponent<.64 && color.blueComponent<.61;
+            }
+            if(ink && run<0)run=px;
+            if(!ink && run>=0){mask.appendBezierPathWithRect($.NSMakeRect(run-.12,CELL.h-py-1.12,px-run+.24,1.24));run=-1;}
+          }
+        }
+        mouthMasks[key]=mask;
+      });
+    }catch(e){mouthMasks={};}
+  }
+  prepareMouthMasks();
+  function pixelMouthOval(x,y,w,h){
+    var shape=$.NSBezierPath.bezierPath;
+    for(var row=0;row<h;row+=2){
+      var ny=(row+1-h/2)/(h/2),span=Math.max(2,Math.round(w*Math.sqrt(Math.max(0,1-ny*ny))/4)*2);
+      shape.appendBezierPathWithRect($.NSMakeRect(x+w/2-span,y+row,span*2,Math.min(2,h-row)));
+    }
+    return shape;
+  }
+  function drawSpeechMouth(idx,R){
+    if(!speakMouth || speakMouth.open<.025 || reduceMotion())return;
+    var face=mouthFaces[idx],mask=mouthMasks[idx];
+    if(!face || !mask)return;
+    $.NSGraphicsContext.saveGraphicsState;
+    var tr=$.NSAffineTransform.transform;
+    tr.translateXByYBy(R.origin.x,R.origin.y);tr.scaleXByYBy(R.size.width/CELL.w,R.size.height/CELL.h);tr.concat;
+    rgba(248/255,151/255,140/255,1).setFill;mask.fill;
+    var open=speakMouth.open,round=speakMouth.round;
+    var w=Math.round((40-22*round+open*4)/2)*2,h=Math.max(4,Math.round((3+open*(15+5*round))/2)*2);
+    var left=Math.round(face.cx-w/2),bottom=CELL.h-Math.round(face.cy+open*2+h/2);
+    // A stepped oval keeps the original pixel linework, with a soft inner tongue.
+    var lip=pixelMouthOval(left,bottom,w,h);
+    rgba(.055,.025,.035,1).setFill;lip.fill;
+    if(h>=8){
+      rgba(.29,.105,.15,1).setFill;
+      pixelMouthOval(left+3,bottom+2,w-6,h-4).fill;
+      rgba(.89,.43,.49,1).setFill;
+      var tw=Math.max(6,Math.round(w*.52/2)*2);
+      pixelMouthOval(Math.round(face.cx-tw/2),bottom+2,tw,Math.min(6,h-4)).fill;
+    }
+    $.NSGraphicsContext.restoreGraphicsState;
   }
   /* 答题特效:
    * correct → 一圈扩散的绿色光环 + 8 颗向上飘的小星星(0.9s)
@@ -1232,6 +1240,10 @@ function run(argv){
         var sp = (st.shakeUntil - Date.now()) / 420;
         shakeX = Math.sin(Date.now() / 28) * 7 * sp;
       }
+      if (st.listenTap && !reduceMotion()) {
+        var lp = (Date.now() - st.listenTap) / 560;
+        if (lp < 1) shakeX += Math.sin(lp * Math.PI * 6) * 5 * Math.pow(1 - lp, 2);
+      }
       // 点击开窗时的「蓄力→弹起」:整幅精灵缩放 + 下沉/上浮。
       // 用变换套在 sprite 与特效上(气泡不动,否则文字会跟着抖)。
       var sx = 1, sy = 1, dy = 0;
@@ -1256,8 +1268,25 @@ function run(argv){
         shakeX + f.size.width * (1 - sx) / 2,
         dy + f.size.height * (1 - sy) / 2,
         f.size.width * sx, f.size.height * sy);
+      // 朗读时声音包络驱动起伏,慢节拍驱动摆动;只变换精灵,文字卡保持稳定。
+      var motion = speakMotion && speakMotion.amount > 0.01 && !reduceMotion();
+      if (motion) {
+        var m=speakMotion, t=(Date.now()-m.started)/1000, a=m.amount;
+        var breath=Math.sin(t*3.8), nod=Math.max(0,Math.sin(t*7.2))*m.level;
+        var scaleX=1-a*(0.035+breath*0.008+nod*0.013);
+        var scaleY=1-a*(0.035-breath*0.011-nod*0.014);
+        R=$.NSMakeRect(shakeX+f.size.width*(1-scaleX)/2+a*Math.sin(t*3.1)*2,
+          f.size.height*(1-scaleY)/2+a*(breath*1.8+nod*3),f.size.width*scaleX,f.size.height*scaleY);
+        $.NSGraphicsContext.saveGraphicsState;
+        var tr=$.NSAffineTransform.transform;
+        tr.translateXByYBy(f.size.width/2,f.size.height*0.15);
+        tr.rotateByDegrees(a*(Math.sin(t*3.1)*1.7+Math.sin(t*6.2)*m.level*0.7));
+        tr.translateXByYBy(-f.size.width/2,-f.size.height*0.15); tr.concat;
+      }
       drawSprite(st.frame, R);
+      drawSpeechMouth(st.frame, R);
       drawFx(R);
+      if (motion) $.NSGraphicsContext.restoreGraphicsState;
       drawBubble();
     },
     'acceptsFirstMouse:': function(){ return true; },
@@ -1282,6 +1311,7 @@ function run(argv){
         y = Math.max(screen.origin.y, Math.min(downState.gy + dy, screen.origin.y + screen.size.height - H));
         win.setFrameOrigin($.NSMakePoint(x, y));
         syncQuizWinPosition();   // 抽查卡跟着一起走
+        syncSpeakWinPosition();
         if (bubbleWin) layoutBubbleWin();   // 气泡跟随
       }
     },
@@ -1456,15 +1486,25 @@ function run(argv){
   }
 
   var lastClickAt = 0;
-  /* 点击派大星 → 打开对话浮窗。
+  /* 有题卡时点击 = 抖动 + 当前词/例句;空闲时保留打开对话的交互。
    * 动效编排(与浮窗的出场动画对齐):
    *   0ms    派大星先做一个「蓄力」下沉(缩放 1.0→0.94,向下 6pt)
    *   90ms   弹起(跳跃弧线)+ 挥手两帧 —— 这是"它把窗口递给你"的感觉
    *   90ms   同时请求伴侣开窗;窗口自己在 260ms 内从派大星身旁弹出来
    * 之前是瞬间切到 jump 帧 + 立刻开窗,两个动作各走各的,显得很突变。 */
   function handleClick(){
-    if (st.quiz) return;
     var now = Date.now();
+    if (st.quiz && quizWin && cardKind === 'quiz' && lastQuizGeom) {
+      if (now - lastClickAt < 240) return;
+      lastClickAt = now;
+      stopSpeakAudio();
+      st.listenTap = now; st.frame = FR.happy0; st.animSeq = null;
+      bubble = null; speakPendingUntil = now + 5000;
+      grip.setNeedsDisplay(true);
+      postUrl(M.speakUrl, JSON.stringify({ quizId: lastQuizGeom.id }));
+      return;
+    }
+    if (st.quiz) return;  // 题卡尚未上屏时不切走对话。
     if (now - lastClickAt < 400) return;    // 防连点:一次点击只开一个窗
     lastClickAt = now;
     st.animSeq = null;
@@ -1643,6 +1683,7 @@ function run(argv){
     qx = Math.max(f.origin.x + 4, Math.min(qx, f.origin.x + f.size.width - cw - 4));
     qy = Math.max(f.origin.y + 4, Math.min(qy, f.origin.y + f.size.height - ch - 4));
     quizWin.setFrameOrigin($.NSMakePoint(qx, qy));
+    syncSpeakWinPosition();
   }
   /* 朗读卡:复用同一个子窗,换 PNG 与尺寸。 */
   /* 卡片出场动画:从派大星身侧滑出 + 淡入(180ms easeOut)。
@@ -1662,17 +1703,216 @@ function run(argv){
       quizWin.setFrameOrigin($.NSMakePoint(targetX, targetY));
     }
   }
-  function showSpeakCard(){
-    hideQuizCard();
-    quizWin = makeCardWin(x, y, M.speakPng, M.speakW, M.speakH);
-    cardKind = 'speak';
-    var tf = quizWin.frame;
-    animateCardIn(Math.round(tf.origin.x), Math.round(tf.origin.y));
-    quizMtime = 0;
-    if (speakHideAt) speakHideAt = 0;
-    speakHideAt = Date.now() + 7000;
+  // 朗读气泡独立于 quizWin,不会替换题目、改变命中区或推进学习记录。
+  var speakWin = null, speakView = null, speakImage = null, speakSession = null;
+  var speakPhase = 'preparing', speakCloseAt = 0, speakExitAt = 0, speakAckAt = 0;
+  var speakPendingUntil = 0;
+  var speakPlayer = null, speakAudioPart = -1, speakCues = [], speakActiveCue = null, speakHighlight = null;
+  var speakMotion = {active:false,amount:0,level:0,started:0,last:0};
+  var speakMouth={open:0,round:0},speakSample={time:0,cue:null,db:-160,playing:false};
+  ${mouthModule.mouthTarget.toString()}
+  ${mouthModule.advanceMouth.toString()}
+  ${speechModule.cueAtTime.toString()}
+  ${speakCardPosition.toString()}
+  function screenForPet(){
+    try { var s = win.screen; if (s && !s.isNil()) return s.visibleFrame; } catch (e) {}
+    return $.NSScreen.mainScreen.visibleFrame;
   }
-  var speakHideAt = 0;
+  function syncSpeakWinPosition(){
+    if (!speakWin) return;
+    var f = screenForPet(), obstacle = null;
+    if (quizWin) {
+      var q = quizWin.frame;
+      obstacle = { x:q.origin.x, y:q.origin.y, w:q.size.width, h:q.size.height };
+    }
+    var target = speakCardPosition({ x:x, y:y, w:W, h:H },
+      { w:speakWin.frame.size.width, h:speakWin.frame.size.height },
+      { x:f.origin.x, y:f.origin.y, w:f.size.width, h:f.size.height }, obstacle);
+    speakWin.setFrameOrigin($.NSMakePoint(target.x, target.y));
+  }
+  ObjC.registerSubclass({ name:'DWPatrickSpeakView', superclass:'NSView', methods:{
+    'drawRect:': function(rect){
+      if (!speakImage || !speakSession) return;
+      speakImage.drawInRectFromRectOperationFraction(this.bounds, $.NSZeroRect, $.NSCompositeSourceOver, 1);
+      var h = this.bounds.size.height, playing = speakPhase === 'word' || speakPhase === 'example';
+      drawSpeakLines(h);
+      var mint = darkSkin ? rgba(0.73,0.85,0.64,1) : rgba(0.23,0.40,0.32,1);
+      mint.setFill;
+      for (var i=0; i<4; i++) {
+        var bh = playing && !reduceMotion() ? 4 + (1 + Math.sin(Date.now()/130 + i*1.3))*4 : [5,10,13,7][i];
+        $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(23+i*4.5,h-25-bh/2,2.5,bh),1.25,1.25).fill;
+      }
+      var labels = { preparing:'准备朗读', word:'正在读单词', example:'正在读例句', done:'读完啦', error:'暂时无法播放' };
+      var attrs = $.NSMutableDictionary.alloc.init;
+      attrs.setObjectForKey(fontAt(10,true), $.NSFontAttributeName);
+      attrs.setObjectForKey(mint, $.NSForegroundColorAttributeName);
+      $.NSString.stringWithString(labels[speakPhase] || '陪你读一遍').drawAtPointWithAttributes($.NSMakePoint(48,h-32),attrs);
+    },
+  }});
+  function drawSpeakLines(h){
+    var lines = speakSession.lines || [], attrs = $.NSMutableDictionary.alloc.init;
+    var font = $.NSFont.fontWithNameSize('AvenirNext-Regular',15);
+    if (!font || font.isNil()) font = fontAt(15,false);
+    attrs.setObjectForKey(font,$.NSFontAttributeName);
+    var ink = darkSkin ? rgba(1,0.94,0.96,1) : rgba(0.22,0.15,0.20,1);
+    attrs.setObjectForKey(ink,$.NSForegroundColorAttributeName);
+    var active = null;
+    if (speakPhase === 'example' && speakActiveCue) {
+      for (var i=0;i<lines.length;i++) {
+        var line = lines[i], a = Math.max(line.from,speakActiveCue.from), b = Math.min(line.to,speakActiveCue.to);
+        if (a>=b) continue;
+        var prefix = line.text.substring(0,a-line.from), word = line.text.substring(a-line.from,b-line.from);
+        var before = $.NSString.stringWithString(prefix).sizeWithAttributes(attrs).width;
+        var width = $.NSString.stringWithString(prefix+word).sizeWithAttributes(attrs).width-before;
+        active = {x:line.x+before,y:h-line.y-4,w:width,text:word,key:String(a)+':'+String(b)};
+        break;
+      }
+    }
+    if (active) {
+      if (!speakHighlight || speakHighlight.key!==active.key) {
+        var old = speakHighlight && speakHighlight.target;
+        speakHighlight = {key:active.key,target:active,start:Date.now(),from:old && Math.abs(old.y-active.y)<2 ? old : active};
+      }
+      var p = reduceMotion() ? 1 : Math.min(1,(Date.now()-speakHighlight.start)/90);
+      var ease = 1-Math.pow(1-p,3), from=speakHighlight.from;
+      var rx = from.x+(active.x-from.x)*ease, rw=from.w+(active.w-from.w)*ease;
+      var pill = $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(rx-3,active.y-1,rw+6,20),5,5);
+      rgba(0.95,0.59,0.70,darkSkin?0.19:0.15).setFill; pill.fill;
+      rgba(0.95,0.59,0.70,0.3).setStroke; pill.lineWidth=0.6; pill.stroke;
+    }
+    lines.forEach(function(line){
+      $.NSString.stringWithString(line.text).drawAtPointWithAttributes($.NSMakePoint(line.x,h-line.y-4),attrs);
+    });
+    if (active) {
+      attrs.setObjectForKey(darkSkin ? rgba(1,0.75,0.83,1) : rgba(0.61,0.25,0.36,1),$.NSForegroundColorAttributeName);
+      $.NSString.stringWithString(active.text).drawAtPointWithAttributes($.NSMakePoint(active.x,active.y),attrs);
+    }
+  }
+  function stopSpeakAudio(keepMotion){
+    if (speakPlayer) { try { speakPlayer.stop; } catch(e) {} }
+    speakPlayer=null; speakAudioPart=-1; speakCues=[]; speakActiveCue=null; speakHighlight=null;
+    speakMouth={open:0,round:0};speakSample={time:0,cue:null,db:-160,playing:false};
+    if (!keepMotion) speakMotion.active=false;
+  }
+  function tickSpeakMotion(now){
+    var m=speakMotion, dt=Math.min(100,Math.max(0,now-(m.last || now))); m.last=now;
+    var target=m.active?1:0, speed=dt/(m.active?180:300);
+    m.amount += (target-m.amount)*Math.min(1,speed);
+    if (!m.active && m.amount<0.01) m.amount=0;
+    var level=speakSample.playing ? Math.min(1,Math.pow(10,speakSample.db/30)) : 0;
+    m.level+=(level-m.level)*0.35;
+    speakMouth=advanceMouth(speakMouth,mouthTarget(speakSample.db,speakSample.cue,speakCues.length>0,speakSample.playing,reduceMotion()),dt);
+  }
+  function speakingFrame(now){
+    if (reduceMotion()) return FR.front0;
+    var beat=(now-speakMotion.started)%3800;
+    if (beat>2450 && beat<3150) return beat<2800?FR.wave0:FR.wave1;
+    // 以笑脸和轻眨眼陪读,避免在不匹配的表情帧间快速闪跳。
+    return beat>1600 && beat<1730 ? FR.blink : beat<1100 ? FR.front0 : FR.idle0;
+  }
+  function finishNativeAudio(error){
+    if (!speakSession || speakAudioPart<0) return;
+    var part=speakAudioPart,id=speakSession.id;
+    stopSpeakAudio(!error && part===0 && (speakSession.lines || []).length>0); speakPhase='preparing';
+    postUrl(M.speakFinishedUrl,JSON.stringify({id:id,part:part,error:!!error}));
+  }
+  function startNativeAudio(c){
+    stopSpeakAudio(true);
+    speakAudioPart=c.part; speakCues=c.cues || []; speakPhase=c.phase;
+    try {
+      speakPlayer=$.AVAudioPlayer.alloc.initWithContentsOfURLError($.NSURL.fileURLWithPath(c.file),$());
+      if (speakPlayer && !speakPlayer.isNil()) speakPlayer.meteringEnabled=true;
+      if (!speakPlayer || speakPlayer.isNil() || !speakPlayer.prepareToPlay || !speakPlayer.play) { finishNativeAudio(true); return; }
+      if (!speakMotion.active) speakMotion.started=Date.now();
+      speakMotion.active=true;
+    } catch(e) { finishNativeAudio(true); }
+  }
+  function hideSpeakCard(){
+    stopSpeakAudio();
+    if (speakWin) speakWin.orderOut($());
+    speakWin = null; speakView = null; speakImage = null; speakSession = null;
+    speakCloseAt = 0; speakExitAt = 0; speakAckAt = 0; speakPendingUntil = 0;
+  }
+  function showSpeakCard(c){
+    // 轮询中的旧朗读命令可能晚于换题到达。
+    if (c.quizId && (!st.quiz || !lastQuizGeom || lastQuizGeom.id !== c.quizId)) return;
+    hideSpeakCard();
+    var img = $.NSImage.alloc.initWithContentsOfFile(M.speakPng);
+    if (!img || img.isNil()) return;
+    var f = screenForPet(), vh = Math.min(c.h, 440, f.size.height - 16);
+    var cw = Math.min(c.w, f.size.width - 16);
+    speakSession = c; speakImage = img; speakPhase = 'preparing';
+    if (c.holdResult) st.quizResultHideAt = 0;
+    bubble = null;
+    speakWin = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+      $.NSMakeRect(x,y,cw,vh), $.NSWindowStyleMaskBorderless,$.NSBackingStoreBuffered,false);
+    speakWin.opaque = false; speakWin.backgroundColor = $.NSColor.clearColor;
+    speakWin.level = $.NSFloatingWindowLevel + 2; speakWin.hasShadow = true;
+    speakWin.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
+    speakView = $.DWPatrickSpeakView.alloc.initWithFrame($.NSMakeRect(0,0,c.w,c.h));
+    var scroll = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(0,0,cw,vh));
+    scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true;
+    scroll.hasHorizontalScroller = cw < c.w; scroll.scrollerStyle = $.NSScrollerStyleOverlay;
+    scroll.documentView = speakView; speakWin.contentView.addSubview(scroll);
+    speakView.scrollPoint($.NSMakePoint(0,Math.max(0,c.h-vh)));
+    syncSpeakWinPosition();
+    var target = speakWin.frame.origin, motion = !reduceMotion();
+    speakWin.alphaValue = 0;
+    if (motion) speakWin.setFrameOrigin($.NSMakePoint(target.x,target.y-10));
+    speakWin.orderFrontRegardless;
+    $.NSAnimationContext.beginGrouping;
+    $.NSAnimationContext.currentContext.duration = motion ? 0.24 : 0.1;
+    speakWin.animator.alphaValue = 1;
+    if (motion) speakWin.animator.setFrameOrigin(target);
+    $.NSAnimationContext.endGrouping;
+    speakAckAt = Date.now() + 250;
+    speakSession.openedAt = Date.now();
+  }
+  function tickSpeakCard(now){
+    if (!speakWin || !speakSession) return;
+    if (speakAckAt && now >= speakAckAt) {
+      speakAckAt = 0;
+      postUrl(M.speakShownUrl,JSON.stringify({ id:speakSession.id }));
+    }
+    if (speakPlayer) {
+      // One playback sample drives lips, body and highlighting in this frame.
+      // No independent elapsed-time clock: pauses, replays and seeks stay aligned.
+      var time=speakPlayer.currentTime,db=-160,playing=!!speakPlayer.isPlaying;
+      try{speakPlayer.updateMeters;db=speakPlayer.averagePowerForChannel(0);}catch(e){}
+      speakSample={time:time,cue:cueAtTime(speakCues,time),db:db,playing:playing};
+      var cue=speakPhase==='example' ? speakSample.cue : null;
+      if (cue && (!speakActiveCue || cue.from!==speakActiveCue.from)) {
+        var lines=speakSession.lines || [];
+        for(var i=0;i<lines.length;i++) if(cue.from>=lines[i].from && cue.from<lines[i].to) {
+          speakView.scrollRectToVisible($.NSMakeRect(20,speakSession.h-lines[i].y-10,speakSession.w-40,40)); break;
+        }
+      }
+      speakActiveCue=cue;
+      if (!playing) finishNativeAudio(false);
+    }
+    if (speakExitAt && now >= speakExitAt) { hideSpeakCard(); return; }
+    if (!speakExitAt && ((speakCloseAt && now >= speakCloseAt) || now-speakSession.openedAt > 125000)) {
+      speakExitAt = now + 220;
+      $.NSAnimationContext.beginGrouping;
+      $.NSAnimationContext.currentContext.duration = 0.2;
+      speakWin.animator.alphaValue = 0;
+      $.NSAnimationContext.endGrouping;
+    }
+    if (speakView) speakView.setNeedsDisplay(true);
+  }
+  function handleSpeakCommand(c){
+    if (c.cmd === 'speak-card') { showSpeakCard(c); return; }
+    if (!speakSession || speakSession.id !== c.id) return;
+    if (c.cmd === 'speak-audio') { startNativeAudio(c); return; }
+    if (c.cmd === 'speak-phase') speakPhase = c.phase;
+    if (c.cmd === 'speak-end') {
+      stopSpeakAudio();
+      speakPhase = c.reason === 'error' ? 'error' : 'done';
+      speakCloseAt = Date.now() + (c.reason === 'done' ? 650 : c.reason === 'error' ? 1800 : 0);
+      if (c.resumeQuizMs && st.quiz) st.quizResultHideAt = Date.now() + c.resumeQuizMs;
+    }
+  }
+  var answerHideAt = 0;
   function showAnswerCard(){
     hideQuizCard();
     quizWin = makeCardWin(x, y, M.answerPng, M.answerW, M.answerH);
@@ -1680,7 +1920,7 @@ function run(argv){
     var af = quizWin.frame;
     animateCardIn(Math.round(af.origin.x), Math.round(af.origin.y));
     quizMtime = 0;
-    speakHideAt = Date.now() + 15000;
+    answerHideAt = Date.now() + 15000;
   }
   function showQuizCard(){
     if (quizWin) { quizWin.orderOut($()); quizWin = null; }
@@ -1704,7 +1944,7 @@ function run(argv){
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.35, true, function(){
     if (!quizWin) return;
     try {
-      var watchPng = cardKind === 'speak' ? M.speakPng : (cardKind === 'answer' ? M.answerPng : M.quizPng);
+      var watchPng = cardKind === 'answer' ? M.answerPng : M.quizPng;
       var at = $.NSFileManager.defaultManager.attributesOfItemAtPathError(watchPng, $());
       if (!at) { hideQuizCard(); st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = Date.now() + 1500; } grip.setNeedsDisplay(true); return; }
       var d = at.objectForKey($.NSFileModificationDate);
@@ -1720,6 +1960,8 @@ function run(argv){
   // ---- 主循环 50ms ----
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(){
     var now = Date.now();
+    tickSpeakCard(now);
+    tickSpeakMotion(now);
     if (bubble && now > bubble.until) { bubble = null; grip.setNeedsDisplay(true); }
     // 动画序列推进
     if (st.animSeq) {
@@ -1733,9 +1975,12 @@ function run(argv){
         if (st.animSeq) st.animSeqFrame = st.animSeq[st.animSeqIdx];
       }
     }
-    if (st.mode === 'drag') return;   // 拖动中内容不变,不需要重绘
+    if (st.mode === 'drag') {
+      if (speakPlayer || speakMouth.open>0) grip.setNeedsDisplay(true);
+      return;
+    }
     // 悬停 → 挥手 + 气泡
-    if (st.hover && !st.quiz && st.mode !== 'drag' && st.mode !== 'jump') {
+    if (st.hover && !st.quiz && !speakWin && now > speakPendingUntil && st.mode !== 'drag' && st.mode !== 'jump') {
       if (st.mode !== 'hover') {
         st.mode = 'hover'; st.target = null; bubble = null;
         playSeq([FR.wave0, FR.wave1, FR.wave0, FR.wave1, FR.wave0], 300, false, null);
@@ -1747,7 +1992,7 @@ function run(argv){
       return;
     }
     if (st.mode === 'hover' && !st.hover) { st.mode = 'idle'; st.idleHoldUntil = now + 800; st.animSeq = null; bubble = null; }
-    if (speakHideAt && now >= speakHideAt) { speakHideAt = 0; if (cardKind === 'speak' || cardKind === 'answer') hideQuizCard(); }
+    if (answerHideAt && now >= answerHideAt) { answerHideAt = 0; if (cardKind === 'answer') hideQuizCard(); }
     if (st.quizResultHideAt && now >= st.quizResultHideAt) {   // 结果展示完毕,撤卡恢复散步
       st.quizResultHideAt = 0;
       st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = now + 1500; }
@@ -1755,10 +2000,11 @@ function run(argv){
     }
     if (st.quiz) {
       // 有特效时不要覆盖帧(答对=开心脸 / 答错=难过脸);特效结束后才回到思考脸。
-      if (!st.fx) st.frame = FR.think0;
+      if (!st.fx) st.frame = speakMotion.amount>0.05 ? speakingFrame(now) : now - (st.listenTap || 0) < 650 ? FR.happy0 : FR.think0;
       grip.setNeedsDisplay(true);
       return;
     }
+    if (speakWin || speakMotion.amount>0.01) { st.frame = speakMotion.amount>0.05 ? speakingFrame(now) : FR.idle0; grip.setNeedsDisplay(true); return; }
     if (st.mode === 'jump') {
       var jt = (now - st.jumpStart) / 420;
       if (jt >= 1) { st.mode = 'idle'; st.idleHoldUntil = now + 1200; y = st.jumpY0; setFrame(); st.frame = FR.idle0; }
@@ -1832,17 +2078,20 @@ function run(argv){
     grip.setNeedsDisplay(true);
   });
 
-  // ---- 伴侣命令轮询 0.8s ----
-  var lastCmdSeq = 0;
-  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.8, true, function(){
+  // 空闲每 0.8s;用户朗读期间每 0.2s,避免点击/声音状态落后。请求串行防乱序。
+  var lastCmdSeq = 0, cmdPolling = false, cmdPollAt = 0;
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.2, true, function(){
+    if (cmdPolling || (!speakWin && Date.now() > speakPendingUntil && Date.now()-cmdPollAt < 800)) return;
+    cmdPolling = true; cmdPollAt = Date.now();
     var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-patrick.json?after=' + lastCmdSeq));
     req.setTimeoutInterval(3);
     $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      cmdPolling = false;
       if (!data) return;
       try {
         var d = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
         if (!d || !d.ok) return;
-        lastCmdSeq = Number(d.seq) || lastCmdSeq;
+        lastCmdSeq = Math.max(Number(d.seq) || 0, lastCmdSeq);
         if (d.quizGeom) {
           lastQuizGeom = d.quizGeom; syncQuizWinSize();
           if (d.quizGeom.hold) st.quizResultHideAt = 0;
@@ -1853,6 +2102,7 @@ function run(argv){
             bubble = { lines: c.lines, until: Date.now() + (c.ms || 6500) };
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz') {
+            hideSpeakCard();
             st.quizResultHideAt = 0;
             st.quiz = true; st.mode = 'quiz'; st.animSeq = null;
             bubble = { lines: c.lines, until: Date.now() + (c.ms || 26000) };
@@ -1871,6 +2121,7 @@ function run(argv){
             });
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz-end') {
+            hideSpeakCard();
             st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = Date.now() + 1500; }
             hideQuizCard();
             bubble = c.lines ? { lines: c.lines, until: Date.now() + (c.ms || 6000) } : null;
@@ -1886,14 +2137,8 @@ function run(argv){
               st.frame = FR.think0;
               grip.setNeedsDisplay(true);
             });
-          } else if (c.cmd === 'speak-card') {
-            st.facing = 1; st.frame = FR.happy0; st.animSeq = null;
-            grip.setNeedsDisplay(true);
-            $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.14, true, function(tm){
-              tm.invalidate;
-              showSpeakCard();
-              grip.setNeedsDisplay(true);
-            });
+          } else if (c.cmd === 'speak-card' || c.cmd === 'speak-phase' || c.cmd === 'speak-audio' || c.cmd === 'speak-end') {
+            handleSpeakCommand(c);
           } else if (c.cmd === 'quiz-result') {
             // 答题特效:答对撒星星+光环,答错抖动+红环
             var kind = c.effect === 'correct' ? 'correct' : 'wrong';
@@ -1972,7 +2217,7 @@ function run(argv){
 
   // 孤儿自毁 + 心跳
   var missTicks = 0;
-  function petSelfDestruct(){ if (bubbleWin) { try { bubbleWin.orderOut($()); } catch {} bubbleWin = null; } hideQuizCard(); win.orderOut($()); $.exit(0); }
+  function petSelfDestruct(){ if (bubbleWin) { try { bubbleWin.orderOut($()); } catch {} bubbleWin = null; } hideSpeakCard(); hideQuizCard(); win.orderOut($()); $.exit(0); }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
     missTicks++;
     if (M.ownerPid && OWNER_PPID !== String(M.ownerPid)) petSelfDestruct();
@@ -2308,9 +2553,8 @@ const QUIZ_BTN_SKIP_X0 = 14;
 const QUIZ_BTN_SKIP_X1 = 14 + (PET_QUIZ_W - 28 - QUIZ_BTN_GAP) / 2;              // 左半
 const QUIZ_BTN_SENT_X0 = QUIZ_BTN_SKIP_X1 + QUIZ_BTN_GAP;                          // 右半
 const QUIZ_BTN_SENT_X1 = PET_QUIZ_W - 14;
-/* 朗读卡:点击派大星时弹出的单词卡(词 + 音标 + 释义 + 例句 + 译文)。
- * 与抽查卡同尺寸同风格,底部显示"正在朗读…"进度。 */
-const SPEAK_CARD_W = 300, SPEAK_CARD_H = 176;
+/* 独立朗读气泡:完整例句按内容增高;超出屏幕时用原生滚动视图承载。 */
+const SPEAK_CARD_W = 340;
 const ANSWER_CARD_W = 320, ANSWER_CARD_H = 150;
 /* 派大星回答卡:显示 DeepSeek 对当前词的讲解(自动换行)。 */
 function buildAnswerSVG(word, answer, dark) {
@@ -2347,44 +2591,96 @@ function buildAnswerSVG(word, answer, dark) {
   parts.push(`<text x="${(W/2)*s}" y="${(H-10)*s}" text-anchor="middle" font-family="${fam}" font-size="${9*s}" fill="${sub}">再双击可以换个问题 · 点一下继续背词</text>`);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
 }
-function buildSpeakSVG(word, example, dark) {
-  const s = 2, W = SPEAK_CARD_W, H = SPEAK_CARD_H, w = W * s, h = H * s;
-  const pink = '#f79ba6', seaGreen = '#a8d94f', outline = '#2b1d2e';
-  const paper = dark ? '#241a2b' : '#fffaf6';
-  const paperEdge = dark ? '#3a2b45' : '#ffe8ea';
-  const ink = dark ? '#ffe9f0' : '#3a1f2b';
-  const sub = dark ? '#c9a9d4' : '#8a6270';
-  const fam = 'PingFang SC, Hiragino Sans GB, Avenir Next, sans-serif';
-  const parts = [];
-  parts.push(`<defs>
-    <linearGradient id="spaper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${paper}"/><stop offset="1" stop-color="${paperEdge}"/></linearGradient>
-    <filter id="ssh" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="${3*s}" stdDeviation="${3*s}" flood-color="${outline}" flood-opacity=".22"/></filter>
-  </defs>`);
-  parts.push(`<rect x="${3*s}" y="${3*s}" width="${(W-6)*s}" height="${(H-6)*s}" rx="${16*s}" fill="url(#spaper)" stroke="${pink}" stroke-width="${2.2*s}" filter="url(#ssh)"/>`);
-  // 喇叭旗标
-  parts.push(`<path d="M ${14*s} ${10*s} h ${62*s} a ${6*s} ${6*s} 0 0 1 ${6*s} ${6*s} v ${14*s} a ${6*s} ${6*s} 0 0 1 ${-6*s} ${6*s} h ${-62*s} Z" fill="${seaGreen}" stroke="${outline}" stroke-width="${1.4*s}" stroke-linejoin="round"/>`);
-  parts.push(`<text x="${20*s}" y="${24*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${outline}">🔊 正在朗读</text>`);
-  // 单词
-  parts.push(`<text x="${16*s}" y="${60*s}" font-family="Avenir Next, ${fam}" font-size="${25*s}" font-weight="800" fill="${ink}">${esc(word.word || '')}</text>`);
-  if (word.phonetic) parts.push(`<text x="${(W-16)*s}" y="${60*s}" text-anchor="end" font-family="Avenir Next, ${fam}" font-size="${10.5*s}" fill="${sub}">${esc(word.phonetic)}</text>`);
-  parts.push(`<path d="M ${16*s} ${68*s} H ${(W-16)*s}" stroke="${pink}" stroke-width="${1*s}" stroke-dasharray="${3*s} ${3*s}" opacity=".55"/>`);
-  // 中文释义
-  if (word.meaning) {
-    const m = String((word.pos ? word.pos + ' ' : '') + word.meaning);
-    parts.push(`<text x="${16*s}" y="${88*s}" font-family="${fam}" font-size="${12.5*s}" fill="${ink}">${esc(m.length > 24 ? m.slice(0, 23) + '…' : m)}</text>`);
+function buildSpeakSVG(word, example, dark, nativeText = false) {
+  const W = SPEAK_CARD_W, pad = 22;
+  const pink = dark ? '#f5a5b5' : '#b65a73';
+  const ink = dark ? '#fff0f4' : '#382532';
+  const sub = dark ? '#bda9c4' : '#876b7b';
+  const fam = 'Avenir Next, PingFang SC, Hiragino Sans GB, sans-serif';
+  const body = [];
+  const text = (value, x, y, size, color, weight = 400, extra = '') =>
+    `<text x="${x}" y="${y}" font-family="${fam}" font-size="${size}" font-weight="${weight}" fill="${color}" ${extra}>${esc(value)}</text>`;
+  // 顶部左侧为原生绘制的声波/实时状态预留空间,右侧是安静的署名。
+  body.push(text('PATRICK / 陪你读', W - pad, 29, 9, sub, 500, 'text-anchor="end" letter-spacing=".6"'));
+  let y = 66;
+  const wordSize = fitFont(word.word || '', 26, W - pad * 2, 22, 0.6);
+  for (const line of wrapText(word.word || '', wordSize, W - pad * 2, 0, 0.6)) {
+    body.push(text(line, pad, y, wordSize, ink, 700));
+    y += 31;
   }
-  // 英文例句
-  if (example && example.en) {
-    const en = String(example.en);
-    parts.push(`<text x="${16*s}" y="${110*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" fill="${sub}">${esc(en.length > 40 ? en.slice(0, 39) + '…' : en)}</text>`);
+  if (word.phonetic) {
+    for (const line of wrapText(word.phonetic, 11.5, W - pad * 2, 0, 0.6)) {
+      body.push(text(line, pad, y - 10, 11.5, sub)); y += 16;
+    }
   }
-  // 例句译文
-  if (example && example.zh) {
-    const zh = String(example.zh);
-    parts.push(`<text x="${16*s}" y="${128*s}" font-family="${fam}" font-size="${10.5*s}" fill="${sub}">${esc(zh.length > 34 ? zh.slice(0, 33) + '…' : zh)}</text>`);
+  y += 2;
+  const panelTop = y;
+  y += 23;
+  body.push(text(example?.en ? '例句  /  EXAMPLE' : '单词发音', pad + 14, y, 9, sub, 600, 'letter-spacing="1"'));
+  y += 27;
+  // 只强调完整匹配的目标词,不高亮另一个单词里的相同字母。
+  const target = String(word.word || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matcher = target ? new RegExp(`(?<![\\p{L}])(${target})(?![\\p{L}])`, 'giu') : null;
+  const enLines = example?.en ? wrapText(example.en, 15, W - pad * 2 - 28, 0, 0.57) : [];
+  const lines = [];
+  let textCursor = 0;
+  for (const line of enLines) {
+    const from = example.en.indexOf(line, textCursor);
+    lines.push({text:line,x:pad+14,y,from,to:from+line.length});
+    textCursor = from + line.length;
+    const markup = matcher ? line.split(matcher).map((part, i) => i % 2
+      ? `<tspan fill="${pink}" font-weight="600">${esc(part)}</tspan>` : esc(part)).join('') : esc(line);
+    if (!nativeText) body.push(`<text x="${pad + 14}" y="${y}" font-family="${fam}" font-size="15" fill="${ink}">${markup}</text>`);
+    y += 22;
   }
-  parts.push(`<text x="${(W/2)*s}" y="${(H-12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.5*s}" font-weight="600" fill="${sub}">派大星给你读一遍 · 再点一下换下一个词</text>`);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
+  if (!enLines.length) { body.push(text('暂无例句 · 先听单词发音', pad + 14, y, 12, sub)); y += 20; }
+  if (example?.zh) {
+    y += 3;
+    for (const line of wrapText(example.zh, 11.5, W - pad * 2 - 28)) {
+      body.push(text(line, pad + 14, y, 11.5, sub)); y += 18;
+    }
+  }
+  const panelBottom = y + 2;
+  const H = Math.ceil(panelBottom + 44);
+  const shell = `<defs><linearGradient id="speech-paper" x1="0" y1="0" x2="1" y2="1">
+    <stop stop-color="${dark ? '#302536' : '#fffaf7'}"/><stop offset="1" stop-color="${dark ? '#211b2b' : '#f9edf1'}"/>
+    </linearGradient></defs>
+    <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="19" fill="url(#speech-paper)" stroke="${dark ? '#b77e96' : '#dba2b2'}" stroke-width="1.2"/>
+    <rect x="4" y="4" width="${W - 8}" height="${H - 8}" rx="16" fill="none" stroke="${dark ? '#ffffff' : '#ffffff'}" stroke-opacity="${dark ? '.045' : '.7'}"/>
+    <rect x="${pad}" y="${panelTop}" width="${W - pad * 2}" height="${panelBottom - panelTop}" rx="11" fill="${dark ? '#1a1522' : '#fffdfb'}" fill-opacity=".65"/>
+    <path d="M ${pad} ${panelTop + 15} V ${panelBottom - 15}" stroke="${pink}" stroke-width="2" stroke-linecap="round" opacity=".65"/>`;
+  body.push(text('轻点派大星 · 再听一遍', pad, H - 18, 9.5, sub));
+  body.push(text('读完自动收起', W - pad, H - 18, 9.5, sub, 400, 'text-anchor="end"'));
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W * 2}" height="${H * 2}" viewBox="0 0 ${W} ${H}">${shell}${body.join('')}</svg>`, geom: { w: W, h: H, lines: nativeText ? lines : [] } };
+}
+
+/* Cocoa 坐标(y 向上)。候选位置先钳到当前屏幕,再按遮挡面积选择,
+ * 通常从头顶冒出;上方空间不足时绕到另一侧,不覆盖选项。纯函数供原生与测试共用。 */
+function speakCardPosition(pet, card, screen, obstacle) {
+  var gap = 12, margin = 8;
+  var candidates = [
+    { x: pet.x + (pet.w - card.w) / 2, y: pet.y + pet.h + gap },
+    { x: pet.x + (pet.w - card.w) / 2, y: pet.y - card.h - gap },
+    { x: pet.x - card.w - gap, y: pet.y + pet.h - card.h },
+    { x: pet.x + pet.w + gap, y: pet.y + pet.h - card.h },
+  ];
+  if (obstacle) {
+    candidates.push({ x: obstacle.x, y: obstacle.y + obstacle.h + gap });
+    candidates.push({ x: obstacle.x, y: obstacle.y - card.h - gap });
+  }
+  function overlap(a, b) {
+    if (!b) return 0;
+    return Math.max(0, Math.min(a.x + card.w, b.x + b.w) - Math.max(a.x, b.x))
+      * Math.max(0, Math.min(a.y + card.h, b.y + b.h) - Math.max(a.y, b.y));
+  }
+  var best = null, score = Infinity;
+  candidates.forEach(function(p, i) {
+    p.x = Math.max(screen.x + margin, Math.min(p.x, screen.x + screen.w - card.w - margin));
+    p.y = Math.max(screen.y + margin, Math.min(p.y, screen.y + screen.h - card.h - margin));
+    var cost = overlap(p, obstacle) * 10 + overlap(p, pet) * 2 + i;
+    if (cost < score) { best = p; score = cost; }
+  });
+  return { x: Math.round(best.x), y: Math.round(best.y) };
 }
 
 /* 悬停状态气泡(SVG):与抽查卡同一套派大星设计语言。
@@ -2642,7 +2938,7 @@ function buildQuizSVG(word, options, dark) {
   // 底部提示
   const tip = word.done
     ? (word.correct ? (ri && !ri.nextIn ? '答对了！已完成全部复习周期' : '答对了！已安排下次复习') : '没关系，20 分钟后它会回来找你')
-    : (collapsed ? '释义尚未展开 · 点击长选项可看全文' : '派大星出题 · 点击选项作答');
+    : (collapsed ? '释义尚未展开 · 点击长选项可看全文' : '点选项作答 · 点派大星听例句');
   body.push(`<text x="${(W/2)*s}" y="${(y+12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.8*s}" font-weight="600" fill="${word.done ? (word.correct ? good : bad) : sub}">${esc(tip)}</text>`);
   const H = Math.round(y + 20);
 
@@ -3033,12 +3329,14 @@ let displayedQuiz = null;     // Includes the answer card until it is dismissed.
 let quizSequence = 0;
 let quizRenderSequence = 0;
 function clearQuizCard() {
+  if (speakCardState?.quizId) ttsStopNow();
   patrickQuizState = null;
   displayedQuiz = null;
   quizRenderSequence++;       // In-flight sips output may no longer publish.
   try { fs.unlinkSync(CARD_PNG.quiz); } catch {}
 }
 function stopPatrickPet() {
+  ttsStopNow();
   patrickGeneration++;
   patrickVisible = false;
   clearQuizCard();
@@ -3505,6 +3803,31 @@ function startSentenceWindow() {
   return { ok: true, script: scriptPath, errLog: errPath };
 }
 
+let voicePreviewUntil = 0, voicePreviewId = '';
+const voicePreviewClips = new Map();
+function serveVoicePreview(req,res,id) {
+  const audio=voicePreviewClips.get(id);
+  if (!audio || audio.expires<Date.now()) {voicePreviewClips.delete(id);res.writeHead(404);return res.end();}
+  let size;try{size=fs.statSync(audio.file).size;}catch{res.writeHead(404);return res.end();}
+  let start=0,end=size-1;
+  if(req.headers.range){
+    const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+    if(match && (match[1] || match[2])) {
+      start=match[1]?Number(match[1]):Math.max(0,size-Number(match[2]));
+      end=match[1] && match[2]?Math.min(size-1,Number(match[2])):size-1;
+    }else start=-1;
+    if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||start>end||start>=size){
+      res.writeHead(416,{'Content-Range':`bytes */${size}`});return res.end();
+    }
+  }
+  const headers={'Content-Type':audio.fallback?'audio/aiff':'audio/mpeg','Accept-Ranges':'bytes',
+    'Content-Length':end-start+1,'Cache-Control':'private, no-store'};
+  if(req.headers.range)headers['Content-Range']=`bytes ${start}-${end}/${size}`;
+  res.writeHead(req.headers.range?206:200,headers);
+  if(req.method==='HEAD')return res.end();
+  const stream=fs.createReadStream(audio.file,{start,end});stream.on('error',()=>res.destroy());stream.pipe(res);
+}
+
 let chatWinChild = null;
 function stopChatWindow() {
   if (chatWinChild) { try { chatWinChild.kill(); } catch {} chatWinChild = null; }
@@ -3650,135 +3973,124 @@ function serverBase() {
 
 function buildMenuBarJXA(port, ownerPid) {
   return `ObjC.import('Cocoa');
+ObjC.import('WebKit');
 ObjC.import('stdlib');
 ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
   var PORT = '${port}';
-  var OWNER = '${ownerPid || ''}';   // 派生本脚本的伴侣 PID;menu-status 回来对不上号就自毁
-  var OWNER_PPID = String($.getppid());   // 启动时取一次(10s 心跳里不再走 bridge)
+  var OWNER = '${ownerPid || ''}';
+  var OWNER_PPID = String($.getppid());
+  $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   var item = $.NSStatusBar.systemStatusBar.statusItemWithLength($.NSVariableStatusItemLength);
   var btn = item.button;
-  btn.toolTip = 'WordPaper · 每日壁纸(点击打开菜单)';
-  // 图标:黑描边小圆点+词签,走 template 模式自动适配明暗菜单栏;渲染失败退化为文字「词」
+  btn.toolTip = 'WordPaper · 点击打开菜单';
   (function(){
     try {
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"><circle cx="9" cy="9" r="7.2" fill="none" stroke="black" stroke-width="1.6"/><rect x="5" y="6.4" width="8" height="1.7" rx="0.85" fill="black"/><rect x="5" y="9.9" width="5.2" height="1.7" rx="0.85" fill="black"/></svg>';
-      var b64 = $.NSString.stringWithString(svg).dataUsingEncodingAllowLossyConversion($.NSUTF8StringEncoding, true);
-      var img = $.NSImage.alloc.initWithData(b64);
+      var data = $.NSString.stringWithString(svg).dataUsingEncodingAllowLossyConversion($.NSUTF8StringEncoding, true);
+      var img = $.NSImage.alloc.initWithData(data);
       if (img && !img.isNil()) { img.setSize($.NSMakeSize(16, 16)); img.setTemplate(true); btn.image = img; }
       else btn.title = '词';
     } catch (e) { btn.title = '词'; }
   })();
-
-  var lastMenuSig = '', lastGoodAt = Date.now();
-  var LOCAL_HEADER = 'X-WordPaper-Local';
-  function markLocal(req){ req.setValueForHTTPHeaderField('1', LOCAL_HEADER); }
+  var pageURL = 'http://127.0.0.1:' + PORT + '/pet-voices.html';
+  var web, popover, lastGoodAt = Date.now(), lastMenuSig = '', pendingStatus = false;
+  var allowed = ['pet-open','pet-close','pet-mode','next','workspace-memory','workspace-home','update-check','update-apply','quit'];
+  function callPage(method, args){
+    web.evaluateJavaScriptCompletionHandler('window.WordPaperMenu && window.WordPaperMenu.' + method + '(' + (args || []).map(function(arg){return JSON.stringify(arg);}).join(',') + ')', function(){});
+  }
+  function markLocal(req){req.setValueForHTTPHeaderField('1','X-WordPaper-Local');}
+  function decode(data){
+    try {return JSON.parse($.NSString.alloc.initWithDataEncoding(data,$.NSUTF8StringEncoding).js);}catch(e){return null;}
+  }
   function post(cmd){
     var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/menu.php?cmd=' + cmd));
-    req.setHTTPMethod('POST');
-    markLocal(req);
-    req.setTimeoutInterval(8);
-    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
-      rebuildMenu(true);
+    req.setHTTPMethod('POST');markLocal(req);req.setTimeoutInterval(100);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req,$.NSOperationQueue.mainQueue,function(resp,data,err){
+      var result=decode(data) || {ok:false,error:'连接暂不可用，请重试'};
+      callPage('complete',[cmd,result]);rebuildMenu(true);
+      if (result.ok && (cmd==='workspace-memory' || cmd==='workspace-home')) popover.performClose($());
     });
   }
-  var MenuTarget = ObjC.registerSubclass({ name: 'DWMenuBarTarget', methods: {
-    // JXA 无法从 JS 函数推断 ObjC 签名,必须显式 types(['void', ['id']]),否则 -2700
-    'fire:': { types: ['void', ['id']], implementation: function(sender) {
-      var cmd = ObjC.unwrap(sender.representedObject) || '';
-      if (cmd === '') return;
-      if (cmd === 'quit') {
-        item.menu = $();             // 先摘菜单再退出,图标立刻消失(nil 用 $())
-        $.NSStatusBar.systemStatusBar.removeStatusItem(item);
-        post('quit');
+  function showMenu(){
+    rebuildMenu(true);callPage('open');
+    popover.showRelativeToRectOfViewPreferredEdge(btn.bounds,btn,$.NSMinYEdge);
+    $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+    web.window.makeKeyWindow;
+  }
+  ObjC.registerSubclass({name:'DWMenuBarTarget',superclass:'NSObject',methods:{
+    'toggle:':{types:['void',['id']],implementation:function(){
+      if(popover.shown)popover.performClose($());else showMenu();
+    }},
+    'popoverDidClose:':{types:['void',['id']],implementation:function(){callPage('close');}},
+    'userContentController:didReceiveScriptMessage:':{types:['void',['id','id']],implementation:function(controller,message){
+      // Only this local main frame can invoke the native command allowlist.
+      if(!message.frameInfo.isMainFrame || String(web.URL.absoluteString.js)!==pageURL)return;
+      var payload=ObjC.deepUnwrap(message.body);
+      if(!payload || typeof payload!=='object')return;
+      if(payload.type==='ready'){rebuildMenu(true);return;}
+      if(payload.type==='close'){popover.performClose($());return;}
+      if(payload.type==='resize'){
+        var height=Number(payload.height);
+        if(!isFinite(height))return;
+        var screen=btn.window.screen.visibleFrame;
+        popover.setContentSize($.NSMakeSize(304,Math.max(240,Math.min(Math.ceil(height),screen.size.height-30,620))));
         return;
       }
-      post(cmd);
-    } }
+      if(payload.type==='command' && allowed.indexOf(payload.cmd)>=0){
+        if(payload.cmd==='quit'){
+          popover.performClose($());
+          $.NSStatusBar.systemStatusBar.removeStatusItem(item);
+        }
+        post(payload.cmd);
+      }
+    }}
   }});
-  var target = $.DWMenuBarTarget.alloc.init;   // 注册类挂在 $ 全局,返回值不可用(与 DWGrip 同)
-
-  function addItem(menu, title, cmd, disabled){
-    var it = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(title, cmd === '' ? $() : 'fire:', '');
-    if (cmd !== '') { it.setTarget(target); it.setRepresentedObject($.NSString.stringWithString(cmd)); }
-    if (disabled) it.setEnabled(false);
-    menu.addItem(it);
-    return it;
-  }
-  function sep(menu){ menu.addItem($.NSMenuItem.separatorItem); }
-
+  var target=$.DWMenuBarTarget.alloc.init;
+  var conf=$.WKWebViewConfiguration.alloc.init;
+  conf.mediaTypesRequiringUserActionForPlayback=0;
+  conf.userContentController.addScriptMessageHandlerName(target,'wordpaperMenu');
+  web=$.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0,0,304,430),conf);
+  web.setAutoresizingMask($.NSViewWidthSizable | $.NSViewHeightSizable);
+  var viewController=$.NSViewController.alloc.init;
+  viewController.view=web;
+  popover=$.NSPopover.alloc.init;
+  popover.contentViewController=viewController;
+  popover.contentSize=$.NSMakeSize(304,430);
+  popover.behavior=$.NSPopoverBehaviorTransient;
+  popover.animates=false;popover.delegate=target;
+  btn.target=target;btn.action='toggle:';
+  web.loadRequest($.NSURLRequest.requestWithURL($.NSURL.URLWithString(pageURL)));
   function rebuildMenu(force){
-    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/menu-status.json'));
-    markLocal(req);
-    req.setTimeoutInterval(4);
-    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
-      var st = null;
-      if (data) {
-        try { st = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js); } catch (e) {}
-      }
-      // 归属校验:端口上的服务不是「派生我的那个伴侣」时(比如我被杀后别的
-      // 实例占了同一端口),继续活着只会变成幽灵图标 —— 立即自毁。
-      if (OWNER && st && st.ownerPid && String(st.ownerPid) !== OWNER) {
-        selfDestruct();
-        return;
-      }
-      // A bridged nil NSData can be truthy in JXA. Only a valid owner response
-      // counts as a heartbeat; an HTTP error or unparseable body never does.
-      if (st && st.ok && st.ownerPid) lastGoodAt = Date.now();
-      var sig = data ? $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js : '';
-      if (!force && sig === lastMenuSig) return;
-      lastMenuSig = sig;
-      if (!st || !st.ok) {          // 服务不可达:降级为「重启 WordPaper」
-        var m2 = $.NSMenu.alloc.init;
-        addItem(m2, 'WordPaper 暂时没有响应…', '', true);
-        addItem(m2, '正在重新连接 WordPaper…', '', true);
-        item.menu = m2;
-        return;
-      }
-      var menu = $.NSMenu.alloc.init;
-      menu.setAutoenablesItems(false);
-      if (st.pet) addItem(menu, '隐藏小词灵', 'pet-close', false);
-      else addItem(menu, '召唤小词灵', 'pet-open', false);
-      addItem(menu, st.petMode === 'patrick' ? '切换到词卡形态' : '切换到派大星形态', 'pet-mode', false);
-      addItem(menu, '换一组词', 'next', false);
-      addItem(menu, '记忆复习本…', 'workspace-memory', false);
-      addItem(menu, '打开控制面板…', 'workspace-home', false);
-      sep(menu);
-      var u = st.update || {};
-      if (st.appMode && u.applying) {
-        addItem(menu, '正在更新到 v' + (u.target || '…') + '…', '', true);
-      } else if (st.appMode && u.error) {
-        addItem(menu, '更新失败:' + String(u.error).slice(0, 40), '', true);
-        addItem(menu, u.available ? '重试更新' : '重试检查更新', u.available ? 'update-apply' : 'update-check', false);
-      } else if (st.appMode && u.available && u.latest) {
-        addItem(menu, '一键更新到 v' + u.latest, 'update-apply', false);
-        addItem(menu, '当前 v' + u.current, '', true);
-      } else if (st.appMode) {
-        addItem(menu, '当前 v' + (u.current || st.version) + (u.checked ? '(已是最新)' : ''), '', true);
-        addItem(menu, '检查更新…', 'update-check', false);
-      }
-      if (u.available || u.applying) sep(menu);
-      sep(menu);
-      addItem(menu, '退出 WordPaper', 'quit', false);
-      item.menu = menu;
+    if(pendingStatus)return;pendingStatus=true;
+    var req=$.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + PORT + '/menu-status.json'));
+    markLocal(req);req.setTimeoutInterval(4);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req,$.NSOperationQueue.mainQueue,function(resp,data,err){
+      pendingStatus=false;var st=decode(data);
+      if(OWNER && st && st.ownerPid && String(st.ownerPid)!==OWNER){selfDestruct();return;}
+      // An HTTP error or bridged nil NSData must not renew the owner heartbeat.
+      if(!st || !st.ok || !st.ownerPid)return;
+      lastGoodAt=Date.now();
+      var sig=JSON.stringify(st);
+      if(!force && sig===lastMenuSig)return;
+      lastMenuSig=sig;
+      popover.appearance=$.NSAppearance.appearanceNamed(st.dark?$.NSAppearanceNameDarkAqua:$.NSAppearanceNameAqua);
+      callPage('status',[st]);
     });
   }
-  rebuildMenu(true);
-  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(10, true, function(){ rebuildMenu(false); });
-  // 伴侣进程崩溃/被杀后图标绝不能残留:连续 15s 拿不到状态就自我了断
-  // (正常周期 10s;0.5s 一轮 runUntilDate 保证能走到这里)。退出必须用
-  // stdlib exit —— terminate 在管道冻结等场景可能抛异常,而任何写向已死
-  // 父进程 stderr 管道的数据都会把本脚本冻死(64KB 缓冲写满即阻塞,
-  // 定时器全停 → 图标永远消失不掉,真实事故)。
-  ObjC.import('stdlib');
   function selfDestruct(){
-    try { $.NSStatusBar.systemStatusBar.removeStatusItem(item); } catch (e) {}
+    try{popover.performClose($());$.NSStatusBar.systemStatusBar.removeStatusItem(item);}catch(e){}
     $.exit(0);
   }
-  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5, true, function(){
-    if ((OWNER && OWNER_PPID !== OWNER) || Date.now() - lastGoodAt > 15000) selfDestruct();
+  rebuildMenu(true);
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(3,true,function(){rebuildMenu(false);});
+  // Keep the orphan cleanup independent of WebKit and HTTP callbacks. No writes
+  // to a potentially dead parent's stderr pipe (startMenuBar uses stdio ignore).
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5,true,function(){
+    if((OWNER && OWNER_PPID!==OWNER) || Date.now()-lastGoodAt>15000)selfDestruct();
   });
-  while (true) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); }
+  // AppKit's event loop is required for popover input and WebKit audio/rAF.
+  $.NSApplication.sharedApplication.run;
 }
 `;
 }
@@ -3820,6 +4132,8 @@ function menuStatusPayload() {
     petMode: CFG.petMode || 'card',
     appMode: APP_MODE,
     version: BUNDLED_VERSION,
+    dark: petSkin(CFG.uiTheme).dark === true,
+    selectedVoice: selectedVoice().id,
     web: localWebOrigin(CFG.webOrigin) || `http://localhost:${serverWebPort()}`,
     update: updateState,
   };
@@ -4044,29 +4358,72 @@ function pushPatrickCmd(cmd) {
   patrickCmds.push(Object.assign({ seq: patrickCmdSeq }, cmd));
   if (patrickCmds.length > 20) patrickCmds.splice(0, patrickCmds.length - 20);
 }
-/* 派大星悬停/点击朗读的目标词:默认当前页第一个词;index 由点击时传。 */
-/* 点击派大星:弹出朗读卡 + **只朗读英文**(单词 + 英文例句),中文不出声。
- * 卡片显示 词/音标/中文释义/英文例句/例句中译,让用户边听边看。 */
-function patrickSpeakWord(index) {
-  if (!featureOn('betaPatrickVoice')) return;   // 管理员关闭了语音朗读
-  const words = petFirstPassWords();
-  const word = words[Math.max(0, Math.min(index || 0, words.length - 1))];
-  if (!word) return;
-  const ex = exampleForWord(CFG.library, word);
-  // 只读英文:单词 + 英文例句(中文释义/译文只显示,不朗读)
-  const items = [{ text: word.word }];
-  if (ex && ex.en) items.push({ text: ex.en });
-  // 朗读卡与朗读内容必须来自**同一个 word 对象**,否则会出现"卡片显示 A,耳朵听到 B"。
-  speakCardState = { word, example: ex, at: Date.now() };
-  // 卡片上印的正是这两行(词 + 例句),显式放行:即使这个词不在当前 6 个里
-  // (比如右键点词),只要卡片在屏上,读出来就不算幽灵朗读。
-  ttsEnqueue(items, { allow: items.map(i => i.text) });
-  renderSpeakCard();
-  pushPatrickCmd({ cmd: 'speak-card', ms: 7000 });
-  pushPatrickCmd({ cmd: 'pose', pose: 'happy0', ms: 5200 });
-}
-/* 朗读卡状态(与抽查卡互斥:出朗读卡时收起抽查卡,反之亦然)。 */
+/* 朗读气泡与题卡共存。会话 id 贯穿渲染、上屏确认、音频回调和收起,
+ * 连点重播/换题时,旧的 sips、TTS 或完成回调都不能影响新气泡。 */
 let speakCardState = null;
+let speakSequence = 0;
+function finishSpeakCard(reason = 'done') {
+  const speech = speakCardState;
+  if (!speech) return;
+  speakCardState = null;
+  clearTimeout(speech.timer);
+  const resumeQuizMs = speech.resultHeld && displayedQuiz?.id === speech.quizId && !displayedQuiz.hold ? QUIZ_RESULT_DWELL_MS : 0;
+  if (resumeQuizMs) scheduleQuizResultDismiss(displayedQuiz, resumeQuizMs);
+  pushPatrickCmd({ cmd: 'speak-end', id: speech.id, reason, resumeQuizMs });
+  try { fs.unlinkSync(CARD_PNG.speak); } catch {}
+}
+function patrickSpeakWord(index, quizId) {
+  const q = patrickQuizState || displayedQuiz;
+  if (quizId && (!q || q.id !== quizId)) return { ok: false, error: 'stale-quiz' };
+  if (!featureOn('betaPatrickVoice')) return { ok: false, error: 'voice-disabled' };
+  const words = q ? [] : petFirstPassWords();
+  const word = q ? q.word : words[Math.max(0, Math.min(index || 0, words.length - 1))];
+  if (!word) return { ok: false, error: 'no-word' };
+  const example = exampleForWord(q ? q.library : CFG.library, word);
+  ttsStopNow();
+  const speech = speakCardState = {
+    id: `${process.pid}-speech-${++speakSequence}`, word, example,
+    voiceId: selectedVoice().id, part: -1, audioIssued: false,
+    quizId: q ? q.id : null, ready: false, started: false,
+    resultHeld: !!q && q.pickedIndex >= 0 && !q.hold,
+  };
+  if (speech.resultHeld) quizResultUntil = Date.now() + 120000;
+  // 只作进程失联/异常的兜底;正常收起完全由 afplay 的完成回调驱动。
+  speech.timer = setTimeout(() => { if (speakCardState === speech) ttsStopNow('error'); }, 120000);
+  speech.timer.unref?.();
+  renderSpeakCard(speech);
+  speechAudio.prepare(word.word,speech.voiceId,()=>{});
+  if (example?.en) speechAudio.prepare(example.en,speech.voiceId,()=>{});
+  return { ok: true, id: speech.id, word: word.word, hasExample: !!example?.en };
+}
+function startSpeakCardAudio(id) {
+  const speech = speakCardState;
+  if (!speech || speech.id !== id || !speech.ready || speech.started) return false;
+  if (speech.quizId && displayedQuiz?.id !== speech.quizId) { ttsStopNow(); return false; }
+  speech.started = true;
+  prepareSpeakPart(speech,0);
+  return true;
+}
+function prepareSpeakPart(speech,part) {
+  speech.part = part; speech.audioIssued = false;
+  const text = part ? speech.example.en : speech.word.word;
+  speechAudio.prepare(text,speech.voiceId,(err,audio)=>{
+    if (speakCardState !== speech || speech.part !== part) return;
+    if (err) { ttsStopNow('error'); return; }
+    speech.audioIssued = true;
+    pushPatrickCmd({cmd:'speak-audio',id:speech.id,part,phase:part?'example':'word',
+      file:audio.file,cues:audio.cues,fallback:audio.fallback});
+  });
+}
+function completeSpeakPart(id,part,error) {
+  const speech = speakCardState;
+  if (!speech || speech.id !== id || speech.part !== part || !speech.audioIssued) return false;
+  speech.audioIssued = false;
+  if (error) ttsStopNow('error');
+  else if (part === 0 && speech.example?.en) prepareSpeakPart(speech,1);
+  else finishSpeakCard();
+  return true;
+}
 let answerCardState = null;
 function renderAnswerCard() {
   if (!answerCardState) return;
@@ -4079,15 +4436,23 @@ function renderAnswerCard() {
     if (err) console.error('[companion] 回答卡渲染失败:', err.message);
   });
 }
-function renderSpeakCard() {
-  if (!speakCardState) return;
-  const svg = buildSpeakSVG(speakCardState.word, speakCardState.example, petSkin(CFG.uiTheme).dark === true);
-  const svgPath = CARD_PNG.speak.replace(/\.png$/, '.svg');
-  const pngPath = CARD_PNG.speak;
-  try { fs.writeFileSync(svgPath, svg); } catch { return; }
+function renderSpeakCard(speech) {
+  const out = buildSpeakSVG(speech.word, speech.example, petSkin(CFG.uiTheme).dark === true, true);
+  const pngPath = CARD_PNG.speak.replace(/\.png$/, `-${speakSequence}.png`);
+  const svgPath = pngPath.replace(/\.png$/, '.svg');
+  try { fs.writeFileSync(svgPath, out.svg); } catch { finishSpeakCard('error'); return; }
   execFile('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath], { timeout: 20000 }, (err) => {
     try { fs.unlinkSync(svgPath); } catch {}
-    if (err) console.error('[companion] 朗读卡渲染失败:', err.message);
+    if (err || speakCardState !== speech) {
+      try { fs.unlinkSync(pngPath); } catch {}
+      if (err && speakCardState === speech) finishSpeakCard('error');
+      return;
+    }
+    try {
+      fs.renameSync(pngPath, CARD_PNG.speak);
+      speech.ready = true;
+      pushPatrickCmd({ cmd: 'speak-card', id: speech.id, quizId: speech.quizId, holdResult: speech.resultHeld, ...out.geom });
+    } catch { finishSpeakCard('error'); }
   });
 }
 
@@ -4768,6 +5133,15 @@ function renderQuizCard(onReady) {
     } catch (e) { console.error('[companion] quiz publish failed:', e.message); }
   });
 }
+function scheduleQuizResultDismiss(q, delay) {
+  quizResultUntil = q.hold ? Number.MAX_SAFE_INTEGER : Date.now() + delay;
+  const deadline = q.dismissAt = quizResultUntil;
+  setTimeout(() => {
+    if (q.dismissAt !== deadline || patrickQuizState || displayedQuiz !== q || q.hold || speakCardState?.quizId === q.id || sentenceWinChild) return;
+    clearQuizCard();
+    if (!flushPendingQuiz()) autoQuizTick();
+  }, delay).unref?.();
+}
 function answerQuiz(picked, res) {
   const q = patrickQuizState;
   if (!q) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'no-quiz' })); }
@@ -4854,13 +5228,7 @@ function answerQuiz(picked, res) {
   });
   // 作答后卡片停留一段时间:让用户看对错,并决定「下一个」还是「造个句子」。
   // 停留期间不算空,排队的题不会冒出来(quizBusyReason 会挡住)。
-  quizResultUntil = q.hold ? Number.MAX_SAFE_INTEGER : Date.now() + QUIZ_RESULT_DWELL_MS;
-  setTimeout(() => {
-    if (patrickQuizState || displayedQuiz !== q || q.hold) return;
-    if (sentenceWinChild) return;              // 正在造句:卡片留着当参考
-    clearQuizCard();
-    if (!flushPendingQuiz()) autoQuizTick();
-  }, QUIZ_RESULT_DWELL_MS);
+  scheduleQuizResultDismiss(q, QUIZ_RESULT_DWELL_MS);
   res.writeHead(200, { 'Content-Type': 'application/json' });
   return res.end(JSON.stringify({ ok: true, correct, word: word.word, meaning: word.meaning, queue: quizQueueState() }));
 }
@@ -5395,14 +5763,16 @@ function serveStatic(req, res, pathname) {
   if (decoded === '/') decoded = '/index.html';
   const segments = decoded.split('/').filter(Boolean);
   // 根目录只放行白名单里的页面:站点首页 + AI 对话浮窗(WebView 加载)。
-  const ROOT_PAGES = ['index.html', 'pet-chat.html', 'pet-sentence.html'];
+  const ROOT_PAGES = ['index.html', 'pet-chat.html', 'pet-sentence.html', 'pet-voices.html'];
   const direct = segments.length === 1 && ROOT_PAGES.includes(segments[0]);
   const allowed = segments.length >= 2 && ['css', 'js', 'data'].includes(segments[0])
     && !segments.some(segment => segment === '.' || segment === '..' || segment.startsWith('.'));
   if (!direct && !allowed) { res.writeHead(404); res.end('Not Found'); return; }
-  const file = path.resolve(ROOT, '.' + decoded);
+  // Keep new pages inside a directory copied by already-released updaters.
+  const pagePath = decoded === '/pet-voices.html' ? 'assets/pet-voices.html' : segments[0];
+  const file = direct ? path.resolve(ROOT, pagePath) : path.resolve(ROOT, '.' + decoded);
   const allowedRoot = direct ? ROOT : path.resolve(ROOT, segments[0]);
-  const rootPage = direct ? path.join(ROOT, segments[0]) : null;
+  const rootPage = direct ? path.join(ROOT, pagePath) : null;
   if (file !== rootPage && !file.startsWith(allowedRoot + path.sep)) { res.writeHead(404); res.end('Not Found'); return; }
   const ext = path.extname(file).toLowerCase();
   const allowedExt = direct ? ['.html']
@@ -5723,7 +6093,47 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ streamId: state.petMemoryStreamId, firstId, lastId, reset, events, snapshot: reset ? learnedSnapshot() : undefined }));
   }
   // 网页轮询：小词灵「当前页词」+ 代际。点词/翻页/补位 bump epoch，网页据此对齐预览。
-  // 派大星:点击朗读(index=当前页词下标)。仅本机回环可触发。
+  // 派大星:优先朗读可见题目;quizId 拒绝已被切走的题目。仅本机回环可触发。
+  if (url === '/pet-voices.json') {
+    if(req.method!=='GET'){res.writeHead(405);return res.end();}
+    res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
+    return res.end(JSON.stringify({ok:true,voices:speechModule.VOICES,selected:selectedVoice().id,dark:petSkin(CFG.uiTheme).dark===true}));
+  }
+  if (url === '/pet-voice.php' || url === '/pet-voice-preview.php') {
+    if(req.method!=='POST'){res.writeHead(405);return res.end();}
+    if(!trustedLocalMutation(req)){res.writeHead(403);return res.end();}
+    const reply=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
+    return readBody(req,body=>{
+      let payload;try{payload=JSON.parse(body.toString());}catch{return reply(400,{ok:false,error:'invalid-request'});}
+      if(url==='/pet-voice-preview.php' && payload?.action==='stop') {
+        if(payload.id===voicePreviewId){voicePreviewUntil=0;voicePreviewId='';}
+        return reply(200,{ok:true});
+      }
+      const voice=speechModule.voiceById(payload?.voiceId);
+      if(!voice)return reply(400,{ok:false,error:'invalid-voice'});
+      if(url==='/pet-voice.php') {
+        const previous=CFG.speechVoice;CFG.speechVoice=voice.id;
+        if(!saveConfig()){CFG.speechVoice=previous;return reply(500,{ok:false,error:'保存失败，请重试'});}
+        ttsStopNow();voicePreviewUntil=0;voicePreviewId='';
+        return reply(200,{ok:true,selected:voice.id});
+      }
+      ttsStopNow();
+      const id=require('crypto').randomBytes(18).toString('hex');voicePreviewId=id;voicePreviewUntil=Date.now()+60000;
+      res.on('close',()=>{if(!res.writableEnded && voicePreviewId===id){voicePreviewUntil=0;voicePreviewId='';}});
+      for(const [key,clip] of voicePreviewClips)if(clip.expires<Date.now())voicePreviewClips.delete(key);
+      while(voicePreviewClips.size>=8)voicePreviewClips.delete(voicePreviewClips.keys().next().value);
+      speechAudio.prepare(speechModule.SAMPLE,voice.id,(err,audio)=>{
+        if(voicePreviewId!==id)return reply(409,{ok:false,error:'preview-replaced'});
+        if(err){voicePreviewUntil=0;voicePreviewId='';return reply(503,{ok:false,error:'声音暂不可用'});}
+        voicePreviewClips.set(id,{...audio,expires:Date.now()+600000});
+        reply(200,{ok:true,id,url:'/pet-voice-audio.php?id='+id,cues:audio.cues,fallback:audio.fallback});
+      });
+    });
+  }
+  if (url === '/pet-voice-audio.php') {
+    if(req.method!=='GET' && req.method!=='HEAD'){res.writeHead(405);return res.end();}
+    return serveVoicePreview(req,res,new URL(req.url,'http://localhost').searchParams.get('id'));
+  }
   if (url === '/pet-speak.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
@@ -5732,10 +6142,30 @@ const server = http.createServer((req, res) => {
     return readBody(req, body => {
       let payload = {};
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
-      if (payload.clear) ttsClear();     // 切词:丢掉之前排队的朗读
-      patrickSpeakWord(index);
+      const result = patrickSpeakWord(index, payload.quizId);
+      res.writeHead(result.error === 'stale-quiz' ? 409 : 200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(result));
+    });
+  }
+  // 图片发布且气泡完成入场后才开始音频,不靠估算时长决定收起。
+  if (url === '/pet-speak-shown.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      const spoken = startSpeakCardAudio(payload.id);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, queued: ttsQueue.length }));
+      res.end(JSON.stringify({ ok: true, spoken }));
+    });
+  }
+  if (url === '/pet-speak-finished.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req,body=>{
+      let payload={}; try { payload=JSON.parse(body.toString('utf8') || '{}') || {}; } catch {}
+      const accepted=completeSpeakPart(payload.id,payload.part,payload.error===true);
+      res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({ok:true,accepted}));
     });
   }
   // 开关 AI 对话浮窗(点击派大星 / 菜单栏 / 网页都能调)
@@ -5762,8 +6192,9 @@ const server = http.createServer((req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
     const q = patrickQuizState;
-    if (!q || !patrickVisible) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, spoken: false })); }
+    if (!q || !patrickVisible || speakCardState || Date.now()<voicePreviewUntil) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, spoken: false })); }
     const word = q.word.word;
+    const speechGeneration = ttsGen;
     // 到点播报:先让派大星喊一句「该复习了」,再念考题词(卡片此刻正印着它)。
     // 用户要的「到点了直接弹出来 + 播报」就是这条。
     pushPatrickCmd({ cmd: 'bubble', lines: [{ text: '⏰ 到点啦，考你一个词～', size: 11, bold: true }], ms: 3200 });
@@ -5773,7 +6204,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, spoken: true, word }));
     ttsPrewarm(word, () => {
-      if (!patrickQuizState || patrickQuizState.word !== q.word) return;   // 已作答/换题
+      if (ttsGen !== speechGeneration || speakCardState || !patrickQuizState || patrickQuizState.word !== q.word) return;   // 已作答/换题/手动朗读
       ttsQueue.length = 0;   // 队列里只许有它
       ttsEnqueue([{ text: word, voice: PATRICK_TTS.enVoice, rate: PATRICK_TTS.enRate }], { allow: [word] });
     });

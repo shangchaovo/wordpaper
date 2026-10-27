@@ -45,14 +45,20 @@ async function retryCase() {
   assert.equal(applies, 2, 'one retry click installs the newly discovered release');
   console.log('PASS failed update retry refreshes release metadata');
 }
-const build = companion.slice(companion.indexOf('function buildMenuBarJXA('),companion.indexOf('let menuBarChild = null;'));
-const ctx={};vm.createContext(ctx);vm.runInContext(build,ctx);const jxa=ctx.buildMenuBarJXA(12345,9999);
-const menu=jxa.slice(jxa.indexOf('      var menu = $.NSMenu.alloc.init;'),jxa.indexOf('      item.menu = menu;')+'      item.menu = menu;'.length);
+const voicePanel = fs.readFileSync(root+'/js/pet-voices.js','utf8');
+const updateFunction = voicePanel.slice(voicePanel.indexOf('  function updatePresentation('),voicePanel.indexOf('  function renderMenu('));
+const updateContext={};vm.runInNewContext(updateFunction,updateContext);
 const initial=vm.runInNewContext('('+companion.match(/let updateState = (.*);/)[1]+')', {BUNDLED_VERSION:'2.4.5'});
-for(const [label,update] of [['initial',initial],['checked',{...initial,current:'2.4.5',checked:true}]]){
-  const titles=[]; const sandbox={$:{NSMenu:{alloc:{init:{setAutoenablesItems(){}}}}}, st:{ok:true,appMode:true,version:'2.4.5',pet:true,web:'http://localhost:8770',update},item:{},addItem:(m,t,c)=>titles.push({title:t,command:c}),sep:()=>{}};
-  vm.runInNewContext(menu,sandbox);
-  assert(titles.some(t=>t.command==='update-check'), 'check update must remain actionable: '+label);
+for(const [label,update,command,disabled] of [
+  ['initial',initial,'update-check',false],
+  ['checked',{...initial,checked:true},'update-check',false],
+  ['available',{...initial,available:true,latest:'2.6.3'},'update-apply',false],
+  ['applying',{...initial,applying:true},'',true],
+  ['failed',{...initial,error:'unreachable'},'update-check',false],
+  ['retry install',{...initial,error:'download failed',available:true},'update-apply',false],
+]) {
+  const view=updateContext.updatePresentation({appMode:true,version:'2.4.5',update});
+  assert.equal(view.command,command);assert.equal(view.disabled,disabled);
   console.log('PASS menu update entry',label);
 }
 (async()=>{await pollingCase(false);await pollingCase(true);await retryCase()})().catch(error=>{console.error(error);process.exitCode=1});

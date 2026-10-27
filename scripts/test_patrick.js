@@ -91,6 +91,8 @@ async function waitQuizGeom(base, predicate = () => true) {
     assert.equal((await fetch(base + '/pet-speak.php?i=0')).status, 405, 'speak GET must be 405');
     const speakCross = await fetch(base + '/pet-speak.php?i=0', { method: 'POST', headers: { Origin: 'https://evil.example' } });
     assert.equal(speakCross.status, 403, 'speak must reject external origins');
+    assert.equal((await fetch(base + '/pet-speak-shown.php')).status, 405);
+    assert.equal((await fetch(base + '/pet-speak-shown.php', { method:'POST', headers:{Origin:'https://evil.example'} })).status, 403);
 
     // -- mode 切换持久化
     const bad = await json(base, '/pet-mode.php?mode=blob', { method: 'POST' });
@@ -125,7 +127,24 @@ async function waitQuizGeom(base, predicate = () => true) {
     assert.equal(offered.data.offered, true, 'quiz must be offered in patrick test mode');
     assert.equal(offered.data.word, 'amuse');
     // Geometry is published only once the matching PNG is ready.
-    await waitQuizGeom(base);
+    const speechQuiz = await waitQuizGeom(base);
+    const speech = await json(base, '/pet-speak.php?i=5', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({quizId:speechQuiz.id}),
+    });
+    assert.equal(speech.data.word, 'amuse', 'speech follows the visible quiz rather than an unrelated page index');
+    assert.equal((await json(base, '/pet-speak.php', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({quizId:'old-question'}),
+    })).status, 409);
+    let speechPublished = false;
+    for (let i=0; i<100 && !speechPublished; i++) {
+      const snapshot = await json(base, '/pet-patrick.json');
+      speechPublished = snapshot.data.commands.some(c=>c.cmd==='speak-card' && c.id===speech.data.id && c.quizId===speechQuiz.id);
+      if (!speechPublished) await new Promise(r=>setTimeout(r,50));
+    }
+    assert.ok(speechPublished, 'speech card publishes after its image is ready');
+    assert.equal((await json(base, '/pet-speak-shown.php', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:'old-speech'}),
+    })).data.spoken, false);
 
     // answer 错的 → event.correct=false;词汇必须仍在流里
     const wrong = await json(base, '/pet-quiz.php', {
