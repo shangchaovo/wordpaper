@@ -4,14 +4,10 @@
   'use strict';
 
   const SIZES = {
-    'phone-1080x2400': { w: 1080, h: 2400, label: '手机 · 1080×2400' },
-    'phone-1170x2532': { w: 1170, h: 2532, label: 'iPhone · 1170×2532' },
-    'phone-1080x1920': { w: 1080, h: 1920, label: '手机 · 1080×1920' },
     'desktop-1920x1080': { w: 1920, h: 1080, label: '电脑 · 1920×1080' },
     'desktop-2560x1440': { w: 2560, h: 1440, label: '电脑 · 2560×1440 (2K)' },
     'desktop-3840x2160': { w: 3840, h: 2160, label: '电脑 · 3840×2160 (4K)' },
-    'pad-2048x2732': { w: 2048, h: 2732, label: '平板 · 2048×2732' },
-    'custom': { w: 1080, h: 1920, label: '自定义尺寸' },
+    'custom': { w: 1920, h: 1080, label: '自定义尺寸' },
   };
 
   const THEMES = {
@@ -140,7 +136,7 @@
     applyBgPhotoUI();
     // （位置布局预设已移除，拖拽即可）
     $('#custom-size-row').hidden = settings.size !== 'custom';
-    if (settings.size === 'custom') { $('#inp-cw').value = settings.customW || 1080; $('#inp-ch').value = settings.customH || 1920; }
+    if (settings.size === 'custom') { $('#inp-cw').value = settings.customW || 1920; $('#inp-ch').value = settings.customH || 1080; }
     renderLibraryCards();
     renderThemeSwatches();
     renderPatternPicker();
@@ -702,8 +698,8 @@
       if (button) { button.focus({ preventScroll: true }); switchUITheme(button.dataset.uiTheme); }
     });
     $('#sel-size').addEventListener('change', e => { settings.size = e.target.value; $('#custom-size-row').hidden = settings.size !== 'custom'; commit(); });
-    $('#inp-cw').addEventListener('change', e => { settings.customW = clampInt(e.target.value, 100, 8000, 1080); commit(); });
-    $('#inp-ch').addEventListener('change', e => { settings.customH = clampInt(e.target.value, 100, 8000, 1920); commit(); });
+    $('#inp-cw').addEventListener('change', e => { settings.customW = clampInt(e.target.value, 100, 8000, 1920); commit(); });
+    $('#inp-ch').addEventListener('change', e => { settings.customH = clampInt(e.target.value, 100, 8000, 1080); commit(); });
     $('#sel-order').addEventListener('change', e => { settings.order = e.target.value; commit(); });
     $('#inp-count').addEventListener('input', e => {
       if (e.target.value === '') return;
@@ -1798,8 +1794,8 @@
 
   /* ---------- rendering ---------- */
   function getSize() {
-    if (settings.size === 'custom') return { w: settings.customW || 1080, h: settings.customH || 1920 };
-    const s = SIZES[settings.size] || SIZES['phone-1080x2400'];
+    if (settings.size === 'custom') return { w: settings.customW || 1920, h: settings.customH || 1080 };
+    const s = SIZES[settings.size] || SIZES['desktop-1920x1080'];
     return { w: s.w, h: s.h };
   }
 

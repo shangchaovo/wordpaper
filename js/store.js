@@ -21,7 +21,7 @@
     uiTheme: 'liquid',         // 'anime' | 'editorial' | 'liquid' | 'darkliquid'（网站界面皮肤）
     library: 'ielts',          // see LIBRARIES in app.js (chuzhong/gaozhong/cet4/.../custom)
     layout: 'group',           // 唯一版式;旧数据里的 'poster' 会自动落到 group 渲染
-    size: 'phone-1080x2400',   // see SIZES in app.js
+    size: 'desktop-1920x1080',   // see SIZES in app.js
     theme: 'pearl',            // match the default Liquid interface with a clean glass wallpaper
     bgPattern: 'none',         // 'none'|'soft'|'dots'|'grid'|'diag'|'waves'|'blobs'
     wordsPerGroup: 6,          // words shown in 'group' layout (multi-col wraps 7+)
@@ -354,6 +354,8 @@
       const s = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
       // Merge over defaults so new keys appear on upgrade.
       const merged = Object.assign({}, DEFAULT_SETTINGS, s);
+      // Retired mobile presets reopen as a desktop wallpaper; keep other preferences.
+      if (/^(phone|pad)-/.test(merged.size)) merged.size = DEFAULT_SETTINGS.size;
       merged.custom = Object.assign({}, DEFAULT_SETTINGS.custom, s.custom || {});
       merged.custom.pos = Object.assign({}, (s.custom && s.custom.pos) || {});
       merged.offWords = Object.assign({}, DEFAULT_SETTINGS.offWords, s.offWords || {});

@@ -1,6 +1,9 @@
 /* Shared optical material for Liquid and Dark Liquid. Loaded after motion.css.
  * Refraction is restricted to small toolbars; reading surfaces stay still. */
 :root[data-ui-theme="liquid"] {
+  --accent: #007aff; --accent-2: #0066d6; --accent-soft: #007aff1f;
+  --accent-ink: #fff; --range-fill: #007aff;
+  --lg-action: linear-gradient(165deg, #007aff, #0066d6 60%, #005dcc);
   --lg-base: #e8e8eb;
   --lg-solid: #f6f6f7;
   --lg-panel: linear-gradient(145deg, #ffffffa8, #ffffff52 46%, #ffffff85);
@@ -12,9 +15,12 @@
   --lg-sheen: .5;
   --lg-shadow: #1c1c2420;
   --lg-dot: #20202714;
-  --lg-focus: #49494f;
+  --lg-focus: #007aff;
 }
 :root[data-ui-theme="darkliquid"] {
+  --accent: #0a84ff; --accent-2: #64adff; --accent-soft: #0a84ff26;
+  --accent-ink: #fff; --range-fill: #0a84ff;
+  --lg-action: linear-gradient(165deg, #0a84ff, #0068d9 60%, #0060cd);
   --bg: #111214; --bg-2: #1a1b1e;
   --panel: #292a2f99; --paper: #222327; --paper-muted: #27282c;
   --ink: #f1f1f3; --sub: #afb0b8;
@@ -31,7 +37,7 @@
   --lg-sheen: .16;
   --lg-shadow: #00000055;
   --lg-dot: #ffffff0e;
-  --lg-focus: #e8e8ee;
+  --lg-focus: #64adff;
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) body {
   background: radial-gradient(ellipse at 12% 0, #ffffff15, transparent 48%),
@@ -132,17 +138,31 @@
   box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight), 0 5px 12px var(--lg-shadow);
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.pattern-chip.on, .seg-btn.on) {
-  background: var(--lg-control); color: var(--ink); border-color: var(--lg-focus);
+  background: var(--accent-soft); color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 48%, transparent);
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .btn.primary {
   color: var(--accent-ink);
-  background: linear-gradient(160deg, color-mix(in srgb, var(--accent-2), white 25%), var(--accent-2));
+  background: var(--lg-action);
   border-color: var(--lg-edge);
   box-shadow: inset 0 1px 0 #ffffff70, inset 0 -1px 0 #00000018, 0 5px 12px var(--lg-shadow);
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.btn.ghost, .support-nav) { background: var(--lg-recess); color: var(--sub); }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .btn.danger { color: var(--danger); }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .liquid-control-pressed { transform: none; border-radius: 14px; }
+
+/* Apple-like blue is reserved for actions and selection, never ambient light. */
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .pet-dock-main {
+  color: var(--accent-ink); background: var(--lg-action);
+  box-shadow: inset 0 1px 0 #ffffff70, 0 4px 10px var(--lg-shadow);
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .checks input[type="checkbox"]:checked,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .srs-switch input:checked { background: var(--lg-action); }
+:root[data-ui-theme="liquid"] input[type="range"]::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, #007aff var(--pct, 0%), #d8d8dc var(--pct, 0%));
+}
+:root[data-ui-theme="darkliquid"] input[type="range"]::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, #0a84ff var(--pct, 0%), #3b3c42 var(--pct, 0%));
+}
 
 /* The selected theme is a glass capsule. Keyboard focus is a separate thin ring. */
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker {
@@ -155,11 +175,11 @@
   border-color: transparent; box-shadow: none;
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker.has-theme-pill::before {
-  border-radius: 14px; border-color: var(--lg-edge); background: var(--lg-control);
+  border-radius: 14px; border-color: color-mix(in srgb, var(--accent-2) 40%, var(--lg-edge)); background: var(--accent-soft);
   box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 var(--lg-lowlight), 0 3px 8px #00000014;
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .ui-theme-picker.has-theme-pill .ui-theme-option.on {
-  color: var(--ink); border-color: transparent; background: transparent; box-shadow: none;
+  color: var(--accent-2); border-color: transparent; background: transparent; box-shadow: none;
 }
 :root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .theme-orb.darkliquid {
   border-color: #ffffff3d; background: radial-gradient(circle at 28% 22%, #d6d7db, #4b4c52 40%, #1a1b1f 75%);

@@ -1,11 +1,11 @@
-# WordPaper · 把单词做成你的壁纸
+# WordPaper · 把单词做成你的电脑壁纸
 
-背单词老忘，就把当天要看的词做成壁纸。手机锁屏、电脑桌面抬眼就能扫到，不必专门打开背词 App。
+背单词老忘，就把当天要看的词做成壁纸。在电脑桌面抬眼就能扫到，不必专门打开背词 App。
 
 **线上：[wordpaper.pages.dev](https://wordpaper.pages.dev/)**  
 另有一份 GitHub Pages 镜像：[shangchaovo.github.io/wordpaper](https://shangchaovo.github.io/wordpaper/)
 
-网页打开就能预览。词库有雅思、四六级、考研、JLPT，也可以自己导入一份。复习按艾宾浩斯排，到点会提醒；导出是 PNG，也可以开 Live 模式当动态壁纸一直转。配色、排版、词数都能改。
+网页打开就能预览电脑壁纸。默认 1920×1080，支持 2K、4K 和自定义尺寸。词库有雅思、四六级、考研、JLPT，也可以自己导入一份。复习按艾宾浩斯排，到点会提醒；导出是 PNG，也可以开 Live 模式当动态壁纸一直转。配色、排版、词数都能改。
 
 Mac 上还有个可选的桌面伴侣：装在自己电脑上，能把壁纸直接设到系统桌面，还有个小词灵窗口。网页主体在 Windows / Linux 浏览器里也能用，自动换系统壁纸和 OCR 是 macOS 专属。
 
