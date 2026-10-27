@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>派大星 · 用它造个句子</title>
+<style>
+  :root {
+    --pink: #f79ba6;
+    --pink-soft: #ffe8ea;
+    --pink-deep: #e87f8d;
+    --green: #a8d94f;
+    --green-deep: #8cba3a;
+    --outline: #2b1d2e;
+    --ink: #3a1f2b;
+    --sub: #8a6270;
+    --paper: #fffaf6;
+    --good: #4caf7d;
+    --bad: #e2574c;
+  }
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+  /* 页面自身也做一次轻淡入:窗口 alpha 拉满时内容不该"啪"地出现。
+   * 与窗口动效(220ms)错开一点,先看到窗、再看到内容,层次更自然。 */
+  @keyframes pageIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+  body { animation: pageIn .18s cubic-bezier(.2,.9,.3,1) both; }
+  @media (prefers-reduced-motion: reduce) {
+    body { animation: none; }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--paper) 0%, var(--pink-soft) 100%);
+    font: 13.5px/1.55 "PingFang SC", "Hiragino Sans GB", -apple-system, sans-serif;
+    color: var(--ink);
+    overflow: hidden;
+  }
+
+  header { flex: 0 0 auto; padding: 12px 14px 8px; }
+  .toprow { display: flex; align-items: center; gap: 9px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px 5px;
+    background: var(--green);
+    border: 1.5px solid var(--outline);
+    border-radius: 7px;
+    font-size: 11.5px; font-weight: 800; color: var(--outline);
+  }
+  .badge svg { width: 12px; height: 12px; }
+  .hint { font-size: 10.5px; color: var(--sub); }
+
+  /* 单词卡 */
+  .wordcard {
+    margin: 8px 12px 0;
+    padding: 11px 14px;
+    background: #fff;
+    border: 1.8px solid var(--pink);
+    border-radius: 14px;
+  }
+  .wordline { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  #word {
+    font: 800 21px/1.2 "Avenir Next", "PingFang SC", sans-serif;
+    color: var(--ink);
+  }
+  #phonetic { font-size: 11.5px; color: var(--sub); }
+  #meaning { margin-top: 3px; font-size: 12.5px; color: var(--sub); }
+  #status { margin-left: auto; font-size: 11px; font-weight: 700; }
+  #status.ok { color: var(--good); }
+  #status.no { color: var(--bad); }
+
+  /* ── 标签页 ── */
+  .tabs { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 12px 0; }
+  .tab {
+    padding: 5px 13px 6px;
+    font: inherit; font-size: 12px; font-weight: 800;
+    color: var(--sub); background: #fff;
+    border: 1.5px solid var(--pink); border-radius: 9px 9px 0 0;
+    border-bottom-color: transparent;
+    cursor: pointer;
+  }
+  .tab.on { color: var(--ink); background: var(--pink-soft); border-bottom-color: var(--pink-soft); }
+  .tabcount {
+    display: inline-block; min-width: 16px; padding: 0 5px;
+    margin-left: 3px; border-radius: 999px;
+    background: var(--green); color: var(--outline);
+    font-size: 10px; line-height: 15px;
+  }
+  .tabcount:empty { display: none; }
+  #pane-write, #pane-notes {
+    flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0;
+  }
+  #pane-notes[hidden], #pane-write[hidden] { display: none; }
+
+  /* ── 错题集 ── */
+  .notes-toolbar {
+    flex: 0 0 auto; display: flex; gap: 5px; flex-wrap: wrap;
+    padding: 8px 12px 4px;
+  }
+  .nfilter {
+    padding: 4px 10px 5px;
+    font: inherit; font-size: 11px; font-weight: 800;
+    color: var(--sub); background: #fff;
+    border: 1.3px solid var(--pink); border-radius: 999px;
+    text-decoration: none; cursor: pointer;
+  }
+  .nfilter.on { background: var(--green); color: var(--outline); border-color: var(--outline); }
+  #notes-list {
+    flex: 1 1 auto; overflow-y: auto;
+    margin: 4px 12px 12px; padding-right: 2px;
+  }
+  .note {
+    position: relative;
+    margin-bottom: 9px; padding: 10px 12px;
+    background: #fff; border: 1.5px solid var(--pink); border-radius: 12px;
+    animation: pop .22s cubic-bezier(.2,1.3,.5,1) both;
+  }
+  .note.k-error { border-color: #e2574c; }
+  .note.k-awkward { border-color: #e8a33d; }
+  .note.k-unused { border-color: #8b6bd9; }
+  .note-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; margin-bottom: 5px; }
+  .note-word { font: 800 15px/1.2 "Avenir Next", "PingFang SC", sans-serif; color: var(--ink); }
+  .note-kind { font-size: 10.5px; font-weight: 800; padding: 1px 7px; border-radius: 999px; background: var(--pink-soft); color: var(--pink-deep); }
+  .note.k-error .note-kind { background: #fdeceb; color: #c0392b; }
+  .note.k-awkward .note-kind { background: #fdf3e3; color: #b57b1e; }
+  .note.k-unused { }
+  .note.k-unused .note-kind { background: #f1ecfd; color: #6746b8; }
+  .note-when { margin-left: auto; font-size: 10px; color: var(--sub); }
+  .note-line { font-size: 12.5px; line-height: 1.6; margin-top: 3px; }
+  .note-line .lab { color: var(--sub); font-weight: 700; }
+  .note-line.mine { color: #c0392b; }
+  .note-line.fixed { color: #2e8b57; }
+  .note-line.fb { color: var(--sub); }
+  .note-actions { display: flex; gap: 6px; margin-top: 7px; }
+  .nbtn {
+    padding: 2px 9px 3px;
+    font: inherit; font-size: 10.5px; font-weight: 800;
+    color: var(--sub); background: #fff;
+    border: 1.2px solid var(--pink-soft); border-radius: 7px; cursor: pointer;
+  }
+  .nbtn:hover { background: var(--pink-soft); }
+  .nbtn.starred { color: #b8860b; border-color: #f0d48a; background: #fffaeb; }
+  .note-empty { text-align: center; color: var(--sub); font-size: 12px; padding: 30px 12px; }
+
+  /* 输入区 */
+  .writer { flex: 1 1 auto; display: flex; flex-direction: column; margin: 10px 12px 0; min-height: 0; }
+  #s {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 90px;
+    padding: 12px 13px;
+    background: #fff;
+    border: 1.8px solid var(--pink);
+    border-radius: 14px;
+    font: 13.5px/1.6 "Avenir Next", "PingFang SC", sans-serif;
+    color: var(--ink);
+    resize: none; outline: 0;
+    -webkit-user-select: text; user-select: text;
+    transition: border-color .18s, box-shadow .18s;
+  }
+  #s::placeholder { color: #c9a9b4; }
+  #s:focus { border-color: var(--pink-deep); box-shadow: 0 0 0 3px rgba(247,155,166,.22); }
+  .tip { margin: 6px 2px 0; font-size: 10.5px; color: var(--sub); }
+
+  /* 按钮 */
+  .actions { flex: 0 0 auto; display: flex; gap: 8px; margin: 8px 12px 12px; }
+  button {
+    font: inherit; font-weight: 800; font-size: 12.5px;
+    padding: 9px 16px;
+    border: 1.6px solid var(--outline);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: transform .12s, background .15s, opacity .15s;
+  }
+  button:active { transform: scale(.96); }
+  #send.busy { background: var(--pink-soft); color: var(--sub); }
+  #send { flex: 1 1 auto; background: var(--pink); color: var(--outline); }
+  #send:hover:not(:disabled) { background: var(--pink-deep); }
+  #send:disabled { opacity: .45; cursor: default; transform: none; }
+  #again { background: #fff; color: var(--ink); border-color: var(--pink); }
+
+  /* 批改结果 */
+  #result {
+    flex: 0 0 auto;
+    margin: 0 12px 8px;
+    padding: 11px 13px;
+    background: #fff;
+    border: 1.6px solid var(--green);
+    border-radius: 13px;
+    max-height: 190px;
+    overflow-y: auto;
+    -webkit-user-select: text; user-select: text;
+    animation: pop .26s cubic-bezier(.2,1.3,.5,1) both;
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(8px) scale(.98); }
+    to   { opacity: 1; transform: none; }
+  }
+  #result[hidden] { display: none; }
+  .score { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+  .score b { font-size: 12.5px; }
+  .stars { letter-spacing: 2px; color: var(--green-deep); font-size: 13px; }
+  .fixed { font: 13px/1.55 "Avenir Next", "PingFang SC", sans-serif; color: var(--ink); margin-bottom: 6px; }
+  .feedback { font-size: 12.5px; color: var(--sub); white-space: pre-wrap; }
+  /* 例句区:海绿底,和批改点评区分开 */
+  .examples {
+    margin-top: 9px;
+    padding: 9px 11px;
+    background: #f3fbe6;
+    border: 1.4px solid var(--green);
+    border-radius: 10px;
+  }
+  .examples .cap {
+    font-size: 10.5px; font-weight: 800; color: var(--green-deep);
+    letter-spacing: .2px; margin-bottom: 4px;
+  }
+  .examples .ex {
+    font: 12.8px/1.55 "Avenir Next", "PingFang SC", sans-serif;
+    color: var(--ink); white-space: pre-wrap;
+  }
+  .examples .ex + .ex { margin-top: 7px; padding-top: 7px; border-top: 1px dashed rgba(140,186,58,.45); }
+  .examples .ex em { font-style: normal; color: var(--sub); }
+  /* 复制按钮:结果里的句子都能一键带走 */
+  .copybtn {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 8px;
+    font-size: 10.5px; font-weight: 800;
+    color: var(--green-deep);
+    background: #fff;
+    border: 1.3px solid var(--green);
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background .15s, transform .12s;
+  }
+  .copybtn:hover { background: #eef8dd; }
+  .copybtn:active { transform: scale(.94); }
+  .copybtn.done { background: var(--green); color: var(--outline); }
+  .linewrap { display: flex; align-items: flex-start; gap: 8px; }
+  .linewrap > .txt { flex: 1 1 auto; min-width: 0; }
+  .bubble {
+    display: flex; gap: 8px; margin-bottom: 8px;
+  }
+  .bubble .who {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 13px;
+    background: var(--pink); border: 1.5px solid var(--outline);
+  }
+  .typing .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--pink-deep); margin-right: 3px;
+    animation: bounce 1.1s infinite ease-in-out;
+  }
+  .typing .dot:nth-child(2) { animation-delay: .15s; }
+  .typing .dot:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce {
+    0%,60%,100% { transform: translateY(0); opacity: .45; }
+    30% { transform: translateY(-5px); opacity: 1; }
+  }
+  /* 批改骨架屏:shimmer 扫光占位 */
+  .skel-row {
+    height: 13px; border-radius: 7px; margin-bottom: 9px;
+    background: linear-gradient(100deg, #f4e3e6 40%, #fdf3f4 50%, #f4e3e6 60%);
+    background-size: 200% 100%;
+    animation: shimmer 1.1s linear infinite;
+  }
+  .skel-row.w40 { width: 40%; height: 16px; }
+  .skel-row.w80 { width: 82%; }
+  .skel-row.w65 { width: 62%; }
+  .skel-hint { font-size: 10.5px; color: var(--sub); margin-top: 2px; }
+  @keyframes shimmer {
+    from { background-position: 120% 0; }
+    to   { background-position: -80% 0; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="toprow">
+      <span class="badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l2.4 5.2 5.6.7-4.1 3.9 1.1 5.6L12 15.7 6.9 18.4 8 12.8 3.9 8.9l5.6-.7z"/>
+        </svg>
+        造句练习
+      </span>
+      <span class="hint">用刚考过的词写一句英文</span>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button id="tab-write" class="tab on" type="button">造句</button>
+    <button id="tab-notes" class="tab" type="button">错题集 <span id="notes-count" class="tabcount"></span></button>
+  </div>
+
+  <div id="pane-write">
+  <div class="wordcard">
+    <div class="wordline">
+      <span id="word">…</span>
+      <span id="phonetic"></span>
+      <span id="status"></span>
+    </div>
+    <div id="meaning"></div>
+  </div>
+
+  <div class="writer">
+    <textarea id="s" placeholder="在下面写一句用到这个词的英文…" spellcheck="false"></textarea>
+    <div class="tip">回车提交 · Shift+回车换行</div>
+  </div>
+
+  <div id="result" hidden></div>
+
+  <div class="actions">
+    <button id="again" type="button">清空重写</button>
+    <button id="send" type="button">交给派大星批改</button>
+  </div>
+  </div><!-- /pane-write -->
+
+  <div id="pane-notes" hidden>
+    <div class="notes-toolbar">
+      <button class="nfilter on" data-kind="" type="button">全部</button>
+      <button class="nfilter" data-kind="error" type="button">用法错误</button>
+      <button class="nfilter" data-kind="awkward" type="button">不够地道</button>
+      <button class="nfilter" data-kind="unused" type="button">没用上</button>
+      <a id="notes-export-md" class="nfilter" href="/pet-sentence-notes-export?format=md" download>导出 md</a>
+      <a id="notes-export-json" class="nfilter" href="/pet-sentence-notes-export?format=json" download>json</a>
+    </div>
+    <div id="notes-list"></div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var wordEl = $('word'), phonEl = $('phonetic'), meanEl = $('meaning'), statusEl = $('status');
+  var input = $('s'), sendBtn = $('send'), againBtn = $('again'), resultBox = $('result');
+  var quiz = null, busy = false;
+
+  function stars(n) {
+    if (!n) return '';
+    var out = '';
+    for (var i = 0; i < 5; i++) out += i < n ? '★' : '☆';
+    return out;
+  }
+
+  function loadQuiz() {
+    fetch('/pet-sentence.json', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.quiz) {
+          wordEl.textContent = '还没有考过词';
+          meanEl.textContent = '先去做一次桌面抽查，答完题就能在这里造句。';
+          sendBtn.disabled = true;
+          return;
+        }
+        quiz = j.quiz;
+        wordEl.textContent = quiz.word || '';
+        phonEl.textContent = quiz.phonetic || '';
+        meanEl.textContent = (quiz.pos ? quiz.pos + ' ' : '') + (quiz.meaning || '');
+        if (typeof quiz.correct === 'boolean') {
+          statusEl.textContent = quiz.correct ? '上次答对' : '上次答错';
+          statusEl.className = quiz.correct ? 'ok' : 'no';
+        }
+        input.focus();
+        // 通知伴侣:该把这个窗口的输入法切到英文了(见 /pet-sentence.json 的 ime 字段)
+        try { fetch('/pet-ime.php?lang=en', { method: 'POST' }); } catch (e) {}
+      })
+      .catch(function () { wordEl.textContent = '连不上伴侣服务'; });
+  }
+
+  /* 一键复制。navigator.clipboard 在 WKWebView 里可能不可用,
+   * 回退到 textarea + document.execCommand('copy')(老办法,兼容性最好)。 */
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function copyButton(text) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'copybtn';
+    b.textContent = '复制';
+    b.addEventListener('click', function () {
+      copyText(text);
+      b.textContent = '已复制';
+      b.classList.add('done');
+      setTimeout(function () { b.textContent = '复制'; b.classList.remove('done'); }, 1400);
+    });
+    return b;
+  }
+
+  function showTyping() {
+    // 骨架屏:立刻铺出「分数条 / 改好的句子 / 点评」三行占位 + shimmer 扫光,
+    // 用户按按钮的下一帧就有反馈,而不是盯着空结果区等响应。
+    resultBox.hidden = false;
+    resultBox.innerHTML =
+      '<div class="skel-row w40"></div>' +
+      '<div class="skel-row w80"></div>' +
+      '<div class="skel-row w65"></div>' +
+      '<div class="skel-hint">派大星正在批改…</div>';
+  }
+
+  function showResult(j) {
+    resultBox.hidden = false;
+    if (!j || !j.ok) {
+      resultBox.innerHTML = '';
+      var err = document.createElement('div');
+      err.className = 'feedback';
+      err.textContent = '（' + ((j && j.error) || '批改失败') + '）';
+      resultBox.appendChild(err);
+      return;
+    }
+    resultBox.innerHTML = '';
+    var score = document.createElement('div');
+    score.className = 'score';
+    var b = document.createElement('b');
+    b.textContent = j.used === false ? '这个词没用上' : '批改结果';
+    var st = document.createElement('span');
+    st.className = 'stars';
+    st.textContent = stars(j.score);
+    score.appendChild(b);
+    score.appendChild(st);
+    resultBox.appendChild(score);
+    if (j.fixed) {
+      var fixedRow = document.createElement('div');
+      fixedRow.className = 'fixed linewrap';
+      var fixedTxt = document.createElement('span');
+      fixedTxt.className = 'txt';
+      fixedTxt.textContent = j.fixed;
+      fixedRow.appendChild(fixedTxt);
+      fixedRow.appendChild(copyButton(j.fixed));
+      resultBox.appendChild(fixedRow);
+    }
+    if (j.feedback) {
+      var fb = document.createElement('div');
+      fb.className = 'feedback';
+      fb.textContent = j.feedback;
+      resultBox.appendChild(fb);
+    }
+    // 例句:造句之后给一句示范(词典原句 + DeepSeek 新造,有哪条显示哪条)
+    var exs = [];
+    if (j.example) exs.push({ text: j.example, cap: '例句' });
+    if (j.example2) exs.push({ text: j.example2, cap: '再学一句' });
+    if (exs.length) {
+      var box = document.createElement('div');
+      box.className = 'examples';
+      exs.forEach(function (item, i) {
+        if (i === 0) {
+          var cap = document.createElement('div');
+          cap.className = 'cap';
+          cap.textContent = '📖 ' + item.cap;
+          box.appendChild(cap);
+        }
+        var line = document.createElement('div');
+        line.className = 'ex';
+        if (i > 0) {
+          var cap2 = document.createElement('div');
+          cap2.className = 'cap';
+          cap2.textContent = '✨ ' + item.cap;
+          line.appendChild(cap2);
+        }
+        var row = document.createElement('div');
+        row.className = 'linewrap';
+        var txt = document.createElement('span');
+        txt.className = 'txt';
+        txt.textContent = item.text;
+        row.appendChild(txt);
+        row.appendChild(copyButton(item.text));
+        line.appendChild(row);
+        box.appendChild(line);
+      });
+      resultBox.appendChild(box);
+    }
+    resultBox.scrollTop = 0;
+  }
+
+  function submit() {
+    var sentence = input.value.trim();
+    if (busy || !sentence) { input.focus(); return; }
+    busy = true;
+    sendBtn.disabled = true;
+    sendBtn.textContent = '批改中…';
+    sendBtn.classList.add('busy');
+    showTyping();
+    fetch('/pet-sentence.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence: sentence })
+    })
+      .then(function (r) { return r.json(); })
+      .then(showResult)
+      .catch(function () { showResult({ ok: false, error: '连不上伴侣服务' }); })
+      .then(function () {
+        busy = false;
+        sendBtn.disabled = false;
+        sendBtn.textContent = '交给派大星批改';
+        sendBtn.classList.remove('busy');
+      });
+  }
+
+  // 每次聚焦输入框都确保是英文输入法(用户中途切走了也能拉回来)
+  input.addEventListener('focus', function () {
+    try { fetch('/pet-ime.php?lang=en', { method: 'POST' }); } catch (e) {}
+  });
+  // Cmd+C / Ctrl+C 选中即复制:WKWebView 里文字可以选中,这里补齐快捷键行为
+  document.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
+      var sel = String(window.getSelection ? window.getSelection() : '').trim();
+      if (sel) { copyText(sel); e.preventDefault(); }
+    }
+  });
+
+  sendBtn.addEventListener('click', submit);
+  againBtn.addEventListener('click', function () {
+    input.value = '';
+    resultBox.hidden = true;
+    resultBox.innerHTML = '';
+    input.focus();
+  });
+  // 回车提交 / Shift+回车换行;尊重输入法组合态(中文选词时的回车不算提交)
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      submit();
+    }
+  });
+
+  /* ── 错题集 ──────────────────────────────────────────────── */
+  var tabWrite = document.getElementById('tab-write');
+  var tabNotes = document.getElementById('tab-notes');
+  var paneWrite = document.getElementById('pane-write');
+  var paneNotes = document.getElementById('pane-notes');
+  var notesList = document.getElementById('notes-list');
+  var notesCount = document.getElementById('notes-count');
+  var notesFilter = '';
+  var KIND = {
+    error:   { label: '用法错误', cls: 'k-error' },
+    awkward: { label: '不够地道', cls: 'k-awkward' },
+    unused:  { label: '没用上这个词', cls: 'k-unused' },
+  };
+
+  function switchTab(which) {
+    var toNotes = which === 'notes';
+    tabWrite.classList.toggle('on', !toNotes);
+    tabNotes.classList.toggle('on', toNotes);
+    paneWrite.hidden = toNotes;
+    paneNotes.hidden = !toNotes;
+    if (toNotes) loadNotes();
+  }
+  tabWrite.addEventListener('click', function () { switchTab('write'); });
+  tabNotes.addEventListener('click', function () { switchTab('notes'); });
+
+  function fmtWhen(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var p2 = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+
+  function noteApi(payload) {
+    return fetch('/pet-sentence-notes.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); });
+  }
+
+  function loadNotes() {
+    var url = '/pet-sentence-notes.json' + (notesFilter ? '?kind=' + encodeURIComponent(notesFilter) : '');
+    fetch(url, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        renderNotes(j.notes || [], j.total || 0);
+      })
+      .catch(function () { renderNotes([], 0); });
+  }
+
+  function renderNotes(list, total) {
+    if (notesCount) notesCount.textContent = total ? String(total) : '';
+    if (!notesList) return;
+    notesList.innerHTML = '';
+    if (!list.length) {
+      notesList.innerHTML = '<div class="note-empty">还没有错题。<br>造句没拿满分时会自动收进来（用法错误 / 不够地道 / 没用上这个词）。</div>';
+      return;
+    }
+    list.forEach(function (n) {
+      var meta = KIND[n.kind] || { label: n.kind || '', cls: '' };
+      var card = document.createElement('div');
+      card.className = 'note ' + meta.cls;
+
+      var head = document.createElement('div');
+      head.className = 'note-head';
+      var w = document.createElement('span');
+      w.className = 'note-word';
+      w.textContent = n.word || '';
+      var k = document.createElement('span');
+      k.className = 'note-kind';
+      k.textContent = meta.label + (n.score ? ' · ' + n.score + '/5' : '');
+      var when = document.createElement('span');
+      when.className = 'note-when';
+      when.textContent = fmtWhen(n.at);
+      head.appendChild(w); head.appendChild(k); head.appendChild(when);
+      card.appendChild(head);
+
+      function line(cls, label, text, copyable) {
+        if (!text) return;
+        var row = document.createElement('div');
+        row.className = 'note-line ' + cls;
+        var lab = document.createElement('span');
+        lab.className = 'lab';
+        lab.textContent = label + '：';
+        if (copyable) {
+          // 带复制按钮的行:flex 三栏(标签 / 正文 / 按钮)
+          row.style.display = 'flex';
+          row.style.alignItems = 'flex-start';
+          row.style.gap = '6px';
+          var wrap = document.createElement('span');
+          wrap.style.flex = '1 1 auto';
+          wrap.style.minWidth = '0';
+          wrap.textContent = text;
+          row.appendChild(lab);
+          row.appendChild(wrap);
+          row.appendChild(copyButton(text));
+        } else {
+          row.appendChild(lab);
+          row.appendChild(document.createTextNode(text));
+        }
+        card.appendChild(row);
+      }
+      line('mine', '我写的', n.mine);
+      line('fixed', '改成', n.fixed, true);   // 改好的句子最值得复制
+      line('fb', '点评', n.feedback);
+      if (n.memo) line('fb', '笔记', n.memo);
+
+      var acts = document.createElement('div');
+      acts.className = 'note-actions';
+      var star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'nbtn' + (n.starred ? ' starred' : '');
+      star.textContent = n.starred ? '★ 已收藏' : '☆ 收藏';
+      star.addEventListener('click', function () {
+        noteApi({ action: 'star', id: n.id, starred: !n.starred }).then(loadNotes);
+      });
+      var memo = document.createElement('button');
+      memo.type = 'button';
+      memo.className = 'nbtn';
+      memo.textContent = '写笔记';
+      memo.addEventListener('click', function () {
+        var v = window.prompt('给这条加个笔记（方便以后复习）：', n.memo || '');
+        if (v === null) return;
+        noteApi({ action: 'note', id: n.id, memo: v }).then(loadNotes);
+      });
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'nbtn';
+      del.textContent = '删除';
+      del.addEventListener('click', function () {
+        if (!window.confirm('删除这条错题记录？')) return;
+        noteApi({ action: 'delete', id: n.id }).then(loadNotes);
+      });
+      acts.appendChild(star); acts.appendChild(memo); acts.appendChild(del);
+      card.appendChild(acts);
+      notesList.appendChild(card);
+    });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.nfilter[data-kind]'), function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.nfilter[data-kind]'), function (b) { b.classList.remove('on'); });
+      btn.classList.add('on');
+      notesFilter = btn.dataset.kind || '';
+      loadNotes();
+    });
+  });
+
+  loadQuiz();
+})();
+</script>
+</body>
+</html>

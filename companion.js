@@ -78,6 +78,11 @@ function loadConfig() {
     uiTheme: 'editorial',          // 'anime' | 'editorial' | 'liquid' | 'darkliquid'（网页外观与小词灵同步）
     // floating pet window
     petEnabled: true,
+    petMode: 'card',              // 'card' 词卡 | 'patrick' 派大星桌面漫游
+    petRoam: true,                // 派大星是否自由走动(false = 原地待机)
+    petRoamInterval: 11,          // 派大星平均每隔多少秒决定一次散步(3–60)
+    quizIntervalSec: 300,         // 自主抽查间隔(秒,最小 60):派大星自己读库出题
+    quizAutoStart: true,          // 是否开启"伴侣自主抽查"(不依赖浏览器)
     petCorner: 'top-right',       // 'top-right'|'top-left'|'bottom-right'|'bottom-left'
     petWordsPerPage: 6,           // 小词灵连续词槽；与壁纸每组数量相互独立
     petTransition: 'dissolve-pop', // 换词特效: dissolve(溶解)|pop(Q弹)|dissolve-pop|none
@@ -98,6 +103,36 @@ function loadConfig() {
   }
 }
 const CFG = loadConfig();
+
+/* ── 内测功能开关(管理员在网页「管理」卡片里设置,存 app_meta)──────────
+ * 伴侣只读不写;数据库不存在/没有 node:sqlite 时全部按默认(开启)处理,
+ * 保证独立版在没登录过的情况下也能正常跑。 */
+let featureCache = { at: 0, flags: {} };
+function featureFlags() {
+  const now = Date.now();
+  if (now - featureCache.at < 15000) return featureCache.flags;   // 15s 缓存
+  featureCache.at = now;
+  const flags = {};
+  try {
+    const dbPath = path.join(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'), 'wordpaper.sqlite');
+    if (process.env.WORDPAPER_TEST_MODE === '1' && !process.env.WORDPAPER_DATA_DIR) return flags;
+    if (fs.existsSync(dbPath)) {
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const rows = db.prepare("SELECT key, value FROM app_meta WHERE key LIKE 'feature:%'").all();
+        rows.forEach(r => { flags[String(r.key).slice(8)] = r.value === '1'; });
+      } finally { try { db.close(); } catch {} }
+    }
+  } catch { /* 旧 Node 无 node:sqlite / 库被锁 → 用默认 */ }
+  featureCache.flags = flags;
+  return flags;
+}
+/* 未设置过 = 默认开启(内测功能默认可用,管理员显式关闭才停)。 */
+function featureOn(key) {
+  const flags = featureFlags();
+  return Object.prototype.hasOwnProperty.call(flags, key) ? flags[key] === true : true;
+}
 if (process.env.WORDPAPER_WEB_ORIGIN) {
   try {
     const origin = new URL(process.env.WORDPAPER_WEB_ORIGIN);
@@ -118,7 +153,7 @@ function saveConfig() {
  * counter, which is mixed into the pick seed so the wallpaper + pet jump to a
  * new word group right away (the auto interval still rotates by bucket). */
 const STATE_PATH = process.env.WORDPAPER_STATE_PATH || migratedRuntimePath('companion-state.json');
-const STATE_DEFAULTS = { bump: 0, petMemoryEvents: [], petMemorySeq: 0, petMemoryStreamId: '', petLearnedByLibrary: {}, petDecksByLibrary: {}, petKnownByLibrary: {}, petWordEpoch: 0, wallpaperCachePath: '' };
+const STATE_DEFAULTS = { bump: 0, petMemoryEvents: [], petMemorySeq: 0, petMemoryStreamId: '', petLearnedByLibrary: {}, petDecksByLibrary: {}, petKnownByLibrary: {}, petWordEpoch: 0, wallpaperCachePath: '', patrickSize: null, sentenceNotes: [], sentenceNoteSeq: 0 };
 let state = Object.assign({}, STATE_DEFAULTS);
 try { state = Object.assign({}, STATE_DEFAULTS, JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'))); } catch {}
 if (!Array.isArray(state.petMemoryEvents)) state.petMemoryEvents = [];
@@ -126,6 +161,8 @@ if (!state.petLearnedByLibrary || typeof state.petLearnedByLibrary !== 'object')
 if (!state.petDecksByLibrary || typeof state.petDecksByLibrary !== 'object') state.petDecksByLibrary = {};
 if (!state.petKnownByLibrary || typeof state.petKnownByLibrary !== 'object') state.petKnownByLibrary = {};
 state.petWordEpoch = Math.max(0, Number(state.petWordEpoch) || 0);
+if (!Array.isArray(state.sentenceNotes)) state.sentenceNotes = [];
+state.sentenceNoteSeq = Math.max(0, Number(state.sentenceNoteSeq) || 0);
 if (typeof state.wallpaperCachePath !== 'string') state.wallpaperCachePath = '';
 function makeStreamId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`; }
 if (!state.petMemoryStreamId) state.petMemoryStreamId = makeStreamId();
@@ -138,6 +175,15 @@ function saveState() {
 let migratedState = false;
 if (state.notification) { delete state.notification; migratedState = true; }
 function petWordKey(word) { return String((word && word.word) || '') + '|' + String((word && word.meaning) || ''); }
+/* 词义带词根词性(记忆本里存的 meaning 常已含 'v. ')——拼接时避免 'v. v. …' 重复。 */
+function withPos(word) {
+  const meaning = String((word && word.meaning) || '');
+  const pos = String((word && word.pos) || '');
+  if (!pos) return meaning;
+  const bare = pos.replace(/\.\s*$/, '').trim();       // 'v.' → 'v'
+  if (meaning.startsWith(pos) || meaning.startsWith(bare + '.')) return meaning;
+  return pos + ' ' + meaning;
+}
 function screeningKey(word) { return String((word && word.word) || '') + '\u0000' + String((word && word.phonetic) || ''); }
 
 // 迁移旧版全局状态到按词库隔离的结构；历史事件/排期中有完整 word 时可恢复快照。
@@ -237,7 +283,7 @@ function petFirstPassWords() { return currentPetPage(CFG.library).words.slice();
 /* 小词灵当前页词的「代际」计数器：点词/翻页/补位导致当前页词变化就 +1。网页按
  * epoch 轮询比对，发现变化就拉取当前页词对齐预览；这是翻页（不产生记忆事件）
  * 也能被网页感知的关键。 */
-function bumpPetWordEpoch() { state.petWordEpoch = Math.max(0, Number(state.petWordEpoch) || 0) + 1; }
+function bumpPetWordEpoch() { state.petWordEpoch = Math.max(0, Number(state.petWordEpoch) || 0) + 1; scheduleStatusBubble(); }
 function navigatePetPage(direction) {
   const library = CFG.library, deck = ensurePetDeck(library), dir = direction < 0 ? -1 : 1;
   if (dir < 0) deck.index = Math.max(0, deck.index - 1);
@@ -372,7 +418,6 @@ const SIZES = {
   'desktop-1920x1080': [1920, 1080],
   'desktop-2560x1440': [2560, 1440],
   'desktop-3840x2160': [3840, 2160],
-  'phone-1080x2400': [1080, 2400],
 };
 
 /* Build the settings object render.js expects, from config. */
@@ -690,6 +735,1269 @@ const PET_SKINS = {
 };
 function petSkin(name) { return PET_SKINS[PET_UI_THEMES.has(name) ? name : 'editorial']; }
 
+/* ---------------- Patrick 派大星形态(桌面漫游宠物) ----------------
+ * 形态二：无边框透明小窗,派大星精灵图 + 20fps 状态机动画,在桌面自由散步。
+ * 交互: 悬停=停下挥手+语音气泡(单词+释义+例句); 点击=跳跃+本地 TTS 朗读;
+ *       拖动=手动摆放; 点词区(气泡上的词)=记首轮(与卡片形态一致)。
+ * 形态切换: 卡片头部 ⭐ 按钮 / 派大星右键菜单 → 互转,尺寸互相独立保存。 */
+const PATRICK_SHEET = path.join(ROOT, 'assets', 'patrick', 'sheet.png');
+const PATRICK_SHEET_FLIP = path.join(ROOT, 'assets', 'patrick', 'sheet_flip.png');
+// 6x4 网格,与 scripts/build_patrick_sheet.py 的 FRAME_MAP 一一对应。
+const PATRICK_CELL = { w: 192, h: 208, cols: 6, rows: 4 };
+// slot: 0 idle0  1 idle1  2 blink  3 lookL  4 lookR  5 wave0
+//       6..13 walk 循环      14 wave1  15 happy0 16 happy1
+//       17 sad0 18 sad1 19 think0 20 angry0 21 front0
+// 精灵图里 8 个"行走"帧其实是两组朝向:slot 6–9 朝右、slot 10–13 朝左
+// (逐帧眼睛/眉毛重心实测 Δ=+16 / -16)。必须按朝向选组,否则走两步就"掉头"。
+const PATRICK_FRAME = { idle0: 0, idle1: 1, blink: 2, lookL: 3, lookR: 4, wave0: 5,
+  walkR0: 6, walkL0: 10, wave1: 14, happy0: 15, happy1: 16, sad0: 17, sad1: 18, think0: 19, angry0: 20, front0: 21 };
+const PET_MODES = new Set(['card', 'patrick']);
+const PATRICK_DEFAULT = { w: 190, h: 206 };   // 派大星显示尺寸(pt, 2x 位图清晰;太小看不清表情)
+const PATRICK_MIN = 90, PATRICK_MAX = 420;
+/* 语音:优先 edge-tts(微软神经语音,接近真人),不可用时回退系统 say。
+ * 按用户要求**只朗读英文**(单词与英文例句),中文释义不出声。 */
+const PATRICK_TTS = {
+  engine: 'edge',                       // 'edge' | 'say'
+  // edge-tts 可执行文件:优先 App 内自带,其次仓库里的 venv(同机)。
+  // venv 的 shebang 是绝对路径,复制到别处会失效,所以按顺序探测真实可用的那个。
+  edgeBin: (() => {
+    const candidates = [
+      path.join(ROOT, '.venv-tts', 'bin', 'edge-tts'),
+      path.join(os.homedir(), 'daily-wallpaper', '.venv-tts', 'bin', 'edge-tts'),
+    ];
+    return candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } }) || candidates[0];
+  })(),
+  edgeVoice: process.env.WORDPAPER_TTS_VOICE || 'en-US-AriaNeural',
+  edgeRate: process.env.WORDPAPER_TTS_RATE || '+0%',
+  fallbackVoice: 'Samantha',
+  fallbackRate: 165,
+};
+/* 答题音效:用 macOS 内置音效(零依赖、无需打包音频)。
+ * 对 = Glass(清脆上扬) + Hero(短促胜利感);错 = Basso(低沉) + Sosumi(经典"错误"音)。 */
+const QUIZ_SFX = {
+  correct: ['/System/Library/Sounds/Glass.aiff', '/System/Library/Sounds/Hero.aiff'],
+  wrong: ['/System/Library/Sounds/Basso.aiff', '/System/Library/Sounds/Sosumi.aiff'],
+};
+function playSfx(kind, cb) {
+  const files = QUIZ_SFX[kind] || [];
+  if (!files.length || !isMac) return cb && cb();
+  const playOne = (i) => {
+    if (i >= files.length) return cb && cb();
+    execFile('/usr/bin/afplay', [files[i]], { timeout: 8000 }, () => playOne(i + 1));
+  };
+  playOne(0);
+}
+
+/* 本地 TTS 串行队列:词(英文,略慢)+释义(中文)。say 是本机合成,离线可用;
+ * 一次朗读 = 词 → 短停 → 释义/例句,经 -w /tmp 文件播放避免 say 阻塞前台。 */
+const ttsQueue = [];
+let ttsBusy = false;
+let ttsProc = null;            // 正在跑的 afplay / edge-tts 子进程(可被 ttsStopNow 掐断)
+let ttsGen = 0;                // 代际:每次掐断 +1,旧的异步回调看到代际变了就自我作废
+/* 朗读一段英文:edge-tts 合成 mp3 → afplay 播放。失败回退 macOS say。
+ * 只用于英文(单词/例句);中文释义不朗读。
+ * opts.gen:调用时的代际;播放前若代际已变(用户掐断了)就丢弃,绝不播旧内容。 */
+function ttsSpeak(text, cb, opts) {
+  const safe = String(text || '').replace(/["\\]/g, '').trim();
+  if (!safe || !isMac) return cb && cb(new Error('empty text'));
+  const myGen = (opts && typeof opts.gen === 'number') ? opts.gen : ttsGen;
+  const stale = () => myGen !== ttsGen;
+  const playFile = (file, done, keep) => {
+    if (stale()) { if (!keep) { try { fs.unlinkSync(file); } catch {} } return done && done(new Error('stale')); }
+    const child = execFile('/usr/bin/afplay', [file], { timeout: 30000 }, (e) => {
+      if (ttsProc === child) ttsProc = null;
+      if (!keep) { try { fs.unlinkSync(file); } catch {} }
+      done && done(e);
+    });
+    ttsProc = child;
+  };
+  // 命中预合成缓存 → 直接播,省掉 300–800ms 合成时间(卡片上屏即出声靠这条)
+  const cached = ttsCacheFile(safe);
+  try {
+    if (fs.existsSync(cached) && fs.statSync(cached).size > 0) return playFile(cached, cb, true);
+  } catch {}
+  const useSay = () => {
+    if (stale()) return cb && cb(new Error('stale'));
+    const aiff = path.join(os.tmpdir(), `dw_tts_${process.pid}_${Date.now()}.aiff`);
+    // macOS say 的输出选项是 -o(不是 -w),写错会静默失败。
+    const child = execFile('/usr/bin/say', ['-v', PATRICK_TTS.fallbackVoice, '-r', String(PATRICK_TTS.fallbackRate), '-o', aiff, safe],
+      { timeout: 20000 }, (err) => {
+        if (ttsProc === child) ttsProc = null;
+        if (err) return cb && cb(err);
+        playFile(aiff, cb);
+      });
+    ttsProc = child;
+  };
+  if (PATRICK_TTS.engine === 'edge' && fs.existsSync(PATRICK_TTS.edgeBin)) {
+    const mp3 = path.join(os.tmpdir(), `dw_tts_${process.pid}_${Date.now()}.mp3`);
+    const child = execFile(PATRICK_TTS.edgeBin, [
+      '--voice', PATRICK_TTS.edgeVoice, '--rate', PATRICK_TTS.edgeRate,
+      '--text', safe, '--write-media', mp3,
+    ], { timeout: 25000 }, (err) => {
+      if (ttsProc === child) ttsProc = null;
+      if (err || !fs.existsSync(mp3)) { try { fs.unlinkSync(mp3); } catch {} return useSay(); }
+      playFile(mp3, cb);
+    });
+    ttsProc = child;
+  } else {
+    useSay();
+  }
+}
+/* 立刻掐断:停掉正在播的那一条 + 清空队列 + 换代际(排队中的合成/播放全部作废)。
+ * 抽查卡弹出、切词、提问时用——用户要"只有按钮上这个词的声音",旧声音必须先死。 */
+function ttsStopNow() {
+  ttsGen++;
+  ttsQueue.length = 0;
+  const child = ttsProc;
+  ttsProc = null;
+  if (child) { try { child.kill('SIGKILL'); } catch {} }
+  ttsBusy = false;
+}
+/* 朗读音频缓存:同一个词第二次考、或卡片上屏那一刻要立刻出声时,
+ * 现场跑 edge-tts 要 300–800ms,音画就对不上了。出题时先**预合成**到缓存,
+ * 卡片滑入动画一结束直接 afplay,声音和卡片同时出现。 */
+const TTS_CACHE_DIR = path.join(RUNTIME_ROOT, 'tts-cache');
+function ttsCacheFile(text) {
+  const key = require('crypto').createHash('sha1')
+    .update([PATRICK_TTS.edgeVoice, PATRICK_TTS.edgeRate, String(text).trim()].join('|'))
+    .digest('hex');
+  return path.join(TTS_CACHE_DIR, key + (PATRICK_TTS.engine === 'edge' ? '.mp3' : '.aiff'));
+}
+const ttsPrewarming = new Map();   // text → 等待回调列表(避免同一句话并发出两次 edge-tts)
+function ttsPrewarm(text, cb) {
+  const safe = String(text || '').replace(/["\\]/g, '').trim();
+  if (!safe || !isMac) return cb && cb(new Error('empty text'));
+  const file = ttsCacheFile(safe);
+  try { if (fs.existsSync(file) && fs.statSync(file).size > 0) return cb && cb(null, file); } catch {}
+  // 已经在合成了 → 挂在同一批回调上,不重复起进程
+  const waiting = ttsPrewarming.get(safe);
+  if (waiting) { if (cb) waiting.push(cb); return; }
+  ttsPrewarming.set(safe, cb ? [cb] : []);
+  const settle = (err) => {
+    const cbs = ttsPrewarming.get(safe) || [];
+    ttsPrewarming.delete(safe);
+    for (const fn of cbs) { try { fn(err, err ? null : file); } catch {} }
+  };
+  try { fs.mkdirSync(TTS_CACHE_DIR, { recursive: true, mode: 0o700 }); } catch {}
+  const tmp = file + '.' + process.pid + '.tmp';
+  const finish = (err) => {
+    if (err) { try { fs.unlinkSync(tmp); } catch {} return settle(err); }
+    try { fs.renameSync(tmp, file); } catch {}
+    settle(null);
+  };
+  if (PATRICK_TTS.engine === 'edge' && fs.existsSync(PATRICK_TTS.edgeBin)) {
+    execFile(PATRICK_TTS.edgeBin, [
+      '--voice', PATRICK_TTS.edgeVoice, '--rate', PATRICK_TTS.edgeRate,
+      '--text', safe, '--write-media', tmp,
+    ], { timeout: 25000 }, (err) => finish(err || !fs.existsSync(tmp) ? new Error('edge failed') : null));
+  } else {
+    execFile('/usr/bin/say', ['-v', PATRICK_TTS.fallbackVoice, '-r', String(PATRICK_TTS.fallbackRate), '-o', tmp, safe],
+      { timeout: 20000 }, (err) => finish(err || !fs.existsSync(tmp) ? new Error('say failed') : null));
+  }
+}
+
+/* 清空待播队列:用户切词/提问时,旧的朗读不该继续播(否则卡片显示 A,
+ * 耳朵里还在读 B —— "单词跟读音对不上"就是这个)。当前正在播的那条不打断
+ * (打断 afplay 会有爆音),只丢弃后面排队的。 */
+function ttsClear() {
+  ttsQueue.length = 0;
+  ttsGen++;            // 排队中/正在合成的那条看到代际变了就自我作废
+}
+/* 当前桌面上**看得见**的文本:小词灵这一页的 6 个词 + 各自的英文例句。
+ * 用户要求:只朗读当前显示的单词;没显示的词(比如抽查里别的到期词)一律不发声,
+ * 否则就是"看不见的幽灵单词在念"。 */
+function displayedSpeechTexts() {
+  const set = new Set();
+  const add = (t) => { const v = String(t || '').trim().toLowerCase(); if (v) set.add(v); };
+  try {
+    petFirstPassWords().forEach(w => {
+      if (!w) return;
+      add(w.word);
+      const ex = exampleForWord(CFG.library, w);
+      if (ex && ex.en) add(ex.en);
+    });
+  } catch {}
+  // 卡片上**印着**的字也算「看得见」:抽查卡/朗读卡/回答卡都在屏幕上,
+  // 用户能读到,读出来才不突兀(否则就会出现"问我认不认识却不出声")。
+  try {
+    if (patrickQuizState && patrickQuizState.word) add(patrickQuizState.word.word);
+    if (speakCardState && speakCardState.word) add(speakCardState.word.word);
+    if (speakCardState && speakCardState.example && speakCardState.example.en) add(speakCardState.example.en);
+    if (answerCardState && answerCardState.word) add(answerCardState.word.word);
+  } catch {}
+  return set;
+}
+function ttsTextIsDisplayed(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  const allowed = displayedSpeechTexts();
+  if (allowed.has(t)) return true;
+  for (const a of allowed) { if (a && (t.includes(a) || a.includes(t))) return true; }
+  return false;
+}
+function ttsEnqueue(items, opts) {
+  // opts.allow: 调用方明确声明「这几个字正显示在屏幕卡片上」。
+  const extra = new Set(((opts && opts.allow) || []).map(t => String(t || '').trim().toLowerCase()).filter(Boolean));
+  // ── 抽查硬锁 ──
+  // 抽查卡在屏(= patrickQuizState 存在)期间,**只有卡上被考的那个词**可以发声。
+  // 其它任何文本(上一题的词、例句、Nice/Oops、别的到期词)一律丢弃。
+  // 这就是用户反复反馈的"弹出考问时却听到别的单词"的最终防线。
+  const lockWord = patrickQuizState && patrickQuizState.word
+    ? String(patrickQuizState.word.word || '').trim().toLowerCase() : '';
+  items.forEach(item => {
+    if (!item || !item.text) return;
+    const t = String(item.text || '').trim().toLowerCase();
+    if (lockWord) {
+      if (t !== lockWord) {
+        console.error('[companion] TTS 丢弃(抽查中只读考题词):', String(item.text).slice(0, 40));
+        return;
+      }
+      ttsQueue.push(item);
+      return;
+    }
+    if (!extra.has(t) && !ttsTextIsDisplayed(item.text)) {
+      console.error('[companion] TTS 丢弃非当前页文本:', String(item.text).slice(0, 40));
+      return;
+    }
+    ttsQueue.push(item);
+  });
+  if (ttsQueue.length > 24) ttsQueue.splice(0, ttsQueue.length - 24);   // 疯狂连点只保留最近
+  pumpTts();
+}
+function pumpTts() {
+  // 守卫:派大星窗口不在(被关/崩溃)时丢弃队列,避免"看不见人却在说话"。
+  if (!patrickVisible && !petVisible) { ttsQueue.length = 0; return; }
+  if (ttsBusy || !ttsQueue.length) return;
+  ttsBusy = true;
+  const item = ttsQueue.shift();
+  const gen = ttsGen;
+  ttsSpeak(item.text, () => {
+    if (gen !== ttsGen) return;   // 这一代已被掐断:别把新的队列当成自己的继续泵
+    ttsBusy = false;
+    if (item.after) { try { item.after(); } catch {} }
+    pumpTts();
+  }, { gen });
+}
+
+/* 词→例句:优先读预生成 data/examples_<lib>.json(离线词典缓存);custom 词库
+ * 词条自带 example 字段。返回 {en, zh} 或 null。 */
+const examplesCache = {};
+function examplesForLibrary(library) {
+  if (examplesCache[library]) return examplesCache[library];
+  let data = null;
+  try { data = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', `examples_${library}.json`), 'utf8')); } catch {}
+  examplesCache[library] = data || {};
+  return examplesCache[library];
+}
+function exampleForWord(library, word) {
+  if (word && word.example) return { en: String(word.example), zh: '' };
+  const lib = examplesForLibrary(library);
+  const hit = lib[word && word.word] || lib[(word && word.word || '').toLowerCase()];
+  if (!hit || !hit.length) return null;
+  const s = String(hit[0]);
+  // "to be amused at or by sth 被某事物逗乐" → 英文段 + 中文段(第一个 CJK 字符处切)
+  const m = s.match(/^(.*?[a-zA-Z'”’\)\]])\s*([\u4e00-\u9fff].*)$/);
+  return m ? { en: m[1].trim(), zh: m[2].trim() } : { en: s, zh: '' };
+}
+
+/* 派大星漫游窗状态(伴侣进程侧):TTS 播放中的高亮、当前悬停词由 JXA 窗口本地
+ * 管理;这里只保存 config 与尺寸/位置持久化路径。 */
+const PATRICK_POS_PATH = path.join(RUNTIME_ROOT, 'patrick-position.json');
+
+function buildPatrickJXA(opts) {
+  const meta = {
+    cell: PATRICK_CELL, frame: PATRICK_FRAME,
+    W: opts.W, H: opts.H, port: CFG.port, ownerPid: process.pid,
+    frameNames: opts.frameNames,
+    sheetPath: PATRICK_SHEET, sheetFlipPath: PATRICK_SHEET_FLIP,
+    posFile: PATRICK_POS_PATH, closeFile: PET_CLOSED_PATH,
+    words: opts.words,
+    statusUrl: 'http://127.0.0.1:' + CFG.port + '/pet-word-status.json',
+    statusBubblePng: path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`),
+    speakUrl: 'http://127.0.0.1:' + CFG.port + '/pet-speak.php',
+    morphUrl: 'http://127.0.0.1:' + CFG.port + '/pet-mode.php?mode=card',
+    quizPng: CARD_PNG.quiz,
+    quizW: PET_QUIZ_W, quizH: PET_QUIZ_H,
+    quizBtnTop: QUIZ_BTN_TOP, quizBtnBottom: QUIZ_BTN_BOTTOM, quizBtnSkipX1: QUIZ_BTN_SKIP_X1,
+    speakPng: CARD_PNG.speak,
+    speakW: SPEAK_CARD_W, speakH: SPEAK_CARD_H,
+    answerPng: CARD_PNG.answer,
+    answerW: ANSWER_CARD_W, answerH: ANSWER_CARD_H,
+    keys: opts.keys,
+    roam: CFG.petRoam !== false && featureOn('betaCompanionRoam'),
+    dark: opts.dark === true,
+    exampleLines: opts.exampleLines || [],
+  };
+  return `ObjC.import('Cocoa');
+ObjC.import('stdlib');
+ObjC.bindFunction('getppid', ['int', []]);
+function run(argv){
+  var M = ${JSON.stringify(meta)};
+  var CELL = M.cell, FR = M.frameNames;
+  var W = M.W, H = M.H;
+  var OWNER_PPID = String($.getppid());   // 启动时取一次(2s 心跳里不再走 bridge)
+  var sheet = $.NSImage.alloc.initWithContentsOfFile(M.sheetPath);
+  if (!sheet || sheet.isNil()) { return; }
+  // 睡眠唤醒的瞬间 NSScreen.mainScreen 可能是 nil(实测:凌晨 2:45-6:30 崩溃循环,
+  // 报 undefined is not an object evaluating screen.origin),这里给兜底屏。
+  var mainScreen = $.NSScreen.mainScreen;
+  var screen = (mainScreen && mainScreen.frame) ? mainScreen.frame : $.NSMakeRect(0, 0, 1512, 982);
+  var x = screen.origin.x + screen.size.width - W - 42, y = screen.origin.y + screen.size.height * 0.30;
+  try {
+    var savedTxt = $.NSString.stringWithContentsOfFileEncodingError(M.posFile, $.NSUTF8StringEncoding, $());
+    var saved = JSON.parse((savedTxt && savedTxt.js) || '{}');
+    if (typeof saved.x === 'number') { x = saved.x; y = saved.y; }
+  } catch (e) {}
+  x = Math.max(screen.origin.x + 4, Math.min(x, screen.origin.x + screen.size.width - W - 4));
+  y = Math.max(screen.origin.y + 4, Math.min(y, screen.origin.y + screen.size.height - H - 4));
+  var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+    $.NSMakeRect(x, y, W, H), $.NSWindowStyleMaskBorderless, $.NSBackingStoreBuffered, false);
+  win.opaque = false; win.backgroundColor = $.NSColor.clearColor;
+  win.level = $.NSFloatingWindowLevel;
+  win.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
+  win.hasShadow = false;
+
+  // 状态机: idle / walk(走向目标) / hover(挥手) / jump / drag / quiz。
+  // 动画统一走 animSeq 帧序列;50ms tick 驱动全部逻辑。
+  var st = {
+    mode: 'idle', frame: FR.idle0, facing: 1,
+    target: null, targetY: null,
+    animSeq: null, animSeqIdx: 0, animSeqFrame: 0, animSeqOnce: false, animLast: 0, animTickMs: 140, animThen: null,
+    blinkAt: Date.now() + 1500 + Math.random() * 3000,
+    idleHoldUntil: 0, walkSpeed: 1.2,
+    hover: false, quiz: false,
+    speakIndex: -1,     // 点击轮换朗读 6 个词;-1 表示还没读过(首次点读第 0 个)
+    fx: null,           // 答题特效: {kind:'correct'|'wrong', start, dur}
+    fxParticles: [],    // 答对时的小星星
+    shakeUntil: 0,      // 答错时的抖动结束时间
+  };
+  var bubble = null;      // {lines:[{text,size,color}], until}
+  var quizWin = null;     // 抽查卡子窗(点选项作答)
+  var quizGripView = null;   // 子窗的绘图视图(mtime 轮询重绘目标)
+  var quizScrollView = null;
+  var cardKind = '';         // 'quiz' | 'speak' —— 决定 mtime 轮询看哪个 PNG
+  var lastQuizGeom = null;   // 伴侣按内容算的命中区 {w,h,optTop,optH,optCount,btnTop,btnBottom}
+  var downState = null;
+  var darkSkin = M.dark === true;
+
+  function setFrame(){ win.setFrameDisplay($.NSMakeRect(x, y, W, H), true); }
+  setFrame();
+  // 镜像 sheet 的列序是反的:slot c 的画面在镜像图上的 (cols-1-c) 列。
+  // 帧序号 → 图上的 (col,row)。左右朝向各有自己的帧组,不再靠整图镜像。
+  function drawSprite(idx, R){
+    var srcW = CELL.w, srcH = CELL.h, cols = CELL.cols;
+    var col = idx % cols, row = Math.floor(idx / cols);
+    var sy = sheet.size.height - (row + 1) * srcH;   // 源图上而下 → Cocoa 下而上
+    sheet.drawInRectFromRectOperationFraction(R, $.NSMakeRect(col * srcW, sy, srcW, srcH), $.NSCompositeSourceOver, 1);
+  }
+  /* 答题特效:
+   * correct → 一圈扩散的绿色光环 + 8 颗向上飘的小星星(0.9s)
+   * wrong   → 红色圆环闪一下(配合 shakeUntil 的窗口抖动) */
+  function drawFx(R){
+    if (!st.fx) return;
+    var age = (Date.now() - st.fx.start) / st.fx.dur;
+    if (age >= 1) { st.fx = null; st.fxParticles = []; return; }
+    var cx = R.origin.x + R.size.width / 2;
+    var cy = R.origin.y + R.size.height / 2;
+    var ease = 1 - Math.pow(1 - age, 3);
+    if (st.fx.kind === 'correct') {
+      var ringR = 24 + ease * 70;
+      var alpha = (1 - age) * 0.85;
+      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.30, 0.78, 0.49, alpha).setStroke;
+      var ring = $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - ringR, cy - ringR, ringR * 2, ringR * 2));
+      ring.lineWidth = 3.5 * (1 - age) + 1;
+      ring.stroke;
+      // 小星星:8 颗,从中心向外+向上飘
+      for (var i = 0; i < st.fxParticles.length; i++) {
+        var p = st.fxParticles[i];
+        var px = cx + p.dx * ease * 1.6;
+        var py = cy + p.dy * ease * 1.6 + ease * ease * 18;   // 越飘越向上
+        var a2 = (1 - age) * p.alpha;
+        var sz = p.size * (1 - age * 0.45);
+        $.NSColor.colorWithSRGBRedGreenBlueAlpha(p.r, p.g, p.b, a2).setFill;
+        var star = $.NSBezierPath.bezierPath;
+        for (var k = 0; k < 5; k++) {
+          var outer = k * 2 * Math.PI / 5 - Math.PI / 2;
+          var inner = outer + Math.PI / 5;
+          var ox = px + Math.cos(outer) * sz, oy = py + Math.sin(outer) * sz;
+          var ix = px + Math.cos(inner) * sz * 0.45, iy = py + Math.sin(inner) * sz * 0.45;
+          if (k === 0) star.moveToPoint($.NSMakePoint(ox, oy)); else star.lineToPoint($.NSMakePoint(ox, oy));
+          star.lineToPoint($.NSMakePoint(ix, iy));
+        }
+        star.closePath;
+        star.fill;
+      }
+    } else {
+      var rr = 30 + ease * 46;
+      var a3 = (1 - age) * 0.75;
+      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.89, 0.34, 0.30, a3).setStroke;
+      var bad = $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - rr, cy - rr, rr * 2, rr * 2));
+      bad.lineWidth = 4 * (1 - age) + 1.5;
+      bad.stroke;
+    }
+  }
+  function rgba(r, g, b, a){ return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r, g, b, a); }
+  var INK = darkSkin ? rgba(0.91, 0.93, 0.97, 1) : rgba(0.16, 0.20, 0.25, 1);
+  var SUB = darkSkin ? rgba(0.58, 0.63, 0.74, 1) : rgba(0.36, 0.42, 0.49, 1);
+  var BG  = darkSkin ? rgba(0.06, 0.09, 0.15, 0.95) : rgba(0.99, 0.98, 0.95, 0.96);
+  function fontAt(size, bold){
+    var f = $.NSFont.fontWithNameSize(bold ? 'PingFangSC-Semibold' : 'PingFangSC-Regular', size);
+    if (f && !f.isNil()) return f;
+    return $.NSFont.systemFontOfSizeWeight(size, bold ? 0.5 : 0);
+  }
+  /* ── 气泡:独立悬浮窗,不画在派大星窗口里 ──────────────────────
+   * 旧实现画在 win 的 drawRect 里,但派大星窗口只有 W×H(默认 190×206),
+   * 气泡宽可达 340、锚在窗口顶往上延伸 → **几乎全部落在窗口外被裁剪**,
+   * 用户看到的"气泡不出现"就是这个。改为独立 borderless 子窗,跟随派大星。 */
+  var bubbleWin = null;
+  function layoutBubbleWin(){
+    if (!bubbleWin || !bubble) return;
+    var f = win.frame;
+    var bw = bubbleW || 280, bh = bubbleH || 120;
+    var bx = Math.round(f.origin.x + (f.size.width - bw) / 2);
+    var by = Math.round(f.origin.y + f.size.height + 6);   // 派大星头顶上方(Cocoa y 向上)
+    bubbleWin.setFrameOrigin($.NSMakePoint(bx, by));
+  }
+  /* 气泡 = 伴侣渲染的 statusBubble.png(SVG 设计卡,与抽查卡同一套视觉)。
+   * 窗口尺寸随 PNG 像素/2(2x 渲染);PNG 被 mtime 轮询发现更新后自动重绘。 */
+  var bubblePng = M.statusBubblePng;
+  var bubbleImg = null, bubbleMtime = 0, bubbleW = 0, bubbleH = 0;
+  /* 气泡窗**在启动时就建好**(隐藏),绘制/悬停时只 orderFront + 贴图。
+   * 之前是懒创建并在 drawRect 期间 orderFrontRegardless —— AppKit 在绘制期改窗口
+   * 状态会直接 SIGTRAP(AppKit _crashOnException),派大星一启动就崩。 */
+  var bubbleViewRef = null;
+  (function buildBubbleWin(){
+    var BName = 'DWBubbleView' + Date.now();
+    ObjC.registerSubclass({ name: BName, superclass: 'NSView', methods: {
+      'drawRect:': function(rect){
+        try {
+          if (bubbleImg && !bubbleImg.isNil() && bubbleW > 0 && bubbleH > 0) {
+            bubbleImg.drawInRectFromRectOperationFraction($.NSMakeRect(0, 0, bubbleW, bubbleH), $.NSZeroRect, $.NSCompositeSourceOver, 1);
+          }
+        } catch (e) {}
+      },
+    }});
+    bubbleWin = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+      $.NSMakeRect(0, 0, 280, 120),
+      $.NSWindowStyleMaskBorderless, $.NSBackingStoreBuffered, false);
+    bubbleWin.opaque = false; bubbleWin.backgroundColor = $.NSColor.clearColor;
+    bubbleWin.level = $.NSFloatingWindowLevel + 1;
+    bubbleWin.hasShadow = true;
+    bubbleWin.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
+    bubbleViewRef = $[BName].alloc.initWithFrame($.NSMakeRect(0, 0, 280, 120));
+    bubbleWin.contentView.addSubview(bubbleViewRef);
+  })();
+  function drawBubble(){
+    if (!bubble) { if (bubbleWin) bubbleWin.orderOut($()); return; }
+    if (!bubbleWin) return;
+    bubbleWin.orderFrontRegardless;
+    layoutBubbleWin();
+  }
+  function reloadBubblePng(){
+    var img = $.NSImage.alloc.initWithContentsOfFile(bubblePng);
+    if (!img || img.isNil()) return;
+    bubbleImg = img;
+    var w2 = img.size.width / 2, h2 = img.size.height / 2;
+    var resized = Math.abs(w2 - bubbleW) > 0.5 || Math.abs(h2 - bubbleH) > 0.5;
+    bubbleW = w2; bubbleH = h2;
+    if (!bubbleWin || !bubbleViewRef) return;
+    if (resized) {
+      var wasVisible = bubbleWin.isVisible;
+      if (wasVisible) bubbleWin.orderOut($());   // 改尺寸前先撤,避免绘制期改 frame
+      bubbleViewRef.setFrame($.NSMakeRect(0, 0, bubbleW, bubbleH));
+      bubbleWin.setFrameDisplay($.NSMakeRect(0, 0, bubbleW, bubbleH), false);
+      if (wasVisible) { bubbleWin.orderFrontRegardless; layoutBubbleWin(); }
+    }
+    bubbleViewRef.setNeedsDisplay(true);
+  }
+  reloadBubblePng();
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
+    try {
+      var at = $.NSFileManager.defaultManager.attributesOfItemAtPathError(bubblePng, $());
+      if (!at) return;
+      var d = at.objectForKey($.NSFileModificationDate);
+      var mt = d ? d.timeIntervalSince1970 : 0;
+      if (mt > bubbleMtime + 0.05) { bubbleMtime = mt; reloadBubblePng(); if (bubble) drawBubble(); }
+    } catch (e) {}
+  });
+
+  var GripClass = ObjC.registerSubclass({ name: 'DWPatrickGrip', superclass: 'NSView', methods: {
+    'mouseDownCanMoveWindow': function(){ return false; },
+    'drawRect:': function(rect){
+      // 不 fill 背景:窗口 backgroundColor=clear、视图不画底色即保持透明。
+      var f = win.frame;
+      // 答错:整窗轻微左右抖动(用平移整个绘制内容模拟)
+      var shakeX = 0;
+      if (st.shakeUntil && Date.now() < st.shakeUntil) {
+        var sp = (st.shakeUntil - Date.now()) / 420;
+        shakeX = Math.sin(Date.now() / 28) * 7 * sp;
+      }
+      // 点击开窗时的「蓄力→弹起」:整幅精灵缩放 + 下沉/上浮。
+      // 用变换套在 sprite 与特效上(气泡不动,否则文字会跟着抖)。
+      var sx = 1, sy = 1, dy = 0;
+      if (st.clickFx) {
+        var cp = (Date.now() - st.clickFx.start) / st.clickFx.dur;
+        if (cp >= 1) { st.clickFx = null; }
+        else {
+          if (cp < 0.21) {
+            // 0–90ms 蓄力:压扁 + 下沉
+            var q = cp / 0.21;
+            var qe = 1 - Math.pow(1 - q, 2);
+            sx = 1 + 0.06 * qe; sy = 1 - 0.06 * qe; dy = -6 * qe;
+          } else {
+            // 90ms 之后:回弹过冲,恢复原状
+            var r = (cp - 0.21) / 0.79;
+            var re = Math.pow(1 - r, 2);
+            sx = 1 - 0.05 * re; sy = 1 + 0.05 * re; dy = 3 * re - 3 * re * (1 - r);
+          }
+        }
+      }
+      var R = $.NSMakeRect(
+        shakeX + f.size.width * (1 - sx) / 2,
+        dy + f.size.height * (1 - sy) / 2,
+        f.size.width * sx, f.size.height * sy);
+      drawSprite(st.frame, R);
+      drawFx(R);
+      drawBubble();
+    },
+    'acceptsFirstMouse:': function(){ return true; },
+    'mouseDown:': function(e){
+      // 拖动必须用**屏幕坐标** NSEvent.mouseLocation:e.locationInWindow 是窗口局部坐标,
+      // 窗口一移动局部坐标就变,会形成负反馈 → 拖动跟不上鼠标(卡片形态同款坑)。
+      var m = $.NSEvent.mouseLocation;
+      downState = { sx: m.x, sy: m.y, gx: x, gy: y, t: Date.now(), moved: false };
+    },
+    'mouseDragged:': function(e){
+      if (!downState) return;
+      var m = $.NSEvent.mouseLocation;
+      var dx = m.x - downState.sx, dy = m.y - downState.sy;
+      if (!downState.moved && Math.abs(dx) + Math.abs(dy) > 4) {
+        downState.moved = true;
+        st.mode = 'drag'; bubble = null; st.target = null; st.animSeq = null; st.frame = FR.idle0;
+      }
+      if (downState.moved) {
+        // 拖动只移动窗口,内容不变 —— 用 setFrameOrigin(不触发重绘),setFrame:display:YES
+        // 每次鼠标事件都同步重画整窗,是"拖动卡顿"的根因。
+        x = Math.max(screen.origin.x, Math.min(downState.gx + dx, screen.origin.x + screen.size.width - W));
+        y = Math.max(screen.origin.y, Math.min(downState.gy + dy, screen.origin.y + screen.size.height - H));
+        win.setFrameOrigin($.NSMakePoint(x, y));
+        syncQuizWinPosition();   // 抽查卡跟着一起走
+        if (bubbleWin) layoutBubbleWin();   // 气泡跟随
+      }
+    },
+    'mouseUp:': function(e){
+      if (!downState) return;
+      var wasDrag = downState.moved, dt = Date.now() - downState.t;
+      downState = null;
+      if (wasDrag) { savePos(); st.mode = 'idle'; st.idleHoldUntil = Date.now() + 2200; st.blinkAt = Date.now() + 900; return; }
+      if (dt < 600) handleClick();
+    },
+    'mouseEntered:': function(e){ st.hover = true; },
+    'mouseExited:': function(e){ st.hover = false; },
+  }});
+  var grip = $.DWPatrickGrip.alloc.initWithFrame($.NSMakeRect(0, 0, W, H));
+  grip.autoresizingMask = $.NSViewWidthSizable | $.NSViewHeightSizable;
+  win.contentView.addSubview(grip);
+  var track = $.NSTrackingArea.alloc.initWithRectOptionsOwnerUserInfo(
+    $.NSMakeRect(0, 0, W, H),
+    $.NSTrackingMouseEnteredAndExited | $.NSTrackingActiveAlways | $.NSTrackingAssumeInside,
+    grip, $());
+  grip.addTrackingArea(track);
+  win.orderFrontRegardless;   // 无焦点窗口必须显式上屏,否则进程活着但窗口永不可见
+
+  function savePos(){
+    $.NSString.stringWithString(JSON.stringify({ x: x, y: y })).writeToFileAtomicallyEncodingError(M.posFile, true, $.NSUTF8StringEncoding, $());
+  }
+  function playSeq(seq, ms, once, then){
+    if (!seq) { st.animSeq = null; st.animThen = null; return; }
+    st.animSeq = seq; st.animSeqIdx = 0; st.animSeqFrame = seq[0];
+    st.animTickMs = ms || 140; st.animLast = Date.now(); st.animSeqOnce = !!once; st.animThen = then || null;
+  }
+  function postUrl(u, body){
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString(u));
+    req.setHTTPMethod('POST');
+    if (body) {
+      req.setHTTPBody($.NSString.stringWithString(body).dataUsingEncoding($.NSUTF8StringEncoding));
+      req.setValueForHTTPHeaderField('application/json', 'Content-Type');
+    }
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){});
+  }
+  /* ── 词状态:新词 vs 艾宾浩斯倒计时 ─────────────────────────
+   * 每 60s 拉 /pet-word-status.json 缓存;悬停气泡据此区分:
+   *   🆕 还没背第一遍(桌面新词)
+   *   ⏳ 艾宾浩斯倒计时(已进记忆本,第 N 轮,还差多久考)
+   *   ❗ 到期该复习
+   * 悬停气泡同时把两类词都列出来(各自最多 3 个),一眼看清"接下来该干嘛"。 */
+  var wordStatus = [];          // [{word,kind,stage,dueInMs}]
+  var statusLastAt = 0;
+  function fmtDue(ms) {
+    var min = Math.round(ms / 60000);
+    if (min < 60) return min + ' 分钟';
+    var h = Math.floor(min / 60), m = min % 60;
+    if (h < 24) return h + ' 小时' + (m ? ' ' + m + ' 分' : '');
+    return Math.round(h / 24) + ' 天';
+  }
+  function statusLines(){
+    if (!wordStatus.length) return null;
+    var fresh = [], timing = [], dueNow = [];
+    wordStatus.forEach(function (it) {
+      if (it.kind === 'new') fresh.push(it.word);
+      else if (it.kind === 'due') dueNow.push(it.word);
+      else if (it.kind === 'countdown') timing.push(it);
+    });
+    if (!fresh.length && !timing.length && !dueNow.length) return null;
+    var lines = [];
+    if (dueNow.length) lines.push({ text: '❗ 该复习了：' + dueNow.slice(0, 3).join('、'), size: 11, bold: true });
+    if (timing.length) {
+      timing.slice(0, 3).forEach(function (it) {
+        lines.push({ text: '⏳ ' + it.word + ' · 第 ' + ((it.stage || 0) + 1) + ' 轮 · ' + fmtDue(it.dueInMs) + '后考', size: 10.5, color: 'sub' });
+      });
+    }
+    if (fresh.length) lines.push({ text: '🆕 还没背：' + fresh.slice(0, 3).join('、'), size: 11 });
+    lines.push({ text: '摸摸我抽查 · 点击开对话', size: 9, color: 'sub' });
+    return lines;
+  }
+  function showHoverBubble(){
+    if (!M.words || !M.words.length) return;
+    // 悬停 = 一眼看清两类词:新词 + 倒计时中的词
+    var lines = statusLines();
+    if (!lines) lines = wordBubbleLines(st.speakIndex >= 0 ? st.speakIndex : 0, true);
+    bubble = { lines: lines, until: Date.now() + 8000 };
+    grip.setNeedsDisplay(true);
+  }
+  function pullWordStatus(){
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString(M.statusUrl));
+    req.setTimeoutInterval(4);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      if (!data) return;
+      try {
+        var d = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+        if (d && d.ok && d.words) { wordStatus = d.words; statusLastAt = Date.now(); }
+      } catch (e) {}
+    });
+  }
+  pullWordStatus();
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(60, true, function(){ pullWordStatus(); });
+  /* 点击 = 朗读当前页的**下一个词**(6 个词轮换),而不是永远读第一个。
+   * 每次点击:跳跃 + 气泡显示该词 + 语音读 词→释义→例句→例句中译。 */
+  /* 双击派大星 → 弹出**非模态**提问窗(不能 runModal:模态会阻塞 50ms 主循环,
+   * 派大星会卡住不动)。用一个独立小窗 + NSTextField + 两个按钮。 */
+  var askWin = null, askField = null;
+  function closeAskWin(){
+    if (askWin) { askWin.orderOut($()); askWin = null; askField = null; }
+  }
+  function openAskWin(prefill){
+    closeAskWin();
+    var AW = 360, AH = 132;
+    var ax = Math.round(x + (W - AW) / 2);
+    var ay = Math.round(y - AH - 12);
+    var sf = $.NSScreen.mainScreen.frame;
+    ax = Math.max(sf.origin.x + 8, Math.min(ax, sf.origin.x + sf.size.width - AW - 8));
+    ay = Math.max(sf.origin.y + 8, Math.min(ay, sf.origin.y + sf.size.height - AH - 8));
+    var w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+      $.NSMakeRect(ax, ay, AW, AH),
+      $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
+      $.NSBackingStoreBuffered, false);
+    w.title = '问派大星（DeepSeek）';
+    w.level = $.NSFloatingWindowLevel + 1;
+    w.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces;
+    var content = w.contentView;
+
+    var label = $.NSTextField.labelWithString('想了解哪个词？随便问：');
+    label.frame = $.NSMakeRect(16, AH - 40, AW - 32, 18);
+    label.font = $.NSFont.systemFontOfSize(11.5);
+    content.addSubview(label);
+
+    var field = $.NSTextField.alloc.initWithFrame($.NSMakeRect(16, AH - 74, AW - 32, 24));
+    field.setStringValue($.NSString.stringWithString(prefill || ''));
+    field.setPlaceholderString($.NSString.stringWithString('例如：course 怎么记？有什么搭配？'));
+    field.font = $.NSFont.systemFontOfSize(13);
+    content.addSubview(field);
+    askField = field;
+
+    var btnW = 84, btnH = 26;
+    var sendBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(AW - 16 - btnW, 14, btnW, btnH));
+    sendBtn.title = '问它';
+    sendBtn.bezelStyle = $.NSBezelStyleRounded;
+    sendBtn.keyEquivalent = String.fromCharCode(13);     // 回车发送
+    content.addSubview(sendBtn);
+    var cancelBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(AW - 16 - btnW * 2 - 8, 14, btnW, btnH));
+    cancelBtn.title = '算了';
+    cancelBtn.bezelStyle = $.NSBezelStyleRounded;
+    cancelBtn.keyEquivalent = String.fromCharCode(27);   // Esc 关闭
+    content.addSubview(cancelBtn);
+
+    // 按钮点击走本地事件监听(不改 ObjC 类);回车/Esc 由 keyEquivalent 处理。
+    var clickMonitor = $.NSEvent.addLocalMonitorForEventsMatchingMaskHandler($.NSEventMaskLeftMouseUp, function(ev){
+      if (!askWin) return ev;
+      var loc = ev.locationInWindow;
+      if (ev.window !== askWin) return ev;
+      var inSend = loc.x >= AW - 16 - btnW && loc.x <= AW - 16 && loc.y >= 14 && loc.y <= 14 + btnH;
+      var inCancel = loc.x >= AW - 16 - btnW * 2 - 8 && loc.x <= AW - 16 - btnW - 8 && loc.y >= 14 && loc.y <= 14 + btnH;
+      if (inSend) { submitAsk(); return $(); }
+      if (inCancel) { closeAskWin(); return $(); }
+      return ev;
+    });
+
+    function submitAsk(){
+      if (!askField) return;
+      var q = ObjC.unwrap(askField.stringValue).trim();
+      if (!q) return;
+      closeAskWin();
+      bubble = { lines: [{ text: '派大星想想…', size: 11 }], until: Date.now() + 20000 };
+      grip.setNeedsDisplay(true);
+      postUrl('http://127.0.0.1:' + M.port + '/pet-ask.php',
+        JSON.stringify({ index: st.speakIndex >= 0 ? st.speakIndex : 0, question: q, clear: true }));
+    }
+    askWin = w;
+    w.makeKeyAndOrderFront($());
+    $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+    w.makeFirstResponder(field);
+  }
+
+  var lastClickAt = 0;
+  /* 点击派大星 → 打开对话浮窗。
+   * 动效编排(与浮窗的出场动画对齐):
+   *   0ms    派大星先做一个「蓄力」下沉(缩放 1.0→0.94,向下 6pt)
+   *   90ms   弹起(跳跃弧线)+ 挥手两帧 —— 这是"它把窗口递给你"的感觉
+   *   90ms   同时请求伴侣开窗;窗口自己在 260ms 内从派大星身旁弹出来
+   * 之前是瞬间切到 jump 帧 + 立刻开窗,两个动作各走各的,显得很突变。 */
+  function handleClick(){
+    if (st.quiz) return;
+    var now = Date.now();
+    if (now - lastClickAt < 400) return;    // 防连点:一次点击只开一个窗
+    lastClickAt = now;
+    st.animSeq = null;
+    st.clickFx = { start: now, dur: 420 };  // 蓄力→弹起的缩放/位移,在 drawRect 里应用
+    // 先蓄力 90ms,再跳 + 挥手并请求开窗
+    st.mode = 'idle';
+    st.idleHoldUntil = now + 500;
+    bubble = null;
+    grip.setNeedsDisplay(true);
+    $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.09, true, function(tm){
+      tm.invalidate;
+      st.mode = 'jump'; st.jumpStart = Date.now(); st.jumpY0 = y;
+      playSeq([FR.wave0, FR.wave1, FR.wave0], 110, true, function(){ st.frame = FR.idle0; grip.setNeedsDisplay(true); });
+      bubble = { lines: [{ text: '来，聊聊这个词～', size: 11 }], until: Date.now() + 2200 };
+      grip.setNeedsDisplay(true);
+      postUrl('http://127.0.0.1:' + M.port + '/pet-chat-window.php?action=toggle', '');
+    });
+  }
+  /* 组装某个词的语音气泡行(词 + 音标 / 释义 / 例句)。 */
+  function wordBubbleLines(idx, withHint){
+    var w = M.words && M.words[idx];
+    if (!w) return [{ text: '这一页还没有词', size: 11 }];
+    var lines = [];
+    lines.push({ text: (w.pos ? w.pos + ' ' : '') + w.word + (w.phonetic ? '  ' + w.phonetic : ''), size: 12.5, bold: true });
+    if (w.meaning) lines.push({ text: w.meaning, size: 11, color: 'sub' });
+    var ex = w.example || (M.exampleLines && M.exampleLines[idx]) || '';
+    if (ex) {
+      var s = String(ex);
+      lines.push({ text: s.length > 44 ? s.substring(0, 42) + '…' : s, size: 10, color: 'sub' });
+    }
+    if (withHint && M.words.length > 1) {
+      lines.push({ text: '第 ' + (idx + 1) + '/' + M.words.length + ' 个 · 再点一下读下一个', size: 9.5, color: 'sub' });
+    }
+    return lines;
+  }
+  // ---- 抽查卡子窗:quiz.png 存在时跟随派大星显示;选项 A-D 命中 → answer ----
+  /* 通用浮动卡子窗(抽查卡 / 朗读卡共用):显示指定 PNG,随派大星移动。 */
+  function makeCardWin(qx, qy, pngPath, cardW, cardH){
+    var visible = $.NSScreen.mainScreen.visibleFrame;
+    var viewportH = Math.min(cardH, visible.size.height - 16);
+    // Cocoa y 自下而上:卡片要出现在派大星**下方**(屏幕视觉),底部 y 要减。
+    var qRect = $.NSMakeRect(qx, qy - viewportH - 4, cardW, viewportH);
+    qRect.origin.x = Math.max(visible.origin.x + 4, Math.min(qRect.origin.x, visible.origin.x + visible.size.width - cardW - 4));
+    qRect.origin.y = Math.max(visible.origin.y + 4, Math.min(qRect.origin.y, visible.origin.y + visible.size.height - viewportH - 4));
+    var qw = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(qRect, $.NSWindowStyleMaskBorderless, $.NSBackingStoreBuffered, false);
+    qw.opaque = false; qw.backgroundColor = $.NSColor.clearColor;
+    qw.level = $.NSFloatingWindowLevel + 1;
+    qw.hasShadow = true;
+    qw.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
+    var QuizName = 'DWQuizGrip' + Date.now();
+    ObjC.registerSubclass({ name: QuizName, superclass: 'NSView', methods: {
+      'mouseDownCanMoveWindow': function(){ return false; },
+      'drawRect:': function(rect){
+        var qimg = $.NSImage.alloc.initWithContentsOfFile(pngPath);
+        if (qimg && !qimg.isNil()) qimg.drawInRectFromRectOperationFraction(this.bounds, $.NSZeroRect, $.NSCompositeSourceOver, 1);
+      },
+      'mouseDown:': function(e){
+        var p = this.convertPointFromView(e.locationInWindow, $());
+        var f = this.bounds;
+        if (cardKind !== 'quiz') return;
+        var topDown = f.size.height - p.y;          // 换算成「自上而下」的 y
+        // 命中区间跟卡走(v2.5.22):每行选项有自己的顶/高(optTops/optHs),
+        // 长释义折行后行高互不相同,写死行高会点错行。
+        var g = lastQuizGeom || null;
+        var btnTop = g ? g.btnTop : M.quizBtnTop;
+        var btnBottom = g ? g.btnBottom : M.quizBtnBottom;
+        if (!g || p.x < 14 || p.x > g.w - 14) return;
+        // 底部两颗按钮(作答后才有意义;没作答时伴侣侧会拒绝)
+        if (topDown >= btnTop && topDown <= btnBottom) {
+          if (!g.done) return;
+          if (p.x <= M.quizBtnSkipX1) skipPost(); else sentencePost();
+          return;
+        }
+        // 展开/收起条(仅超长释义折叠时存在)
+        if (g.chipTop != null && topDown >= g.chipTop && topDown <= g.chipBottom) { expandPost(g.expanded ? 'collapse' : 'expand'); return; }
+        // 选项行:逐行命中(每行顶/高来自 geom)
+        var tops = (g && g.optTops) || null;
+        var hts = (g && g.optHs) || null;
+        var optCount = g ? (g.optCount || 4) : 4;
+        for (var ri = optCount - 1; ri >= 0; ri--) {
+          var rTop = tops ? tops[ri] : (72 + ri * 36);
+          var rH = hts ? hts[ri] : 36;
+          if (topDown >= rTop && topDown < rTop + rH) {
+            if (g.collapsedOptions && g.collapsedOptions[ri]) expandPost('expand');
+            else if (!g.done) answerPost(ri);
+            return;
+          }
+        }
+      },
+    }});
+    /* 点「释义太长,点击展开」条:请伴侣重渲全显卡片。 */
+    function expandPost(action){
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-quiz.php'));
+      req.setHTTPMethod('POST');
+      req.setHTTPBody($.NSString.stringWithString(JSON.stringify({ action: action, quizId: lastQuizGeom.id })).dataUsingEncoding($.NSUTF8StringEncoding));
+      req.setValueForHTTPHeaderField('application/json', 'Content-Type');
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){});
+    }
+    function answerPost(idx){
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-quiz.php'));
+      req.setHTTPMethod('POST');
+      req.setHTTPBody($.NSString.stringWithString(JSON.stringify({ action: 'answer', picked: idx, quizId: lastQuizGeom.id })).dataUsingEncoding($.NSUTF8StringEncoding));
+      req.setValueForHTTPHeaderField('application/json', 'Content-Type');
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){});
+    }
+    /* 点「下一个」:不出造句窗,直接请伴侣结束这道题(它会按队列/间隔出下一题)。 */
+    function skipPost(){
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-quiz.php'));
+      req.setHTTPMethod('POST');
+      req.setHTTPBody($.NSString.stringWithString(JSON.stringify({ action: 'skip', quizId: lastQuizGeom.id })).dataUsingEncoding($.NSUTF8StringEncoding));
+      req.setValueForHTTPHeaderField('application/json', 'Content-Type');
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){});
+    }
+    /* 点卡片底部「造个句子」:交给伴侣开造句小窗(没作答时那边会拒绝)。 */
+    function sentencePost(){
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-sentence-window.php?action=open'));
+      req.setHTTPMethod('POST');
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){});
+    }
+    var qgrip = $[QuizName].alloc.initWithFrame($.NSMakeRect(0, 0, cardW, cardH));
+    var scroll = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(0, 0, cardW, viewportH));
+    scroll.drawsBackground = false;
+    scroll.hasVerticalScroller = true;
+    scroll.autohidesScrollers = true;
+    scroll.scrollerStyle = $.NSScrollerStyleOverlay;
+    scroll.documentView = qgrip;
+    qw.contentView.addSubview(scroll);
+    qgrip.scrollPoint($.NSMakePoint(0, Math.max(0, cardH - viewportH)));
+    quizGripView = qgrip;
+    quizScrollView = scroll;
+    qw.orderFrontRegardless;
+    return qw;
+  }
+  /* 卡高是按内容算的(长释义折行会把卡撑高):geom 变化时把窗口尺寸跟上,
+   * 位置重新钳回屏幕内。窗口必须先 orderOut 再改 frame(v2.5.17 纪律)。 */
+  function syncQuizWinSize(){
+    if (!quizWin || cardKind !== 'quiz' || !lastQuizGeom) return;
+    var f0 = quizWin.frame;
+    try {
+      var ms0 = $.NSScreen.mainScreen;
+      var scr0 = ms0.visibleFrame;
+      var vh = Math.min(lastQuizGeom.h, scr0.size.height - 16);
+      if (Math.round(f0.size.width) === lastQuizGeom.w && Math.round(f0.size.height) === vh && Math.round(quizGripView.frame.size.height) === lastQuizGeom.h) return;
+      var oldTop = Math.max(0, quizGripView.frame.size.height - quizScrollView.contentView.bounds.origin.y - quizScrollView.contentView.bounds.size.height);
+      quizWin.orderOut($());
+      quizWin.setContentSize($.NSMakeSize(lastQuizGeom.w, vh));
+      quizScrollView.setFrameSize($.NSMakeSize(lastQuizGeom.w, vh));
+      quizGripView.setFrameSize($.NSMakeSize(lastQuizGeom.w, lastQuizGeom.h));
+      quizGripView.scrollPoint($.NSMakePoint(0, Math.max(0, lastQuizGeom.h - vh - oldTop)));
+      var nx = Math.max(scr0.origin.x + 4, Math.min(f0.origin.x, scr0.origin.x + scr0.size.width - lastQuizGeom.w - 4));
+      var ny = Math.max(scr0.origin.y + 4, Math.min(f0.origin.y + f0.size.height - vh, scr0.origin.y + scr0.size.height - vh - 4));
+      quizWin.setFrameOrigin($.NSMakePoint(nx, ny));
+      quizWin.orderFrontRegardless();
+      quizGripView.setNeedsDisplay(true);
+    } catch (e) {}
+  }
+  /* 抽查卡跟随派大星:窗口位置 = 派大星下方居中(带屏幕边界钳制)。
+   * 拖动/走路时调用,卡片就不会掉在原地。 */
+  /* 卡片位置:优先贴派大星**右侧**(不挡本体),右边放不下就放左边,
+   * 都放不下才放到上方/下方。垂直方向与派大星顶部对齐。 */
+  function syncQuizWinPosition(){
+    if (!quizWin) return;
+    var cw = quizWin.frame.size.width, ch = quizWin.frame.size.height;
+    var ms = $.NSScreen.mainScreen;
+    var f = ms.visibleFrame;
+    var gap = 10;
+    var qx, qy = Math.round(y + H - ch);      // 顶边与派大星顶边对齐
+    if (x + W + gap + cw <= f.origin.x + f.size.width - 4) {
+      qx = Math.round(x + W + gap);           // 右侧
+    } else if (x - gap - cw >= f.origin.x + 4) {
+      qx = Math.round(x - gap - cw);          // 左侧
+    } else {
+      qx = Math.round(x + (W - cw) / 2);      // 兜底:居中
+      qy = Math.round(y - ch - gap);          // 放上方
+    }
+    qx = Math.max(f.origin.x + 4, Math.min(qx, f.origin.x + f.size.width - cw - 4));
+    qy = Math.max(f.origin.y + 4, Math.min(qy, f.origin.y + f.size.height - ch - 4));
+    quizWin.setFrameOrigin($.NSMakePoint(qx, qy));
+  }
+  /* 朗读卡:复用同一个子窗,换 PNG 与尺寸。 */
+  /* 卡片出场动画:从派大星身侧滑出 + 淡入(180ms easeOut)。
+   * JXA 没有 CoreAnimation 的简单入口,用 60fps 定时器手动插值窗口位置与 alpha。 */
+  function animateCardIn(targetX, targetY){
+    if (!quizWin) return;
+    // 与浮窗入场同款:animator 在 ObjC 层插值,不走 16ms 定时器(JXA SIGSEGV 崩点)。
+    var startX = targetX + (targetX > x ? 26 : -26);   // 从派大星方向滑出
+    var startY = targetY;
+    try {
+      quizWin.alphaValue = 0.0;
+      quizWin.setFrameOrigin($.NSMakePoint(startX, startY));
+      quizWin.animator.alphaValue = 1.0;
+      quizWin.animator.setFrameOrigin($.NSMakePoint(targetX, targetY));
+    } catch (e) {
+      quizWin.alphaValue = 1.0;
+      quizWin.setFrameOrigin($.NSMakePoint(targetX, targetY));
+    }
+  }
+  function showSpeakCard(){
+    hideQuizCard();
+    quizWin = makeCardWin(x, y, M.speakPng, M.speakW, M.speakH);
+    cardKind = 'speak';
+    var tf = quizWin.frame;
+    animateCardIn(Math.round(tf.origin.x), Math.round(tf.origin.y));
+    quizMtime = 0;
+    if (speakHideAt) speakHideAt = 0;
+    speakHideAt = Date.now() + 7000;
+  }
+  var speakHideAt = 0;
+  function showAnswerCard(){
+    hideQuizCard();
+    quizWin = makeCardWin(x, y, M.answerPng, M.answerW, M.answerH);
+    cardKind = 'answer';
+    var af = quizWin.frame;
+    animateCardIn(Math.round(af.origin.x), Math.round(af.origin.y));
+    quizMtime = 0;
+    speakHideAt = Date.now() + 15000;
+  }
+  function showQuizCard(){
+    if (quizWin) { quizWin.orderOut($()); quizWin = null; }
+    var qw = lastQuizGeom ? lastQuizGeom.w : M.quizW;
+    var qh = lastQuizGeom ? lastQuizGeom.h : M.quizH;
+    quizWin = makeCardWin(x, y, M.quizPng, qw, qh);
+    cardKind = 'quiz';
+    var qf = quizWin.frame;
+    animateCardIn(Math.round(qf.origin.x), Math.round(qf.origin.y));
+    quizMtime = 0;   // 子窗重建后重置 mtime 基线,保证新 PNG 一定会触发一次重绘
+  }
+  function hideQuizCard(){
+    if (quizWin) { quizWin.orderOut($()); quizWin = null; }
+    quizGripView = null;
+    quizScrollView = null;
+    quizMtime = 0;
+  }
+  // quiz.png mtime 轮询:伴侣在出题/作答后重渲 PNG,子窗发现文件变了自动重绘
+  // (作答后的对/错标记卡就是靠这条路径显示的)。PNG 不存在(已撤)→ 关子窗。
+  var quizMtime = 0;
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.35, true, function(){
+    if (!quizWin) return;
+    try {
+      var watchPng = cardKind === 'speak' ? M.speakPng : (cardKind === 'answer' ? M.answerPng : M.quizPng);
+      var at = $.NSFileManager.defaultManager.attributesOfItemAtPathError(watchPng, $());
+      if (!at) { hideQuizCard(); st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = Date.now() + 1500; } grip.setNeedsDisplay(true); return; }
+      var d = at.objectForKey($.NSFileModificationDate);
+      if (!d) return;
+      var mt = d.timeIntervalSince1970 || 0;
+      if (mt > quizMtime + 0.05) {
+        quizMtime = mt;
+        quizGripView.setNeedsDisplay(true);   // 重绘的是 qgrip 自己,不是 contentView
+      }
+    } catch (e) {}
+  });
+
+  // ---- 主循环 50ms ----
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(){
+    var now = Date.now();
+    if (bubble && now > bubble.until) { bubble = null; grip.setNeedsDisplay(true); }
+    // 动画序列推进
+    if (st.animSeq) {
+      if (now - st.animLast >= st.animTickMs) {
+        st.animLast = now;
+        st.animSeqIdx++;
+        if (st.animSeqIdx >= st.animSeq.length) {
+          if (st.animSeqOnce) { var then = st.animThen; st.animSeq = null; st.animThen = null; if (then) then(); }
+          else st.animSeqIdx = 0;
+        }
+        if (st.animSeq) st.animSeqFrame = st.animSeq[st.animSeqIdx];
+      }
+    }
+    if (st.mode === 'drag') return;   // 拖动中内容不变,不需要重绘
+    // 悬停 → 挥手 + 气泡
+    if (st.hover && !st.quiz && st.mode !== 'drag' && st.mode !== 'jump') {
+      if (st.mode !== 'hover') {
+        st.mode = 'hover'; st.target = null; bubble = null;
+        playSeq([FR.wave0, FR.wave1, FR.wave0, FR.wave1, FR.wave0], 300, false, null);
+        st.hoverBubbleAt = now + 400;
+      }
+      if (st.hoverBubbleAt && now >= st.hoverBubbleAt) { st.hoverBubbleAt = 0; showHoverBubble(); }
+      st.frame = st.animSeq ? st.animSeqFrame : FR.wave0;
+      grip.setNeedsDisplay(true);
+      return;
+    }
+    if (st.mode === 'hover' && !st.hover) { st.mode = 'idle'; st.idleHoldUntil = now + 800; st.animSeq = null; bubble = null; }
+    if (speakHideAt && now >= speakHideAt) { speakHideAt = 0; if (cardKind === 'speak' || cardKind === 'answer') hideQuizCard(); }
+    if (st.quizResultHideAt && now >= st.quizResultHideAt) {   // 结果展示完毕,撤卡恢复散步
+      st.quizResultHideAt = 0;
+      st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = now + 1500; }
+      hideQuizCard();
+    }
+    if (st.quiz) {
+      // 有特效时不要覆盖帧(答对=开心脸 / 答错=难过脸);特效结束后才回到思考脸。
+      if (!st.fx) st.frame = FR.think0;
+      grip.setNeedsDisplay(true);
+      return;
+    }
+    if (st.mode === 'jump') {
+      var jt = (now - st.jumpStart) / 420;
+      if (jt >= 1) { st.mode = 'idle'; st.idleHoldUntil = now + 1200; y = st.jumpY0; setFrame(); st.frame = FR.idle0; }
+      else {
+        var arc = Math.sin(Math.PI * jt) * 26;
+        y = st.jumpY0 + arc; setFrame();
+        st.frame = jt < 0.5 ? FR.happy0 : FR.idle0;
+      }
+      grip.setNeedsDisplay(true);
+      return;
+    }
+    if (st.mode === 'walk') {
+      if (st.target == null) { st.mode = 'idle'; return; }
+      var wt = Math.min(1, (now - st.walkStart) / st.walkDur);
+      // easeInOutQuad:起步加速、到点减速,运动连续不再一顿一顿
+      var we = wt < 0.5 ? 2 * wt * wt : 1 - Math.pow(-2 * wt + 2, 2) / 2;
+      var dxT = st.target - st.walkFromX, dyT = st.targetY - st.walkFromY;
+      x = st.walkFromX + dxT * we;
+      y = st.walkFromY + dyT * we;
+      if (Math.abs(dxT) > 2) st.facing = dxT > 0 ? 1 : -1;
+      win.setFrameOrigin($.NSMakePoint(x, y));
+      if (quizWin) syncQuizWinPosition();   // 出题时走路,卡片跟随
+      if (bubbleWin) layoutBubbleWin();     // 气泡跟随
+      // 行走帧跟着"实际走过的距离"推进(每 22pt 一帧),并按朝向选右/左组
+      var travelled = st.walkDist * we;
+      var walkBase = st.facing === 1 ? FR.walkR0 : FR.walkL0;
+      st.frame = walkBase + (Math.floor(travelled / 22) % 4);
+      if (wt >= 1) {
+        st.mode = 'idle'; st.idleHoldUntil = now + 2500 + Math.random() * 6000;
+        st.blinkAt = now + 700 + Math.random() * 2500;
+        st.animSeq = null; st.frame = FR.idle0; st.target = null;
+      }
+      grip.setNeedsDisplay(true);
+      return;
+    }
+    // idle
+    if (now >= st.idleHoldUntil) {
+      if (M.roam && Math.random() < 0.5) {
+        var margin = 24;
+        // screen 可能是兜底矩形,无碍;但唤醒后宽高会变,每圈现取
+        var ms2 = $.NSScreen.mainScreen;
+        if (ms2 && ms2.frame) screen = ms2.frame;
+        var nx = screen.origin.x + margin + Math.random() * Math.max(1, screen.size.width - W - margin * 2);
+        var ny = screen.origin.y + margin + Math.random() * Math.max(1, screen.size.height * 0.55 - H);
+        var wdist = Math.sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y));
+        if (wdist < 12) { st.idleHoldUntil = now + 1800; }
+        else {
+          st.target = nx; st.targetY = ny;
+          st.mode = 'walk';
+          st.walkFromX = x; st.walkFromY = y;
+          st.walkStart = now;
+          // 90–140 pt/s:走路自然,不再是每 tick 跳几十点的瞬移
+          var speed = 90 + Math.random() * 50;          // pt/s
+          st.walkDur = Math.max(320, (wdist / speed) * 1000);
+          st.walkDist = wdist;
+        }
+      } else {
+        st.idleHoldUntil = now + 2500 + Math.random() * 5000;
+      }
+    }
+    if (now >= st.blinkAt && st.mode === 'idle') {
+      playSeq([FR.idle0, FR.blink, FR.idle0], 90, true, null);
+      st.blinkAt = now + 1800 + Math.random() * 4200;
+    }
+    if (!st.animSeq) {
+      var r = Math.random();
+      if (r < 0.006) playSeq([FR.idle0, FR.lookL, FR.idle0], 280, true, null);
+      else if (r < 0.012) playSeq([FR.idle0, FR.lookR, FR.idle0], 280, true, null);
+    }
+    st.frame = st.animSeq ? st.animSeqFrame : st.frame;
+    grip.setNeedsDisplay(true);
+  });
+
+  // ---- 伴侣命令轮询 0.8s ----
+  var lastCmdSeq = 0;
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.8, true, function(){
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-patrick.json?after=' + lastCmdSeq));
+    req.setTimeoutInterval(3);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      if (!data) return;
+      try {
+        var d = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+        if (!d || !d.ok) return;
+        lastCmdSeq = Number(d.seq) || lastCmdSeq;
+        if (d.quizGeom) {
+          lastQuizGeom = d.quizGeom; syncQuizWinSize();
+          if (d.quizGeom.hold) st.quizResultHideAt = 0;
+          if (quizGripView) quizGripView.setNeedsDisplay(true);
+        }
+        (d.commands || []).forEach(function(c){
+          if (c.cmd === 'bubble') {
+            bubble = { lines: c.lines, until: Date.now() + (c.ms || 6500) };
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'quiz') {
+            st.quizResultHideAt = 0;
+            st.quiz = true; st.mode = 'quiz'; st.animSeq = null;
+            bubble = { lines: c.lines, until: Date.now() + (c.ms || 26000) };
+            // 先挥手 180ms(像在"举牌"),再滑出抽查卡
+            playSeq([FR.wave0, FR.wave1, FR.wave0], 90, true, function(){
+              showQuizCard();
+              st.frame = FR.think0;
+              grip.setNeedsDisplay(true);
+              // 卡片滑入(190ms)结束 = 真正上屏的那一刻 → 告诉伴侣"可以念了"。
+              // 由这里回报而不是靠固定延时,音画才对得上。
+              // 卡片滑入动画 190ms;250ms 后 = 卡已停稳,此刻开口
+              $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.25, true, function(tm){
+                tm.invalidate;
+                postUrl('http://127.0.0.1:' + M.port + '/pet-quiz-shown.php', '');
+              });
+            });
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'quiz-end') {
+            st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = Date.now() + 1500; }
+            hideQuizCard();
+            bubble = c.lines ? { lines: c.lines, until: Date.now() + (c.ms || 6000) } : null;
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'answer-card') {
+            // 派大星先转头+开心,再滑出卡片(有"它给你看"的感觉)
+            st.facing = 1; st.frame = FR.happy0; st.animSeq = null;
+            grip.setNeedsDisplay(true);
+            var _ac = Date.now();
+            $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.14, true, function(tm){
+              tm.invalidate;
+              showAnswerCard();
+              st.frame = FR.think0;
+              grip.setNeedsDisplay(true);
+            });
+          } else if (c.cmd === 'speak-card') {
+            st.facing = 1; st.frame = FR.happy0; st.animSeq = null;
+            grip.setNeedsDisplay(true);
+            $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.14, true, function(tm){
+              tm.invalidate;
+              showSpeakCard();
+              grip.setNeedsDisplay(true);
+            });
+          } else if (c.cmd === 'quiz-result') {
+            // 答题特效:答对撒星星+光环,答错抖动+红环
+            var kind = c.effect === 'correct' ? 'correct' : 'wrong';
+            st.fx = { kind: kind, start: Date.now(), dur: kind === 'correct' ? 950 : 620 };
+            if (kind === 'correct') {
+              st.fxParticles = [];
+              for (var pi = 0; pi < 9; pi++) {
+                var ang = -Math.PI / 2 + (pi - 4) * 0.42 + (Math.random() - 0.5) * 0.3;
+                st.fxParticles.push({
+                  dx: Math.cos(ang) * (34 + Math.random() * 26),
+                  dy: Math.sin(ang) * (34 + Math.random() * 22),
+                  size: 4 + Math.random() * 3.5,
+                  alpha: 0.75 + Math.random() * 0.25,
+                  r: 1.0, g: 0.82 + Math.random() * 0.15, b: 0.35 + Math.random() * 0.3,
+                });
+              }
+              st.frame = FR.happy0;      // 开心脸
+            } else {
+              st.shakeUntil = Date.now() + 420;
+              st.frame = FR.sad0;        // 难过脸
+            }
+            grip.setNeedsDisplay(true);
+            // 作答完成:st.quiz 保持 true(派大星留在 think 帧),子窗继续显示——
+            // quiz.png 被伴侣重渲后 mtime 轮询会自动重绘出对/错标记卡;
+            // ms 毫秒后由 hideResultTimer 撤卡恢复散步。
+            bubble = c.lines ? { lines: c.lines, until: Date.now() + (c.ms || 2600) } : null;
+            st.quizResultHideAt = c.hold ? 0 : Date.now() + (c.ms || 2600);
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'pose') {
+            st.mode = 'idle'; st.idleHoldUntil = Date.now() + (c.ms || 2500);
+            st.frame = FR[c.pose] != null ? FR[c.pose] : FR.idle0;
+            st.animSeq = null;
+            if (c.lines) bubble = { lines: c.lines, until: Date.now() + (c.ms || 6000) };
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'words') {
+            M.words = c.words;
+            if (c.exampleLines) M.exampleLines = c.exampleLines;
+          } else if (c.cmd === 'speak-all') {
+            // 伴侣侧已经把 6 个词逐个入队;这里只负责展示气泡与动画
+            bubble = { lines: c.lines || [{ text: '正在朗读这一页的 ' + ((M.words && M.words.length) || 0) + ' 个词', size: 11 }], until: Date.now() + (c.ms || 8000) };
+            st.mode = 'jump'; st.jumpStart = Date.now(); st.jumpY0 = y; st.animSeq = null;
+            grip.setNeedsDisplay(true);
+          } else if (c.cmd === 'jump') {
+            st.mode = 'jump'; st.jumpStart = Date.now(); st.jumpY0 = y; st.animSeq = null;
+          } else if (c.cmd === 'celebrate') {
+            // 达标庆祝:开心脸 + 连跳 + 两次撒星星(复用 fx 粒子),气泡说话。
+            st.quiz = false;
+            st.mode = 'idle'; st.idleHoldUntil = Date.now() + (c.ms || 3500);
+            st.frame = FR.happy0; st.animSeq = null;
+            st.fx = { kind: 'correct', start: Date.now(), dur: 1400 };
+            st.fxParticles = [];
+            for (var pi = 0; pi < 14; pi++) {
+              var ang = -Math.PI / 2 + (pi - 7) * 0.30 + (Math.random() - 0.5) * 0.3;
+              st.fxParticles.push({
+                dx: Math.cos(ang) * (36 + Math.random() * 34),
+                dy: Math.sin(ang) * (34 + Math.random() * 30),
+                size: 4 + Math.random() * 4,
+                alpha: 0.8 + Math.random() * 0.2,
+                r: 1.0, g: 0.78 + Math.random() * 0.2, b: 0.3 + Math.random() * 0.35,
+              });
+            }
+            // 连跳三下(260ms 间隔)
+            var jumps = 3, j = 0;
+            var jt = $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.26, true, function(t2){
+              j++;
+              if (j >= jumps) { t2.invalidate; st.mode = 'idle'; st.frame = FR.happy1; grip.setNeedsDisplay(true); return; }
+              st.mode = 'jump'; st.jumpStart = Date.now(); st.jumpY0 = y; st.animSeq = null;
+            });
+            bubble = { lines: c.lines || [{ text: '🎉 太棒了！目标达成！', size: 12, bold: true }], until: Date.now() + (c.ms || 3500) };
+            grip.setNeedsDisplay(true);
+          }
+        });
+      } catch (e2) {}
+    });
+  });
+
+  // 孤儿自毁 + 心跳
+  var missTicks = 0;
+  function petSelfDestruct(){ if (bubbleWin) { try { bubbleWin.orderOut($()); } catch {} bubbleWin = null; } hideQuizCard(); win.orderOut($()); $.exit(0); }
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
+    missTicks++;
+    if (M.ownerPid && OWNER_PPID !== String(M.ownerPid)) petSelfDestruct();
+    if (missTicks >= 8) petSelfDestruct();
+    var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-owner.json'));
+    req.setTimeoutInterval(3);
+    $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+      if (data) {
+        try {
+          var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+          if (o && o.ok && o.ownerPid) {
+            if (String(o.ownerPid) !== String(M.ownerPid)) petSelfDestruct();
+            missTicks = 0;
+          }
+        } catch (e2) {}
+      }
+    });
+  });
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(3, true, function(){ savePos(); });
+
+  $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  $.NSApplication.sharedApplication.run;
+}`;
+}
+
 /* Render the pet card as SVG (rasterized to PNG later). The pet WINDOW is a
  * borderless draggable grip that just draws this image — no WKWebView, because
  * a web view swallows the mouse drag (movableByWindowBackground won't work). */
@@ -757,9 +2065,19 @@ function buildPetSVG(words, reminders, uiTheme, W, H) {
   parts.push(txt((faceX + 22) * s, (padY + 22) * s, '小词灵 · 首轮词流', 12.2 * s, skin.title, 700));
   parts.push(txt((faceX + 22) * s, (padY + 39) * s, pageLabel, 9.5 * s, skin.titleSub, 500));
   parts.push(`<circle cx="${(faceX + 14) * s}" cy="${(padY + 39 - 3) * s}" r="${2 * s}" fill="${moss}"/>`);
-  // 右上角关闭按钮（✕），点击可关闭小窗
+  // 右上角关闭按钮（✕）与形态切换按钮（⭐ 派大星）：✕ 在最右,⭐ 在其左
   const cR = 12 * s;
   const cX = w - padX * s - cR, cY = padY * s + cR;
+  const sX = cX - cR * 2.6;   // ⭐ 中心
+  parts.push(`<circle cx="${sX}" cy="${cY}" r="${cR}" fill="${skin.closeFill}" fill-opacity="${skin.liquid ? .62 : 1}" stroke="${skin.closeStroke}" stroke-width="${.8 * s}"/>`);
+  // 星形(形态切换到派大星):五角星路径
+  const starPts = [];
+  for (let i = 0; i < 10; i++) {
+    const ang = -Math.PI / 2 + i * Math.PI / 5;
+    const rr = (i % 2 === 0 ? 5.2 : 2.3) * s;
+    starPts.push(`${(sX + rr * Math.cos(ang)).toFixed(2)},${(cY + rr * Math.sin(ang)).toFixed(2)}`);
+  }
+  parts.push(`<polygon points="${starPts.join(' ')}" fill="${skin.avatarAccent}" stroke="none"/>`);
   parts.push(`<circle cx="${cX}" cy="${cY}" r="${cR}" fill="${skin.closeFill}" fill-opacity="${skin.liquid ? .62 : 1}" stroke="${skin.closeStroke}" stroke-width="${.8 * s}"/>`);
   parts.push(`<path d="M ${cX - 4.5 * s} ${cY - 4.5 * s} L ${cX + 4.5 * s} ${cY + 4.5 * s} M ${cX + 4.5 * s} ${cY - 4.5 * s} L ${cX - 4.5 * s} ${cY + 4.5 * s}" stroke="${skin.closeInk}" stroke-width="${1.45 * s}" stroke-linecap="round"/>`);
   // 单词区（底部预留 footerH 给提示行 + 按钮栏）
@@ -885,20 +2203,469 @@ function buildPetSVG(words, reminders, uiTheme, W, H) {
   parts.push(`<path d="M ${gcx - 6 * s} ${gcy + 6 * s} L ${gcx + 6 * s} ${gcy - 6 * s} M ${gcx + 2 * s} ${gcy - 6 * s} H ${gcx + 6 * s} V ${gcy - 2 * s} M ${gcx - 2 * s} ${gcy + 6 * s} H ${gcx - 6 * s} V ${gcy + 2 * s}" stroke="${skin.handleInk}" stroke-width="${1.45 * s}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
 }
+/* SVG 文本不会自动换行,所有宽度都得自己估。全角字符按 1em、其它按 0.55em。 */
+function charWidth(ch, fs) {
+  return /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]/.test(ch) ? fs : (ch === ' ' ? fs * 0.3 : fs * 0.55);
+}
+/* wf = 拉丁字符的宽度系数(粗体/大字比小字更宽,调用方按需调大) */
+function measureText(str, fs, wf) {
+  let wid = 0;
+  const latin = wf || 0.55;
+  for (const ch of String(str)) {
+    if (/\p{Mark}/u.test(ch)) continue;
+    if (/[\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/u.test(ch) || /\p{Extended_Pictographic}/u.test(ch)) wid += fs;
+    else if (/\s/u.test(ch)) wid += fs * 0.33;
+    else {
+      // Conservative widths for the local Avenir/PingFang fonts; W/m must not be
+      // measured like i/l. Bold headings need a little extra space as well.
+      const ratio = /[MWmw@%&]/.test(ch) ? 1 : /[ilI.,'’!:;|]/.test(ch) ? 0.34 : /[A-Z]/.test(ch) ? 0.78 : 0.63;
+      wid += fs * ratio * (latin / 0.55);
+    }
+  }
+  return wid;
+}
+/* 大字号自动缩到能塞进一行(不折行时最好看);缩到 minFs 还放不下就交给 wrapText。 */
+function fitFont(str, fs, maxW, minFs, wf) {
+  let size = fs;
+  while (size > minFs && measureText(str, size, wf) > maxW) size -= 0.5;
+  return Math.max(minFs, size);
+}
 /* crude width estimate + truncate with ellipsis (SVG text doesn't wrap). */
 function truncate(str, fs, maxW) {
   let out = '';
   let wid = 0;
   for (const ch of String(str)) {
-    const cw = /[　-鿿豈-﫿]/.test(ch) ? fs : (ch === ' ' ? fs * 0.3 : fs * 0.55);
+    const cw = charWidth(ch, fs);
     if (wid + cw > maxW && out) return out.replace(/\s+$/, '') + '…';
     out += ch; wid += cw;
   }
   return out;
 }
+/* 折行:中文按字、英文按词切,避免把 "disproportionate" 劈成两半。
+ * maxLines 之后的内容合并进最后一行并加省略号(正常情况下走不到,卡片高度会先长出来)。 */
+function wrapText(str, fs, maxW, maxLines, wf) {
+  const tokens = String(str == null ? '' : str).match(/[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]|[A-Za-z0-9'’\-\/\.,;:!?]+|\s+|./g) || [];
+  const lines = [];
+  let cur = '', curW = 0;
+  for (const tk of tokens) {
+    if (/\r|\n/.test(tk)) {
+      if (cur.trim()) lines.push(cur.trimEnd());
+      cur = ''; curW = 0;
+      continue;
+    }
+    const tw = measureText(tk, fs, wf);
+    if (curW + tw > maxW && cur.trim()) {
+      lines.push(cur.replace(/\s+$/, ''));
+      cur = ''; curW = 0;
+      if (/^\s+$/.test(tk)) continue;
+    }
+    if (!cur && /^\s+$/.test(tk)) continue;   // 行首不留空格
+    if (tw > maxW) {
+      // A single unbroken token can exceed the entire card. Break only then,
+      // at grapheme boundaries, preserving accents and every character.
+      for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(tk)) {
+        const sw = measureText(segment, fs, wf);
+        if (cur && curW + sw > maxW) { lines.push(cur); cur = ''; curW = 0; }
+        cur += segment; curW += sw;
+      }
+      continue;
+    }
+    cur += tk; curW += tw;
+  }
+  if (cur.trim()) lines.push(cur.replace(/\s+$/, ''));
+  if (!lines.length) return [''];
+  if (maxLines && lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = truncate(kept[maxLines - 1] + ' ' + lines.slice(maxLines).join(''), fs, maxW);
+    return kept;
+  }
+  return lines;
+}
+
+/* ---------------- 抽查卡(quiz card, 派大星模式的「艾宾浩斯抽查」) ----------------
+ * 桌面上弹出的 4 选 1 小卡:英文词在上,四个中文释义选项。派大星站在卡下方举牌。
+ * 作答结果经 /pet-quiz.php 落回 petMemoryEvents(action: 'quiz'),网页艾宾浩斯
+ * 记忆本据此推进/重置阶段 —— 与网页记忆本「记住了/还没记住」完全同一条 SRS 链。 */
+/* 卡片 PNG 路径:必须带进程 PID。
+ * 2.4.6 修过「两个实例写同一个 /tmp 文件 → 留下写了一半的空白图」,壁纸与小词灵
+ * 早都按 PID 分离了;抽查卡/朗读卡/回答卡沿用同一条约定,否则开两个 WordPaper 会
+ * 互相覆盖对方的卡片。sips 输出带渲染序号,只原子发布当前版本。 */
+const CARD_PNG = {
+  quiz: path.join(os.tmpdir(), `dw_patrick_quiz-${process.pid}.png`),
+  speak: path.join(os.tmpdir(), `dw_patrick_speak-${process.pid}.png`),
+  answer: path.join(os.tmpdir(), `dw_patrick_answer-${process.pid}.png`),
+};
+const PET_QUIZ_W = 300, PET_QUIZ_H = 296;
+/* 普通卡完整显示;超长内容显式折叠,展开后的原生滚动视图保留可读字号。 */
+const QUIZ_CARD_MAX_H = 560;
+/* 抽查卡底部两颗按钮(自上而下的 y 区间与左右分栏,与 buildQuizSVG 同步):
+ *   左「下一个」   —— 不造句,直接出下一题
+ *   右「造个句子」 —— 弹造句窗
+ * 不是每个词都要造句:用户自己选。 */
+const QUIZ_BTN_TOP = 232, QUIZ_BTN_BOTTOM = 264;
+const QUIZ_BTN_GAP = 10;
+const QUIZ_BTN_SKIP_X0 = 14;
+const QUIZ_BTN_SKIP_X1 = 14 + (PET_QUIZ_W - 28 - QUIZ_BTN_GAP) / 2;              // 左半
+const QUIZ_BTN_SENT_X0 = QUIZ_BTN_SKIP_X1 + QUIZ_BTN_GAP;                          // 右半
+const QUIZ_BTN_SENT_X1 = PET_QUIZ_W - 14;
+/* 朗读卡:点击派大星时弹出的单词卡(词 + 音标 + 释义 + 例句 + 译文)。
+ * 与抽查卡同尺寸同风格,底部显示"正在朗读…"进度。 */
+const SPEAK_CARD_W = 300, SPEAK_CARD_H = 176;
+const ANSWER_CARD_W = 320, ANSWER_CARD_H = 150;
+/* 派大星回答卡:显示 DeepSeek 对当前词的讲解(自动换行)。 */
+function buildAnswerSVG(word, answer, dark) {
+  const s = 2, W = ANSWER_CARD_W, H = ANSWER_CARD_H, w = W * s, h = H * s;
+  const pink = '#f79ba6', seaGreen = '#a8d94f', outline = '#2b1d2e';
+  const paper = dark ? '#241a2b' : '#fffaf6';
+  const paperEdge = dark ? '#3a2b45' : '#ffe8ea';
+  const ink = dark ? '#ffe9f0' : '#3a1f2b';
+  const sub = dark ? '#c9a9d4' : '#8a6270';
+  const fam = 'PingFang SC, Hiragino Sans GB, Avenir Next, sans-serif';
+  const parts = [];
+  parts.push(`<defs><linearGradient id="apaper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${paper}"/><stop offset="1" stop-color="${paperEdge}"/></linearGradient>
+    <filter id="ash" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="${3*s}" stdDeviation="${3*s}" flood-color="${outline}" flood-opacity=".22"/></filter></defs>`);
+  parts.push(`<rect x="${3*s}" y="${3*s}" width="${(W-6)*s}" height="${(H-6)*s}" rx="${16*s}" fill="url(#apaper)" stroke="${pink}" stroke-width="${2.2*s}" filter="url(#ash)"/>`);
+  parts.push(`<path d="M ${14*s} ${10*s} h ${70*s} a ${6*s} ${6*s} 0 0 1 ${6*s} ${6*s} v ${14*s} a ${6*s} ${6*s} 0 0 1 ${-6*s} ${6*s} h ${-70*s} Z" fill="${seaGreen}" stroke="${outline}" stroke-width="${1.4*s}" stroke-linejoin="round"/>`);
+  parts.push(`<text x="${20*s}" y="${24*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${outline}">派大星说</text>`);
+  if (word) parts.push(`<text x="${(W-16)*s}" y="${24*s}" text-anchor="end" font-family="Avenir Next, ${fam}" font-size="${11*s}" font-weight="700" fill="${sub}">${esc(String(word).slice(0, 18))}</text>`);
+  // 正文自动换行:中文按字符、英文按空格切词,避免把 "course schedule" 劈成两半
+  const lines = [];
+  const MAXC = 22;                       // 每行最多字符(中文口径)
+  let cur = '', curW = 0;
+  const tokens = String(answer || '').match(/[\u4e00-\u9fff]|[A-Za-z0-9'’\-\.]+|\s+|./g) || [];
+  for (const tk of tokens) {
+    const tw = /^[\u4e00-\u9fff]$/.test(tk) ? 1 : (/^\s+$/.test(tk) ? 0.35 : tk.length * 0.55);
+    if (curW + tw > MAXC && cur.trim()) { lines.push(cur.trim()); cur = ''; curW = 0; }
+    if (/^\s+$/.test(tk) && !cur) continue;   // 行首不留空格
+    cur += tk; curW += tw;
+    if (lines.length >= 4) break;
+  }
+  if (cur.trim() && lines.length < 5) lines.push(cur.trim());
+  lines.forEach((ln, i) => {
+    parts.push(`<text x="${16*s}" y="${(50 + i * 17)*s}" font-family="${fam}" font-size="${11.5*s}" fill="${ink}">${esc(ln)}</text>`);
+  });
+  parts.push(`<text x="${(W/2)*s}" y="${(H-10)*s}" text-anchor="middle" font-family="${fam}" font-size="${9*s}" fill="${sub}">再双击可以换个问题 · 点一下继续背词</text>`);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
+}
+function buildSpeakSVG(word, example, dark) {
+  const s = 2, W = SPEAK_CARD_W, H = SPEAK_CARD_H, w = W * s, h = H * s;
+  const pink = '#f79ba6', seaGreen = '#a8d94f', outline = '#2b1d2e';
+  const paper = dark ? '#241a2b' : '#fffaf6';
+  const paperEdge = dark ? '#3a2b45' : '#ffe8ea';
+  const ink = dark ? '#ffe9f0' : '#3a1f2b';
+  const sub = dark ? '#c9a9d4' : '#8a6270';
+  const fam = 'PingFang SC, Hiragino Sans GB, Avenir Next, sans-serif';
+  const parts = [];
+  parts.push(`<defs>
+    <linearGradient id="spaper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${paper}"/><stop offset="1" stop-color="${paperEdge}"/></linearGradient>
+    <filter id="ssh" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="${3*s}" stdDeviation="${3*s}" flood-color="${outline}" flood-opacity=".22"/></filter>
+  </defs>`);
+  parts.push(`<rect x="${3*s}" y="${3*s}" width="${(W-6)*s}" height="${(H-6)*s}" rx="${16*s}" fill="url(#spaper)" stroke="${pink}" stroke-width="${2.2*s}" filter="url(#ssh)"/>`);
+  // 喇叭旗标
+  parts.push(`<path d="M ${14*s} ${10*s} h ${62*s} a ${6*s} ${6*s} 0 0 1 ${6*s} ${6*s} v ${14*s} a ${6*s} ${6*s} 0 0 1 ${-6*s} ${6*s} h ${-62*s} Z" fill="${seaGreen}" stroke="${outline}" stroke-width="${1.4*s}" stroke-linejoin="round"/>`);
+  parts.push(`<text x="${20*s}" y="${24*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${outline}">🔊 正在朗读</text>`);
+  // 单词
+  parts.push(`<text x="${16*s}" y="${60*s}" font-family="Avenir Next, ${fam}" font-size="${25*s}" font-weight="800" fill="${ink}">${esc(word.word || '')}</text>`);
+  if (word.phonetic) parts.push(`<text x="${(W-16)*s}" y="${60*s}" text-anchor="end" font-family="Avenir Next, ${fam}" font-size="${10.5*s}" fill="${sub}">${esc(word.phonetic)}</text>`);
+  parts.push(`<path d="M ${16*s} ${68*s} H ${(W-16)*s}" stroke="${pink}" stroke-width="${1*s}" stroke-dasharray="${3*s} ${3*s}" opacity=".55"/>`);
+  // 中文释义
+  if (word.meaning) {
+    const m = String((word.pos ? word.pos + ' ' : '') + word.meaning);
+    parts.push(`<text x="${16*s}" y="${88*s}" font-family="${fam}" font-size="${12.5*s}" fill="${ink}">${esc(m.length > 24 ? m.slice(0, 23) + '…' : m)}</text>`);
+  }
+  // 英文例句
+  if (example && example.en) {
+    const en = String(example.en);
+    parts.push(`<text x="${16*s}" y="${110*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" fill="${sub}">${esc(en.length > 40 ? en.slice(0, 39) + '…' : en)}</text>`);
+  }
+  // 例句译文
+  if (example && example.zh) {
+    const zh = String(example.zh);
+    parts.push(`<text x="${16*s}" y="${128*s}" font-family="${fam}" font-size="${10.5*s}" fill="${sub}">${esc(zh.length > 34 ? zh.slice(0, 33) + '…' : zh)}</text>`);
+  }
+  parts.push(`<text x="${(W/2)*s}" y="${(H-12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.5*s}" font-weight="600" fill="${sub}">派大星给你读一遍 · 再点一下换下一个词</text>`);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
+}
+
+/* 悬停状态气泡(SVG):与抽查卡同一套派大星设计语言。
+ * 三段:❗ 到期该复习 / ⏳ 艾宾浩斯倒计时(带进度条) / 🆕 还没背的新词。
+ * 高度按行数算,调用方负责 sips 渲染。 */
+function buildStatusBubbleSVG(status, dark) {
+  const W = 300;   // 之前 280 装不下长词+中文注释,右侧会被裁
+  const pink = '#f79ba6', seaGreen = '#a8d94f', seaDeep = '#8cba3a', purple = '#8b6bd9', outline = '#2b1d2e';
+  const paper = dark ? '#241a2b' : '#fffaf6';
+  const paperEdge = dark ? '#3a2b45' : '#ffe8ea';
+  const ink = dark ? '#ffe9f0' : '#3a1f2b';
+  const sub = dark ? '#c9a9d4' : '#8a6270';
+  const good = '#4caf7d', bad = '#e2574c', warn = '#e8a33d';
+  const fam = 'PingFang SC, Hiragino Sans GB, Avenir Next, sans-serif';
+  const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const s = 2;
+
+  const dueNow = (status || []).filter(x => x.kind === 'due');
+  const timing = (status || []).filter(x => x.kind === 'countdown');
+  const fresh = (status || []).filter(x => x.kind === 'new');
+  const mastered = (status || []).filter(x => x.kind === 'mastered');
+
+  // 行布局:每段一个 header + 每词一行;总高动态
+  let y = 34;   // header 之下
+  const rows = [];
+  const fmtDue = (ms) => {
+    const min = Math.max(1, Math.round(ms / 60000));
+    if (min < 60) return min + ' 分钟';
+    const h = Math.floor(min / 60), m = min % 60;
+    if (h < 24) return h + ' 小时' + (m ? ' ' + m + ' 分' : '');
+    return Math.round(h / 24) + ' 天';
+  };
+
+  if (dueNow.length) {
+    rows.push({ type: 'header', text: '❗ 该复习了', color: bad, y: y }); y += 20;
+    dueNow.slice(0, 3).forEach(w => { rows.push({ type: 'word', text: w.word, note: '到点了', color: bad, y: y }); y += 19; });
+    y += 4;
+  }
+  if (timing.length) {
+    rows.push({ type: 'header', text: '⏳ 艾宾浩斯倒计时', color: seaDeep, y: y }); y += 20;
+    timing.slice(0, 4).forEach(it => {
+      const stage = Number(it.stage) || 0;
+      const total = SRS_INTERVALS_MIN.length;
+      const pct = Math.min(100, Math.round((stage / total) * 100));
+      rows.push({ type: 'countdown', word: it.word, stage, total, pct, dueText: fmtDue(Number(it.dueInMs) || 0), y: y });
+      y += 30;
+    });
+    y += 2;
+  }
+  if (fresh.length) {
+    rows.push({ type: 'header', text: '🆕 还没背 ' + fresh.length + ' 个', color: purple, y: y }); y += 19;
+    // 每词一行(之前挤成一行会被裁掉后半截)
+    fresh.slice(0, 3).forEach(w => {
+      rows.push({ type: 'word', text: w.word, note: '', color: purple, y: y });
+      y += 18;
+    });
+    if (fresh.length > 3) {
+      rows.push({ type: 'more', text: '还有 ' + (fresh.length - 3) + ' 个…', y: y });
+      y += 15;
+    }
+  }
+  if (mastered.length) {
+    rows.push({ type: 'header', text: '✅ 已记牢 ' + mastered.length + ' 个', color: good, y: y }); y += 18;
+  }
+  y += 6;
+  const H = Math.max(72, y);
+
+  const parts = [];
+  parts.push(`<defs>
+    <linearGradient id="bpg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${paper}"/><stop offset="1" stop-color="${paperEdge}"/>
+    </linearGradient>
+    <filter id="bsh" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="${2*s}" stdDeviation="${2.5*s}" flood-color="${outline}" flood-opacity=".18"/>
+    </filter>
+  </defs>`);
+  parts.push(`<rect x="${2*s}" y="${2*s}" width="${(W-4)*s}" height="${(H-4)*s}" rx="${14*s}" fill="url(#bpg)" stroke="${pink}" stroke-width="${2*s}" filter="url(#bsh)"/>`);
+  // 顶部小旗
+  parts.push(`<path d="M ${12*s} ${10*s} h ${84*s} a ${5*s} ${5*s} 0 0 1 ${5*s} ${5*s} v ${10*s} a ${5*s} ${5*s} 0 0 1 ${-5*s} ${5*s} h ${-84*s} Z" fill="${seaGreen}" stroke="${outline}" stroke-width="${1.2*s}" stroke-linejoin="round"/>`);
+  parts.push(`<text x="${17*s}" y="${21*s}" font-family="${fam}" font-size="${9*s}" font-weight="800" fill="${outline}">学习状态</text>`);
+
+  rows.forEach(r => {
+    if (r.type === 'header') {
+      parts.push(`<text x="${14*s}" y="${(r.y+9)*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${r.color}">${esc(r.text)}</text>`);
+    } else if (r.type === 'word') {
+      parts.push(`<circle cx="${18*s}" cy="${r.y*s}" r="${2.2*s}" fill="${r.color}"/>`);
+      parts.push(`<text x="${26*s}" y="${(r.y+4)*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" font-weight="700" fill="${ink}">${esc(r.text)}</text>`);
+      parts.push(`<text x="${(W-14)*s}" y="${(r.y+4)*s}" text-anchor="end" font-family="${fam}" font-size="${9*s}" fill="${r.color}">${esc(r.note)}</text>`);
+    } else if (r.type === 'countdown') {
+      parts.push(`<text x="${26*s}" y="${(r.y+4)*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" font-weight="700" fill="${ink}">${esc(r.word)}</text>`);
+      parts.push(`<text x="${(W-14)*s}" y="${(r.y+4)*s}" text-anchor="end" font-family="${fam}" font-size="${9*s}" fill="${sub}">第 ${r.stage+1}/${r.total} 轮 · ${esc(r.dueText)}后</text>`);
+      // 进度条
+      const bx = 26*s, bw2 = (W-52)*s, by2 = (r.y+8)*s, bh2 = 4*s;
+      parts.push(`<rect x="${bx}" y="${by2}" width="${bw2}" height="${bh2}" rx="${2*s}" fill="${dark ? '#3a2b45' : '#f3e2e6'}"/>`);
+      parts.push(`<rect x="${bx}" y="${by2}" width="${Math.max(2, bw2 * r.pct / 100)}" height="${bh2}" rx="${2*s}" fill="${seaGreen}"/>`);
+    } else if (r.type === 'more') {
+      parts.push(`<text x="${26*s}" y="${(r.y+4)*s}" font-family="${fam}" font-size="${8.5*s}" fill="${sub}">${esc(r.text)}</text>`);
+    } else if (r.type === 'wordlist') {
+      parts.push(`<text x="${26*s}" y="${(r.y+4)*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" font-weight="600" fill="${ink}">${esc(r.text)}</text>`);
+      if (r.count > 5) parts.push(`<text x="${(W-14)*s}" y="${(r.y+4)*s}" text-anchor="end" font-family="${fam}" font-size="${9*s}" fill="${sub}">+${r.count-5}</text>`);
+    }
+  });
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W*s}" height="${H*s}" viewBox="0 0 ${W*s} ${H*s}">${parts.join('')}</svg>`;
+}
+
+function buildQuizSVG(word, options, dark) {
+  const s = 2, W = PET_QUIZ_W;
+  // 派大星配色:粉身体 #f79ba6 / 海绿短裤 #a8d94f / 紫斑 #8b6bd9 / 描边 #2b1d2e
+  const pink = '#f79ba6', pinkDeep = '#e87f8d', seaGreen = '#a8d94f', seaDeep = '#8cba3a';
+  const purple = '#8b6bd9', outline = '#2b1d2e';
+  const paper = dark ? '#241a2b' : '#fffaf6';
+  const paperEdge = dark ? '#3a2b45' : '#ffe8ea';
+  const ink = dark ? '#ffe9f0' : '#3a1f2b';
+  const sub = dark ? '#c9a9d4' : '#8a6270';
+  const good = '#4caf7d', bad = '#e2574c';
+  const fam = 'PingFang SC, Hiragino Sans GB, Avenir Next, sans-serif';
+
+  // 普通内容完整显示;超长释义明确折叠,展开后保留字号并用原生视图滚动。
+  // 几何(optTops/optHs/btnTop/chip)随卡写入 quizGeom,子窗按它命中。 ──
+  const body = [];
+  const padX = 16, contentW = W - padX * 2;
+
+  // 顶部小旗标:按类别换色换字 —— 一眼看出这词属于哪一类
+  const cat = word.category || 'other';
+  const flagFill = cat === 'review' ? '#f2a03d' : cat === 'fresh' ? seaGreen : '#c5b5ef';
+  const flagText = cat === 'review' ? '⏰ 复习到期' : (cat === 'fresh' ? '🆕 桌面新词' : '词库新词');
+  const flagW = cat ? 92 : 74;
+  body.push(`<path d="M ${14*s} ${10*s} h ${flagW*s} a ${6*s} ${6*s} 0 0 1 ${6*s} ${6*s} v ${14*s} a ${6*s} ${6*s} 0 0 1 ${-6*s} ${6*s} h ${-flagW*s} Z" fill="${flagFill}" stroke="${outline}" stroke-width="${1.4*s}" stroke-linejoin="round"/>`);
+  body.push(`<text x="${20*s}" y="${24*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${outline}">${esc(flagText)}</text>`);
+
+  // 单词:大字优先,一行放不下缩字号;13pt 还放不下就折行(仍然全显,不省略)
+  const wordText = String(word.word || '');
+  const phon = String(word.phonetic || '');
+  let wordFs = fitFont(wordText, 22, contentW, 13, 0.62);
+  let wordLines = [wordText];
+  if (measureText(wordText, wordFs, 0.62) > contentW) {
+    wordFs = 13;
+    wordLines = wrapText(wordText, 13, contentW, 0, 0.62);
+  }
+  const wordBase = 36 + wordFs * 0.95;
+  wordLines.forEach((ln, li) => {
+    body.push(`<text x="${padX*s}" y="${(wordBase + li * wordFs * 1.18)*s}" font-family="Avenir Next, ${fam}" font-size="${wordFs*s}" font-weight="800" fill="${ink}">${esc(ln)}</text>`);
+  });
+  let y = 36 + wordLines.length * wordFs * 1.18 + 7;
+  if (phon) {
+    const wordOneLine = wordLines.length === 1;
+    const wordW = wordOneLine ? measureText(wordText, wordFs, 0.62) : 0;
+    if (wordOneLine && wordW + measureText(phon, 10.5) + 10 <= contentW) {
+      body.push(`<text x="${(W-padX)*s}" y="${wordBase*s}" text-anchor="end" font-family="Avenir Next, ${fam}" font-size="${10.5*s}" fill="${sub}">${esc(phon)}</text>`);
+    } else {
+      wrapText(phon, 11, contentW, 0).forEach(ln => {
+        body.push(`<text x="${padX*s}" y="${(y+4)*s}" font-family="Avenir Next, ${fam}" font-size="${11*s}" fill="${sub}">${esc(ln)}</text>`);
+        y += 16;
+      });
+    }
+  }
+
+  // 复习中的词:显示「第 N/8 轮」+「下轮时间」
+  const ri = (cat === 'review' && word.roundInfo) ? word.roundInfo : null;
+  if (ri) {
+    const next = ri.nextIn ? `答对后 ${ri.nextIn}复习` : '答对后完成全部周期';
+    const roundText = word.done ? (word.correct ? (ri.nextIn ? `下次复习：${ri.nextIn}后` : '已完成全部复习周期') : '本轮未通过 · 20 分钟后复习') : `第 ${ri.stage + 1}/${ri.total} 轮 · ${next}`;
+    wrapText(roundText, 10, contentW, 0).forEach(ln => {
+      body.push(`<text x="${padX*s}" y="${(y+3)*s}" font-family="${fam}" font-size="${10*s}" font-weight="700" fill="#b66c16">${esc(ln)}</text>`);
+      y += 15;
+    });
+  }
+  if (word.expand) {
+    body.push(`<text x="${padX*s}" y="${(y+3)*s}" font-family="${fam}" font-size="${10*s}" fill="${sub}">完整释义 · 可上下滚动查看</text>`);
+    y += 15;
+  }
+
+  // 分隔虚线
+  const lineY = y + 4;
+  body.push(`<path d="M ${padX*s} ${lineY*s} H ${(W-padX)*s}" stroke="${pink}" stroke-width="${1*s}" stroke-dasharray="${3*s} ${3*s}" opacity=".55"/>`);
+  const startY = lineY + 8;
+
+  // 选项:每行按自己的折行数定高,折行数不限 —— 释义一字不少
+  const optTextX = 48, optTextW = W - optTextX - 24;
+  const measureLayout = (optFs, cap) => {
+    const wrapped = options.map(o => wrapText(o === undefined || o === null ? '' : String(o), optFs, optTextW, cap));
+    const heights = wrapped.map(ls => Math.max(29, ls.length * 15 + 14));
+    const total = heights.reduce((a, b) => a + b, 0) + 5 * (options.length - 1);
+    return { wrapped, heights, total };
+  };
+  const chromeH = 5 + 32 + 5 + 20;                       // 按钮间隙+按钮+提示
+  const optFs = 12;
+  let lay = measureLayout(optFs, 0);                      // cap 0 = 不限行数
+  let collapsed = false, chipLabel = null;
+  const needsExpansion = startY + lay.total + chromeH > QUIZ_CARD_MAX_H;
+  const collapsedOptions = lay.wrapped.map(ls => needsExpansion && !word.expand && ls.length > 2);
+  if (needsExpansion && !word.expand) {
+    // The preview is explicitly marked; clicking a shortened option expands
+    // it without submitting an answer. Full text is available at the same size.
+    lay.wrapped = lay.wrapped.map(ls => ls.slice(0, 2));
+    lay.heights = lay.wrapped.map(ls => Math.max(29, ls.length * 15 + 14));
+    collapsed = true; chipLabel = '⌄ 展开完整释义';
+  } else if (needsExpansion) {
+    chipLabel = '⌃ 收起完整释义';
+  }
+  const answered = word.pickedIndex >= 0;
+  const optTops = [], optHs = [];
+  let oy = startY;
+  options.forEach((opt, i) => {
+    const rowH = lay.heights[i];
+    optTops.push(Math.round(oy)); optHs.push(Math.round(rowH));
+    const letter = 'ABCD'[i];
+    const isAnswer = i === word.answerIndex;
+    const isPicked = i === word.pickedIndex;
+    let fill = dark ? '#2e2138' : '#ffffff';
+    let stroke = dark ? '#4a3558' : '#f0d9de';
+    let letterBg = dark ? '#3b2b49' : '#ffeef1';
+    let letterInk = dark ? '#d9bfe6' : '#b5748a';
+    let textInk = ink;
+    if (answered && isAnswer) { fill = dark ? '#1f3d2f' : '#e8f7ee'; stroke = good; letterBg = good; letterInk = '#fff'; }
+    else if (answered && isPicked && !isAnswer) { fill = dark ? '#3d2222' : '#fdeceb'; stroke = bad; letterBg = bad; letterInk = '#fff'; }
+    body.push(`<rect x="${14*s}" y="${oy*s}" width="${(W-28)*s}" height="${rowH*s}" rx="${10*s}" fill="${fill}" stroke="${stroke}" stroke-width="${1.6*s}"/>`);
+    const cy = oy + Math.min(rowH / 2, 22);
+    body.push(`<circle cx="${31*s}" cy="${cy*s}" r="${8.5*s}" fill="${letterBg}"/>`);
+    body.push(`<text x="${31*s}" y="${(cy+3.5)*s}" text-anchor="middle" font-family="Avenir Next, ${fam}" font-size="${10*s}" font-weight="800" fill="${letterInk}">${letter}</text>`);
+    const lines = lay.wrapped[i];
+    const padTop = (rowH - lines.length * 15) / 2;
+    lines.forEach((ln, li) => {
+      body.push(`<text x="${optTextX*s}" y="${(oy + padTop + 11 + li * 15)*s}" font-family="${fam}" font-size="${optFs*s}" fill="${textInk}">${esc(ln)}</text>`);
+    });
+    oy += rowH + 5;
+  });
+  y = oy - 5;
+
+  // 展开/收起条(仅折叠/已展开时出现)
+  let chipTop = null, chipBottom = null;
+  if (chipLabel) {
+    chipTop = Math.round(y + 3); chipBottom = chipTop + 22;
+    body.push(`<rect x="${14*s}" y="${chipTop*s}" width="${(W-28)*s}" height="${22*s}" rx="${11*s}" fill="${dark ? '#2b2033' : '#fff6f2'}" stroke="${pink}" stroke-width="${1.3*s}" stroke-dasharray="${4*s} ${3*s}"/>`);
+    body.push(`<text x="${(W/2)*s}" y="${(chipTop+14.5)*s}" text-anchor="middle" font-family="${fam}" font-size="${10*s}" font-weight="700" fill="${sub}">${esc(chipLabel)}</text>`);
+    y = chipBottom;
+  }
+
+  // 底部两颗按钮:作答后点亮。用户自己决定「下一个」还是「造个句子」。
+  const canAct = !!word.done;
+  const btnTop = y + 5, btnH = 32, btnBottom = btnTop + btnH;
+  const btnFill = (primary) => canAct
+    ? (primary ? seaGreen : (dark ? '#33263f' : '#ffffff'))
+    : (dark ? '#2b2033' : '#f7eef0');
+  const btnStroke = () => canAct ? outline : (dark ? '#4a3558' : '#ead6db');
+  // 左:下一个
+  body.push(`<rect x="${QUIZ_BTN_SKIP_X0*s}" y="${btnTop*s}" width="${(QUIZ_BTN_SKIP_X1-QUIZ_BTN_SKIP_X0)*s}" height="${btnH*s}" rx="${10*s}" fill="${btnFill(false)}" stroke="${btnStroke()}" stroke-width="${1.6*s}"/>`);
+  body.push(`<text x="${((QUIZ_BTN_SKIP_X0+QUIZ_BTN_SKIP_X1)/2)*s}" y="${(btnTop+20)*s}" text-anchor="middle" font-family="${fam}" font-size="${11*s}" font-weight="800" fill="${canAct ? ink : sub}">${canAct ? '下一个 ›' : '答完题可选'}</text>`);
+  // 右:造个句子
+  body.push(`<rect x="${QUIZ_BTN_SENT_X0*s}" y="${btnTop*s}" width="${(QUIZ_BTN_SENT_X1-QUIZ_BTN_SENT_X0)*s}" height="${btnH*s}" rx="${10*s}" fill="${btnFill(true)}" stroke="${btnStroke()}" stroke-width="${1.6*s}"/>`);
+  body.push(`<text x="${((QUIZ_BTN_SENT_X0+QUIZ_BTN_SENT_X1)/2)*s}" y="${(btnTop+20)*s}" text-anchor="middle" font-family="${fam}" font-size="${11*s}" font-weight="800" fill="${canAct ? outline : sub}">${canAct ? '造个句子' : '—'}</text>`);
+  y = btnBottom;
+
+  // 底部提示
+  const tip = word.done
+    ? (word.correct ? (ri && !ri.nextIn ? '答对了！已完成全部复习周期' : '答对了！已安排下次复习') : '没关系，20 分钟后它会回来找你')
+    : (collapsed ? '释义尚未展开 · 点击长选项可看全文' : '派大星出题 · 点击选项作答');
+  body.push(`<text x="${(W/2)*s}" y="${(y+12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.8*s}" font-weight="600" fill="${word.done ? (word.correct ? good : bad) : sub}">${esc(tip)}</text>`);
+  const H = Math.round(y + 20);
+
+  const geom = { w: W, h: H, optTop: optTops[0], optH: optHs[0], optTops, optHs, optCount: options.length,
+    btnTop: Math.round(btnTop), btnBottom: Math.round(btnBottom), chipTop, chipBottom,
+    collapsed, collapsedOptions, expanded: needsExpansion && word.expand === true, done: !!word.done };
+  const wpx = W * s, hpx = H * s;
+  const parts = [`<defs>
+    <linearGradient id="qpaper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${paper}"/><stop offset="1" stop-color="${paperEdge}"/>
+    </linearGradient>
+    <filter id="qshadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="${3*s}" stdDeviation="${3*s}" flood-color="${outline}" flood-opacity=".22"/>
+    </filter>
+  </defs>`];
+  // 卡片底:圆角 + 粉色描边(卡通感),右下角轻微阴影
+  parts.push(`<rect x="${3*s}" y="${3*s}" width="${(W-6)*s}" height="${(H-6)*s}" rx="${16*s}" fill="url(#qpaper)" stroke="${pink}" stroke-width="${2.2*s}" filter="url(#qshadow)"/>`);
+  parts.push(...body);
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${wpx}" height="${hpx}" viewBox="0 0 ${wpx} ${hpx}">${parts.join('')}</svg>`, w: W, h: H, geom };
+}
 
 function buildPetJXA(W, H) {
-  const meta = JSON.stringify({ btn: PET_BTN, frame: PET_FRAME, footerH: PET_FOOTER_H, rsz: PET_RESIZE, minW: MIN_PET_W, minH: MIN_PET_H, max: MAX_PET, port: CFG.port, count: petWords.length, wordKeys: petWords.map(petWordKey), dark: petSkin(CFG.uiTheme).dark === true });
+  const meta = JSON.stringify({ btn: PET_BTN, frame: PET_FRAME, footerH: PET_FOOTER_H, rsz: PET_RESIZE, minW: MIN_PET_W, minH: MIN_PET_H, max: MAX_PET, port: CFG.port, count: petWords.length, wordKeys: petWords.map(petWordKey), dark: petSkin(CFG.uiTheme).dark === true, morphUrl: 'http://127.0.0.1:' + CFG.port + '/pet-mode.php?mode=patrick' });
   const memoryTarget = localWebOrigin(CFG.webOrigin) || `http://localhost:${CFG.port}`;
   return `
 ObjC.import('Cocoa');
@@ -908,9 +2675,11 @@ ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
   var pngPath = argv[0], corner = argv[1], posFile = argv[2], savedPos = argv[3], closeFile = argv[4], W = ${W}, H = ${H};
   var OWNER = argv[5] || '';   // 派生我的伴侣 PID;/pet-owner.json 对不上号 = 我是孤儿,自毁
+  var OWNER_PPID = String($.getppid());   // 启动时取一次(2s 心跳里不再走 bridge)
   var TRANSITION = ${JSON.stringify(CFG.petTransition || 'dissolve-pop')};
   var META = ${meta};
   var BTN = META.btn, FRAME = META.frame, FOOTERH = META.footerH, RSZ = META.rsz, MINW = META.minW, MINH = META.minH, MAXS = META.max, PORT = META.port, COUNT = META.count, KEYS = META.wordKeys, skinDark = META.dark === true;
+  var MORPH_URL = META.morphUrl;   // ⭐ → 派大星形态切换
   var rememberUrl = 'http://127.0.0.1:' + PORT + '/remember.php?i=';
   var pageUrl = 'http://127.0.0.1:' + PORT + '/pet-page.php?dir=';
   var memoryUrl = ${JSON.stringify(memoryTarget + '/?openMemory=1')};
@@ -963,6 +2732,7 @@ function run(argv){
     return {
       W: W2, H: H2,
       closeX: W2 - FRAME.padX - 28, closeY: H2 - FRAME.padY - 28,
+      morphX: W2 - FRAME.padX - 28 - 31, morphY: H2 - FRAME.padY - 28,   // ⭐ 在 ✕ 左侧
       rszX: W2 - RSZ.pad - RSZ.size, rszY0: RSZ.pad, rszY1: RSZ.pad + RSZ.size,
       btnX0: bx0, btnX1: bx0 + bw + BTN.gap, btnX2: bx0 + (bw + BTN.gap) * 2, btnW: bw
     };
@@ -1068,6 +2838,10 @@ function run(argv){
         $.NSString.stringWithString('1').writeToFileAtomicallyEncodingError(closeFile, true, $.NSUTF8StringEncoding, $());
         win.orderOut($());
         $.NSApplication.sharedApplication.terminate($());   // 彻底退出，窗口消失
+        return;
+      }
+      if (p.x > L.morphX && p.x <= L.morphX + 28 && p.y > L.morphY) {   // ⭐ → 派大星形态
+        applyKeys(postUrl(MORPH_URL));   // 同步 POST:形态保存+窗口重建完成才返回
         return;
       }
       if (Date.now() - spawnedAt < 350) return;   // 预热期：不响应幽灵按下
@@ -1219,7 +2993,7 @@ function run(argv){
   };
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
     missTicks++;
-    if (OWNER && String($.getppid()) !== OWNER) petSelfDestruct();
+    if (OWNER && OWNER_PPID !== OWNER) petSelfDestruct();
     if (missTicks >= 8) petSelfDestruct();   // ~16s 没有一次成功响应
     $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(ownerReq, $.NSOperationQueue.mainQueue, function(resp, data, err){
       if (data) {
@@ -1246,6 +3020,522 @@ function stopPet() {
   petGeneration++;
   petVisible = false;
   if (petChild) { try { petChild.kill(); } catch {} petChild = null; }
+}
+
+/* ---------------- 派大星漫游窗启动器 ---------------- */
+let patrickChild = null;
+let patrickGeneration = 0;
+let patrickVisible = false;
+let patrickCrashCount = 0;
+let patrickLastCrashAt = 0;
+let patrickQuizState = null;   // {word, options, answerIndex, pickedIndex, lib, key, dueWordRef, askedAt}
+let displayedQuiz = null;     // Includes the answer card until it is dismissed.
+let quizSequence = 0;
+let quizRenderSequence = 0;
+function clearQuizCard() {
+  patrickQuizState = null;
+  displayedQuiz = null;
+  quizRenderSequence++;       // In-flight sips output may no longer publish.
+  try { fs.unlinkSync(CARD_PNG.quiz); } catch {}
+}
+function stopPatrickPet() {
+  patrickGeneration++;
+  patrickVisible = false;
+  clearQuizCard();
+  pendingQuiz = null;
+  if (patrickChild) { try { patrickChild.kill(); } catch {} patrickChild = null; }
+  try { fs.unlinkSync(CARD_PNG.quiz); } catch {}
+}
+function stopPetAll() {
+  stopPet();
+  stopPatrickPet();
+  // 2.4.6 的孤儿回收原则:宠物隐藏/关闭时,它派生的**所有**窗口都要一起收掉,
+  // 否则主窗口没了、对话窗与造句窗还浮在桌面上(用户会当成关不掉的幽灵窗)。
+  stopChatWindow();
+  stopSentenceWindow();
+}
+function petWordsForPatrick() {
+  return petFirstPassWords().map(w => ({
+    word: w.word, phonetic: w.phonetic || '', pos: w.pos || '', meaning: w.meaning || '',
+    example: (exampleForWord(CFG.library, w) || {}).en || '',
+  }));
+}
+function startPatrickPet() {
+  // 崩溃风暴退避:连续崩 ≥3 次后按 1s×2^n 退避(上限 10 分钟),10 分钟无崩溃自动清零。
+  if (patrickCrashCount >= 3) {
+    const backoff = Math.min(600000, 1000 * Math.pow(2, patrickCrashCount));
+    if (Date.now() - patrickLastCrashAt < backoff) {
+      console.error('[companion] patrick 连续崩溃 ' + patrickCrashCount + ' 次,退避 ' + Math.round(backoff / 1000) + 's 后再试');
+      return;
+    }
+  }
+  stopPetAll();
+  const generation = patrickGeneration;
+  if (!isMac || !CFG.petEnabled) return;
+  if (process.env.WORDPAPER_TEST_MODE === '1') return;   // 测试模式不开真实窗口(端点/逻辑全在)
+  if (!fs.existsSync(PATRICK_SHEET)) { console.error('[companion] 缺 assets/patrick/sheet.png,派大星形态不可用;回退卡片'); CFG.petMode = 'card'; saveConfig(); startPet(); return; }
+  if (fs.existsSync(PET_CLOSED_PATH)) { console.log('[companion] 小窗已被关闭(点 ✕),重启伴侣后恢复'); return; }
+  let saved = state.patrickSize && Number(state.patrickSize.w) ? state.patrickSize : PATRICK_DEFAULT;
+  // 老版本默认 118×128 太小,未手动调过尺寸的用户自动升到新默认。
+  if (saved && saved.w <= 130 && saved.h <= 140) { saved = PATRICK_DEFAULT; state.patrickSize = saved; saveState(); }
+  const W = Math.max(PATRICK_MIN, Math.min(PATRICK_MAX, saved.w));
+  const H = Math.max(PATRICK_MIN, Math.min(PATRICK_MAX, saved.h));
+  const frameNames = PATRICK_FRAME;
+  const exampleLines = petWordsForPatrick().map(w => w.example).filter(Boolean);
+  const jxa = buildPatrickJXA({ W, H, words: petWordsForPatrick(), keys: currentPetKeys(), frameNames, roamInterval: CFG.petRoamInterval, dark: petSkin(CFG.uiTheme).dark === true, exampleLines });
+  const scriptPath = path.join(os.tmpdir(), `dw_patrick-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(scriptPath, jxa); } catch (err) { console.error('[companion] patrick script failed:', err.message); return; }
+  const { spawn } = require('child_process');
+  patrickVisible = true;
+  const child = patrickChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+  child.stderr.on('data', data => console.error('[companion] patrick window:', String(data).trim()));
+  child.on('error', () => { if (patrickChild === child) { patrickChild = null; patrickVisible = false; } });
+  child.on('exit', (code) => {
+    if (patrickChild !== child) return;
+    patrickChild = null; patrickVisible = false;
+    if (code && !fs.existsSync(PET_CLOSED_PATH) && generation === patrickGeneration) {
+      console.error(`[companion] patrick window exited (${code})`);
+      // 崩溃风暴退避:窗口连续异常退出时记录次数,1s×2^n(上限 10 分钟)后才允许重启,
+      // 避免「系统唤醒 → NSScreen 还没就绪 → 崩 → 立刻重拉 → 再崩」的循环空转。
+      patrickCrashCount++;
+      patrickLastCrashAt = Date.now();
+    } else {
+      patrickCrashCount = 0;   // 正常关闭(用户点 ✕ / 形态切换)不算
+    }
+  });
+  patrickChild.unref();
+  renderStatusBubble();
+  setInterval(() => { if (patrickVisible) renderStatusBubble(); }, 300000).unref();
+  console.log('[companion] 派大星已在桌面散步(悬停=挥手打招呼,点击=跳跃+朗读,拖动=摆放;点 ⭐ 可切回词卡)');
+}
+
+
+/* ── 常驻 AI 对话浮窗(独立 JXA 进程)──────────────────────────
+ * 一个像 ChatGPT 侧栏的小窗口:上面是对话记录(NSTextView 只读),
+ * 下面输入框 + 发送。双击派大星或菜单栏都能打开/收起。
+ * 独立进程:不干扰派大星的 50ms 主循环。 */
+/* 读出派大星当前窗口位置(它每 3s 落盘一次);拿不到返回 null。
+ * 用来让浮窗「从派大星身上长出来」,而不是从屏幕角落凭空空降。 */
+function readPatrickAnchor() {
+  try {
+    const p = JSON.parse(fs.readFileSync(PATRICK_POS_PATH, 'utf8'));
+    if (typeof p.x === 'number' && typeof p.y === 'number') {
+      const size = state.patrickSize || PATRICK_DEFAULT;
+      return { x: p.x, y: p.y, w: Number(size.w) || PATRICK_DEFAULT.w, h: Number(size.h) || PATRICK_DEFAULT.h };
+    }
+  } catch {}
+  return null;
+}
+
+function buildChatWindowJXA() {
+  const meta = {
+    port: CFG.port, ownerPid: process.pid,
+    posFile: path.join(RUNTIME_ROOT, 'chat-position.json'),
+    dark: petSkin(CFG.uiTheme).dark === true,
+    anchor: readPatrickAnchor(),
+  };
+  // HTML 由伴侣在本地端口提供(/pet-chat.html),WebView 直接加载 —— 中文输入法正常。
+  return `ObjC.import('Cocoa');
+ObjC.import('WebKit');
+ObjC.import('stdlib');
+ObjC.bindFunction('getppid', ['int', []]);
+function run(){
+  var M = ${JSON.stringify(meta)};
+  // getppid 只在启动时取一次:2s 心跳里反复走 bindFunction 的桥是崩溃报告里
+  // objectForKeyedSubscript 的高频来源之一。
+  var OWNER_PPID = String($.getppid());
+  var CW = 520, CH = 600;   // 抽屉默认收起;展开(+186)后主区仍有 334pt,不会把文字挤成竖排
+  var screen = $.NSScreen.mainScreen.frame;
+  var cx = screen.origin.x + screen.size.width - CW - 30;
+  var cy = screen.origin.y + screen.size.height - CH - 80;
+  try {
+    var savedTxt = $.NSString.stringWithContentsOfFileEncodingError(M.posFile, $.NSUTF8StringEncoding, $());
+    var saved = JSON.parse((savedTxt && savedTxt.js) || '{}');
+    if (typeof saved.x === 'number') { cx = saved.x; cy = saved.y; }
+  } catch (e) {}
+
+  ObjC.registerSubclass({ name: 'DWChatWindow', superclass: 'NSWindow', methods: {
+    'canBecomeKeyWindow': function(){ return true; },
+    'canBecomeMainWindow': function(){ return true; },
+  }});
+  var win = $.DWChatWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+    $.NSMakeRect(cx, cy, CW, CH),
+    $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable | $.NSWindowStyleMaskResizable,
+    $.NSBackingStoreBuffered, false);
+  win.title = '派大星 · 聊聊单词';
+  win.level = $.NSFloatingWindowLevel;
+  win.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces;
+  win.setMinSize($.NSMakeSize(380, 460));
+  win.backgroundColor = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1.0, 0.98, 0.965, 1);
+
+  var conf = $.WKWebViewConfiguration.alloc.init;
+  var web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, CW, CH), conf);
+  web.setAutoresizingMask($.NSViewWidthSizable | $.NSViewHeightSizable);
+  win.contentView.addSubview(web);
+  web.loadRequest($.NSURLRequest.requestWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-chat.html')));
+
+  /* ── 出场动效:从派大星身旁「弹」出来 ──────────────────────
+   * 之前是窗口直接 makeKeyAndOrderFront,先闪一帧完整窗口再什么都不做 → 很生硬。
+   * 现在:
+   *   - 窗口先 alphaValue=0 上屏(不会闪白)
+   *   - 以派大星中心为锚点做 scale(0.86→1.0) + 位移,弹簧曲线(过冲一点点再回落)
+   *   - alpha 用更快的 easeOut 提前到 1,避免"半透明发虚"的观感
+   * 全程 260ms、60fps 定时器插值(JXA 里没有 CAAnimation 的简单入口)。 */
+  var finalX = cx, finalY = cy;
+  var A = M.anchor;
+  // 起点:朝派大星方向偏 18pt,并缩到 0.86
+  var fromX = finalX, fromY = finalY;
+  if (A) {
+    var pcx = A.x + A.w / 2, pcy = A.y + A.h / 2;
+    var wcx = finalX + CW / 2, wcy = finalY + CH / 2;
+    var dx = pcx - wcx, dy = pcy - wcy;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    fromX = finalX + (dx / len) * 18;
+    fromY = finalY + (dy / len) * 18;
+  }
+  win.alphaValue = 0.0;
+  win.setFrameOrigin($.NSMakePoint(fromX, fromY));
+  win.makeKeyAndOrderFront($());
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+
+  /* 出场动画改用 NSWindow animator(ObjC 层插值),**不用 16ms NSTimer 手动插值**:
+   * JXA 崩溃报告(osascript SIGSEGV ×10)的崩点全在 NSTimer 回调读 $ 桥
+   * (objectForKeyedSubscript → objc_retain 野指针),动画帧率越高风险越大。
+   * CA 动画在 ObjC 层自走,JS 只发一次指令,彻底绕开这个坑。 */
+  function playEntrance() {
+    try {
+      // NSWindow.animator 的隐式动画:淡入 + 平移都由 AppKit 在 ObjC 层插值,
+      // JS 侧一次调用即返回,没有高频 $ 桥访问(崩溃点已消除)。
+      win.setFrameOrigin($.NSMakePoint(fromX, fromY));
+      win.animator.alphaValue = 1.0;
+      win.setFrameDisplay($.NSMakeRect(finalX, finalY, CW, CH), true);
+    } catch (e) {
+      win.alphaValue = 1.0;
+      win.setFrameOrigin($.NSMakePoint(finalX, finalY));
+    }
+  }
+  var entranceStarted = false, waitT0 = Date.now();
+  function maybeStartEntrance() {
+    if (entranceStarted) return;
+    entranceStarted = true;
+    playEntrance();
+  }
+  // didFinishNavigation 在页面真正渲染后触发(JXA 代理回调只触发一次,风险低)
+  try {
+    if (!$.DWChatNavDelegate) {
+      ObjC.registerSubclass({ name: 'DWChatNavDelegate', superclass: 'NSObject', methods: {
+        'webView:didFinishNavigation:': function(){ maybeStartEntrance(); },
+      }});
+    }
+    var navDelegate = $.DWChatNavDelegate.alloc.init;
+    web.navigationDelegate = navDelegate;
+  } catch (e) { /* 拿不到导航回调就靠下面的保底定时器 */ }
+  // 保底一次性延时器:0.05s 后必播(本地页面很快,别让用户等)
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(tm){
+    tm.invalidate;
+    maybeStartEntrance();
+  });
+
+  var missTicks = 0;
+  /* 心跳与位置保存合并成一个 2s 定时器(SIGSEGV 排查:多个定时器在窗口关闭竞态中
+   * 重入 $ 桥是崩溃主因);win 不可见时跳过一切 $ 访问。 */
+  var posDirty = false;
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
+    try {
+      if (!win.isVisible) return;   // 窗口被关/隐藏:不碰 $ 桥(崩点防御)
+      missTicks++;
+      if (M.ownerPid && OWNER_PPID !== String(M.ownerPid)) { $.exit(0); }
+      if (missTicks >= 8) { $.exit(0); }
+      // 位置每 4s 落一次盘(隔次),降低写盘频率
+      posDirty = !posDirty;
+      if (posDirty) {
+        var f = win.frame;
+        $.NSString.stringWithString(JSON.stringify({ x: f.origin.x, y: f.origin.y }))
+          .writeToFileAtomicallyEncodingError(M.posFile, true, $.NSUTF8StringEncoding, $());
+      }
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-owner.json'));
+      req.setTimeoutInterval(3);
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+        if (data) {
+          try {
+            var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+            if (o && o.ok && o.ownerPid) {
+              if (String(o.ownerPid) !== String(M.ownerPid)) { $.exit(0); }
+              missTicks = 0;
+            }
+          } catch (e) {}
+        }
+      });
+    } catch (e) {}
+  });
+
+  $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  $.NSApplication.sharedApplication.run;
+}`;
+}
+
+/* ── 造句练习浮窗(WebView,和对话浮窗同一条路线)──────────────
+ * 抽查答完后点卡片底部「用它造个句子」→ 开一个小窗:
+ *   上半是这个词(词/音标/释义),下半让用户用英文写一句话,
+ *   提交后交 DeepSeek 批改(语法/用词/更自然的说法),结果直接显示在窗里。
+ * 用 WebView 的理由和对话窗一样:原生 NSTextField 在 launchd 派生的
+ * osascript 里拿不到输入法,中文/长英文都打不进去。 */
+function buildSentenceWindowJXA() {
+  const meta = {
+    port: CFG.port, ownerPid: process.pid,
+    posFile: path.join(RUNTIME_ROOT, 'sentence-position.json'),
+    anchor: readPatrickAnchor(),
+  };
+  return `ObjC.import('Cocoa');
+ObjC.import('WebKit');
+ObjC.import('stdlib');
+ObjC.bindFunction('getppid', ['int', []]);
+function run(){
+  var M = ${JSON.stringify(meta)};
+  var OWNER_PPID = String($.getppid());   // 启动时取一次(见对话窗注释)
+  var SW = 420, SH = 520;
+  var screen = $.NSScreen.mainScreen.frame;
+  var sx = screen.origin.x + screen.size.width - SW - 30;
+  var sy = screen.origin.y + screen.size.height - SH - 140;
+  try {
+    var savedTxt = $.NSString.stringWithContentsOfFileEncodingError(M.posFile, $.NSUTF8StringEncoding, $());
+    var saved = JSON.parse((savedTxt && savedTxt.js) || '{}');
+    if (typeof saved.x === 'number') { sx = saved.x; sy = saved.y; }
+  } catch (e) {}
+
+  ObjC.registerSubclass({ name: 'DWSentenceWindow', superclass: 'NSWindow', methods: {
+    'canBecomeKeyWindow': function(){ return true; },
+    'canBecomeMainWindow': function(){ return true; },
+  }});
+  var win = $.DWSentenceWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+    $.NSMakeRect(sx, sy, SW, SH),
+    $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable | $.NSWindowStyleMaskResizable,
+    $.NSBackingStoreBuffered, false);
+  win.title = '派大星 · 用它造个句子';
+  win.level = $.NSFloatingWindowLevel;
+  win.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces;
+  win.setMinSize($.NSMakeSize(340, 420));
+  win.backgroundColor = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1.0, 0.98, 0.965, 1);
+
+  var conf = $.WKWebViewConfiguration.alloc.init;
+  var web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, SW, SH), conf);
+  web.setAutoresizingMask($.NSViewWidthSizable | $.NSViewHeightSizable);
+  win.contentView.addSubview(web);
+  web.loadRequest($.NSURLRequest.requestWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-sentence.html')));
+
+  /* 出场动效:和对话浮窗同一套语言 —— 从派大星身旁弹出,
+   * 位移 + easeOutBack 轻微过冲 + alpha 快速拉满。造句窗比对话窗小,
+   * 动画略快一点(220ms),两个窗同时出现时节奏协调。 */
+  var finalX = sx, finalY = sy;
+  var A = M.anchor;
+  var fromX = finalX, fromY = finalY;
+  if (A) {
+    var pcx = A.x + A.w / 2, pcy = A.y + A.h / 2;
+    var wcx = finalX + SW / 2, wcy = finalY + SH / 2;
+    var dx = pcx - wcx, dy = pcy - wcy;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    fromX = finalX + (dx / len) * 16;
+    fromY = finalY + (dy / len) * 16;
+  }
+  win.alphaValue = 0.0;
+  win.setFrameOrigin($.NSMakePoint(fromX, fromY));
+  win.makeKeyAndOrderFront($());
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+
+  // 与对话窗一致:animator 一次提交淡入(不再用 16ms 定时器逐帧插值 —— JXA 崩溃点就在那里)
+  function playEntrance() {
+    try {
+      win.setFrameOrigin($.NSMakePoint(fromX, fromY));
+      win.animator.alphaValue = 1.0;   // NSWindow animator 在 ObjC 层插值
+      win.setFrameDisplay($.NSMakeRect(finalX, finalY, SW, SH), true);
+    } catch (e) {
+      win.alphaValue = 1.0;
+      win.setFrameOrigin($.NSMakePoint(finalX, finalY));
+    }
+  }
+  var entranceStarted = false;
+  function maybeStartEntrance() {
+    if (entranceStarted) return;
+    entranceStarted = true;
+    playEntrance();
+  }
+  try {
+    if (!$.DWSentenceNavDelegate) {
+      ObjC.registerSubclass({ name: 'DWSentenceNavDelegate', superclass: 'NSObject', methods: {
+        'webView:didFinishNavigation:': function(){ maybeStartEntrance(); },
+      }});
+    }
+    var navDelegate = $.DWSentenceNavDelegate.alloc.init;
+    web.navigationDelegate = navDelegate;
+  } catch (e) { /* 同上 */ }
+  // 保底一次性延时器:0.05s 后必播(导航回调若先到 entranceStarted 会挡住二次)。
+  // 本地页面加载很快,等 0.22s 反而让用户觉得"点了没反应"。
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(tm){
+    tm.invalidate;
+    maybeStartEntrance();
+  });
+
+  var missTicks = 0;
+  // 与对话窗同款:合并定时器 + isVisible 守卫(SIGSEGV 防御)
+  var posDirty2 = false;
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
+    try {
+      if (!win.isVisible) return;
+      missTicks++;
+      if (M.ownerPid && OWNER_PPID !== String(M.ownerPid)) { $.exit(0); }
+      if (missTicks >= 8) { $.exit(0); }
+      posDirty2 = !posDirty2;
+      if (posDirty2) {
+        var f = win.frame;
+        $.NSString.stringWithString(JSON.stringify({ x: f.origin.x, y: f.origin.y }))
+          .writeToFileAtomicallyEncodingError(M.posFile, true, $.NSUTF8StringEncoding, $());
+      }
+      var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString('http://127.0.0.1:' + M.port + '/pet-owner.json'));
+      req.setTimeoutInterval(3);
+      $.NSURLConnection.sendAsynchronousRequestQueueCompletionHandler(req, $.NSOperationQueue.mainQueue, function(resp, data, err){
+        if (data) {
+          try {
+            var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
+            if (o && o.ok && o.ownerPid) {
+              if (String(o.ownerPid) !== String(M.ownerPid)) { $.exit(0); }
+              missTicks = 0;
+            }
+          } catch (e) {}
+        }
+      });
+    } catch (e) {}
+  });
+
+  $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  $.NSApplication.sharedApplication.run;
+}`;
+}
+
+/* ── 输入法切换(造句时自动用英文)────────────────────────────
+ * 造句窗一打开就把输入法切到英文键盘,用户不用自己按 Ctrl+空格;
+ * 关窗时**切回原来那个**输入源,不改变用户平时的习惯。
+ * 用 TIS(Carbon)API,不依赖 AppleScript 的 System Events(那个还需要额外授权)。
+ * JXA 的坑:TISGetInputSourceProperty 返回 CFTypeRef,必须
+ * ObjC.castRefToObject() 之后才能 unwrap/TISSelectInputSource。 */
+const TIS_JXA = `ObjC.import('Cocoa');
+ObjC.import('Carbon');
+function run(argv) {
+  var want = argv[0] || '';
+  var current = ObjC.castRefToObject($.TISGetInputSourceProperty($.TISCopyCurrentKeyboardInputSource(), $.kTISPropertyInputSourceID));
+  var curId = current ? ObjC.unwrap(current) : '';
+  if (want === '--current') { return curId || ''; }
+  if (!want) { return curId || ''; }
+  var list = ObjC.castRefToObject($.TISCreateInputSourceList($(), false));
+  if (!list) { return curId || ''; }
+  for (var i = 0; i < list.count; i++) {
+    var src = list.objectAtIndex(i);
+    var raw = ObjC.castRefToObject($.TISGetInputSourceProperty(src, $.kTISPropertyInputSourceID));
+    var id = raw ? ObjC.unwrap(raw) : '';
+    if (id === want) { $.TISSelectInputSource(src); break; }
+  }
+  return curId || '';
+}`;
+/* 当前输入源 ID(同步拿不到,包成回调;失败返回 '')。 */
+function currentInputSource(cb) {
+  if (!isMac) return cb && cb('');
+  const tmp = path.join(os.tmpdir(), `dw_tis-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(tmp, TIS_JXA); } catch { return cb && cb(''); }
+  execFile('osascript', ['-l', 'JavaScript', tmp, '--current'], { timeout: 6000 }, (err, stdout) => {
+    try { fs.unlinkSync(tmp); } catch {}
+    cb && cb(err ? '' : String(stdout || '').trim());
+  });
+}
+/* 切到指定输入源;返回切换前的那个(供稍后恢复)。 */
+function selectInputSource(id, cb) {
+  if (!isMac || !id) return cb && cb('');
+  const tmp = path.join(os.tmpdir(), `dw_tis-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(tmp, TIS_JXA); } catch { return cb && cb(''); }
+  execFile('osascript', ['-l', 'JavaScript', tmp, id], { timeout: 6000 }, (err, stdout) => {
+    try { fs.unlinkSync(tmp); } catch {}
+    cb && cb(err ? '' : String(stdout || '').trim());
+  });
+}
+/* 造句期间用的英文键盘。优先 ABC(纯英文,不会弹候选词)。 */
+const EN_INPUT_SOURCE = 'com.apple.keylayout.ABC';
+let imeRestoreTo = '';        // 造句前用户的输入源,关窗时切回
+
+let sentenceWinChild = null;
+function stopSentenceWindow() {
+  const hadWindow = Boolean(sentenceWinChild);
+  if (sentenceWinChild) { try { sentenceWinChild.kill(); } catch {} sentenceWinChild = null; }
+  // 切回用户原来的输入法(只有造句窗真的开过才恢复,避免无谓地打断输入)
+  if (hadWindow && imeRestoreTo) {
+    const back = imeRestoreTo;
+    imeRestoreTo = '';
+    selectInputSource(back);
+  }
+  // 只有**真的关掉了一个开着的窗**才算"刚关窗",才进缓冲期。
+  // 否则切形态 / 隐藏宠物时 stopPetAll 里这次调用会把整个抽查卡住 2.5s。
+  if (!hadWindow) return;
+  sentenceClosedAt = Date.now();
+  setTimeout(() => { flushPendingQuiz(); }, SENTENCE_CLOSE_GRACE_MS + 50).unref?.();
+}
+function startSentenceWindow() {
+  if (!isMac) return { ok: false, error: 'not mac' };
+  if (sentenceWinChild) {
+    let alive = false;
+    try { process.kill(sentenceWinChild.pid, 0); alive = true; } catch {}
+    if (alive) return { ok: true, already: true };
+    sentenceWinChild = null;
+  }
+  const scriptPath = path.join(os.tmpdir(), `dw_sentence-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(scriptPath, buildSentenceWindowJXA()); }
+  catch (err) {
+    console.error('[companion] 造句窗脚本生成失败:', err && err.stack || err);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+  const { spawn } = require('child_process');
+  const errPath = path.join(os.tmpdir(), `dw_sentence-${process.pid}.err.log`);
+  let errFd = 'ignore';
+  try { errFd = fs.openSync(errPath, 'a'); } catch {}
+  const child = sentenceWinChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', errFd] });
+  if (typeof errFd === 'number') { try { fs.closeSync(errFd); } catch {} }
+  child.on('exit', (code, sig) => {
+    if (sentenceWinChild === child) sentenceWinChild = null;
+    sentenceClosedAt = Date.now();
+    console.error('[companion] 造句窗退出 code=' + code + ' sig=' + sig);
+    setTimeout(() => { flushPendingQuiz(); }, SENTENCE_CLOSE_GRACE_MS + 50).unref?.();
+  });
+  child.unref();
+  return { ok: true, script: scriptPath, errLog: errPath };
+}
+
+let chatWinChild = null;
+function stopChatWindow() {
+  if (chatWinChild) { try { chatWinChild.kill(); } catch {} chatWinChild = null; }
+}
+function startChatWindow() {
+  if (!isMac) return { ok: false, error: 'not mac' };
+  // 子进程可能已崩溃但引用还在 → 先探活,死了就清掉重开
+  if (chatWinChild) {
+    let alive = false;
+    try { process.kill(chatWinChild.pid, 0); alive = true; } catch {}
+    if (alive) return { ok: true, already: true };
+    chatWinChild = null;
+  }
+  const scriptPath = path.join(os.tmpdir(), `dw_chat-${process.pid}.jxa.js`);
+  try { fs.writeFileSync(scriptPath, buildChatWindowJXA()); }
+  catch (err) {
+    console.error('[companion] 对话浮窗脚本生成失败:', err && err.stack || err);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+  const { spawn } = require('child_process');
+  const errPath = path.join(os.tmpdir(), `dw_chat-${process.pid}.err.log`);
+  let errFd = 'ignore';
+  try { errFd = fs.openSync(errPath, 'a'); } catch {}
+  const child = chatWinChild = spawn('osascript', ['-l', 'JavaScript', scriptPath], { stdio: ['ignore', 'ignore', errFd] });
+  if (typeof errFd === 'number') { try { fs.closeSync(errFd); } catch {} }
+  child.on('exit', (code, sig) => {
+    if (chatWinChild === child) chatWinChild = null;
+    console.error('[companion] 对话浮窗退出 code=' + code + ' sig=' + sig);
+  });
+  child.unref();
+  return { ok: true, script: scriptPath, errLog: errPath };
 }
 
 /* ---------------- global hotkey (zero-dep, via a JXA event monitor) ------- */
@@ -1327,6 +3617,28 @@ function startHotkey() {
  * 点击经 127.0.0.1:PORT/menu.php 回到本进程执行;菜单内容 10s 刷新一次 +
  * 每次命令完成后立即刷新。菜单栏脚本随伴侣进程存活,server 死亡时伴侣
  * follow-server 自杀,图标随 App 一同消失(不再有「看不见的僵尸实例」)。 */
+/* 把请求原样转给主服务(同机回环)。仅用于 /api/export/* 这类只读、需登录态的接口。 */
+function proxyToMainApi(req, res) {
+  let target;
+  try { target = new URL(serverBase()); } catch { res.writeHead(502); return res.end(JSON.stringify({ error: '主服务地址无效' })); }
+  const headers = {};
+  if (req.headers.cookie) headers.Cookie = req.headers.cookie;
+  if (req.headers.accept) headers.Accept = req.headers.accept;
+  const upstream = http.request({
+    hostname: target.hostname, port: target.port || 80, path: req.url, method: req.method, headers, timeout: 20000,
+  }, resp => {
+    const out = {};
+    if (resp.headers['content-type']) out['Content-Type'] = resp.headers['content-type'];
+    if (resp.headers['content-disposition']) out['Content-Disposition'] = resp.headers['content-disposition'];
+    out['Cache-Control'] = 'no-store';
+    res.writeHead(resp.statusCode || 502, out);
+    resp.pipe(res);
+  });
+  upstream.on('error', () => { try { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: '主服务未运行' })); } catch {} });
+  upstream.on('timeout', () => { upstream.destroy(); });
+  req.pipe(upstream);
+}
+
 function serverBase() {
   // 探测/内部调用一律 127.0.0.1,绝不用 localhost:Node 会先试 ::1,而主服务
   // 只听 127.0.0.1 —— 双栈解析差异曾让 followServer 连续拒连误判「主服务已死」,
@@ -1336,13 +3648,14 @@ function serverBase() {
   return `http://127.0.0.1:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
 }
 
-function buildMenuBarJXA(port, ownerPid) {
+function buildMenuBarJXA(port, ownerPid, nativeOrigin = '') {
   return `ObjC.import('Cocoa');
 ObjC.import('stdlib');
 ObjC.bindFunction('getppid', ['int', []]);
 function run(argv){
   var PORT = '${port}';
   var OWNER = '${ownerPid || ''}';   // 派生本脚本的伴侣 PID;menu-status 回来对不上号就自毁
+  var OWNER_PPID = String($.getppid());   // 启动时取一次(10s 心跳里不再走 bridge)
   var item = $.NSStatusBar.systemStatusBar.statusItemWithLength($.NSVariableStatusItemLength);
   var btn = item.button;
   btn.toolTip = 'WordPaper · 每日壁纸(点击打开菜单)';
@@ -1370,6 +3683,10 @@ function run(argv){
     });
   }
   function openURL(u){
+    var nativeOrigin = ${JSON.stringify(nativeOrigin)};
+    if (nativeOrigin && (u === nativeOrigin || u.indexOf(nativeOrigin + '/') === 0)) {
+      u = 'wordpaper://open?path=' + encodeURIComponent(u.slice(nativeOrigin.length) || '/');
+    }
     $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString(u));
   }
   var MenuTarget = ObjC.registerSubclass({ name: 'DWMenuBarTarget', methods: {
@@ -1430,6 +3747,7 @@ function run(argv){
       menu.setAutoenablesItems(false);
       if (st.pet) addItem(menu, '隐藏小词灵', 'pet-close', false);
       else addItem(menu, '召唤小词灵', 'pet-open', false);
+      addItem(menu, st.petMode === 'patrick' ? '切换到词卡形态' : '切换到派大星形态', 'pet-mode', false);
       addItem(menu, '换一组词', 'next', false);
       addItem(menu, '记忆复习本…', 'open:' + st.web + '/?openMemory=1', false);
       addItem(menu, '打开控制面板…', 'open:' + st.web, false);
@@ -1466,7 +3784,7 @@ function run(argv){
     $.exit(0);
   }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5, true, function(){
-    if ((OWNER && String($.getppid()) !== OWNER) || Date.now() - lastGoodAt > 15000) selfDestruct();
+    if ((OWNER && OWNER_PPID !== OWNER) || Date.now() - lastGoodAt > 15000) selfDestruct();
   });
   while (true) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); }
 }
@@ -1486,7 +3804,7 @@ function startMenuBar() {
   // 每个伴侣写自己的脚本副本(PID 烙进去),不共用 /tmp 同名文件 —— 共享文件
   // 会让旧实例的菜单栏读到新 PORT,对着新实例显示幽灵图标(双图标 bug)。
   const scriptPath = path.join(os.tmpdir(), `dw_menubar-${process.pid}.jxa.js`);
-  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
+  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid, process.env.WORDPAPER_NATIVE_UI === '1' ? localWebOrigin(CFG.webOrigin) || 'http://localhost:8770' : '')); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
   const { spawn } = require('child_process');
   // stderr 丢弃('ignore')而非 pipe:父进程死后没人读管道,子进程写满 64KB
   // 缓冲会整体冻结(定时器停摆,失联自毁永远跑不到 → 幽灵图标)。
@@ -1506,7 +3824,8 @@ function menuStatusPayload() {
   return {
     ok: true,
     ownerPid: process.pid,   // 菜单栏 JXA 靠它校验归属:对不上号 = 我是幽灵,自毁
-    pet: petVisible,
+    pet: petVisible || patrickVisible,
+    petMode: CFG.petMode || 'card',
     appMode: APP_MODE,
     version: BUNDLED_VERSION,
     web: localWebOrigin(CFG.webOrigin) || `http://localhost:${serverWebPort()}`,
@@ -1556,8 +3875,11 @@ function handleMenuCommand(cmd, res) {
       return jsonOut({ ok: true, pet: petVisible });
     case 'pet-close':
       try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}
-      stopPet();
+      stopPetAll();
       return jsonOut({ ok: true, pet: false });
+    case 'pet-mode':   // 菜单栏:两种形态互切
+      setPetMode(CFG.petMode === 'patrick' ? 'card' : 'patrick');
+      return jsonOut({ ok: true, mode: CFG.petMode });
     case 'next': {
       const now = Date.now();
       if (now - lastAdvanceAt >= 500) { lastAdvanceAt = now; bumpDelta(1); if (advancing) pendingDir = 1; else runAdvance(1); }
@@ -1641,7 +3963,8 @@ function followServer() {
 }
 
 function stopCompanion() {
-  stopPet();
+  stopPetAll();
+  if (autoQuizTimer) { clearInterval(autoQuizTimer); autoQuizTimer = null; }
   stopMenuBar();
   if (hotkeyChild) { try { hotkeyChild.kill(); } catch {} }
   process.exit(0);
@@ -1701,7 +4024,854 @@ function resolvePetSize() {
   return { w, h };
 }
 
+/* 形态切换:card ⇄ patrick。config 持久化(CFG.petMode);重启伴侣保持上次形态。 */
+function setPetMode(mode, cb) {
+  if (!PET_MODES.has(mode)) return cb && cb(new Error('bad mode'));
+  const changed = CFG.petMode !== mode;
+  CFG.petMode = mode;
+  saveConfig();
+  if (!changed) return cb && cb(null, false);
+  if (mode === 'patrick') startPatrickPet(); else startPet();
+  console.log('[companion] 小词灵形态已切换 → ' + (mode === 'patrick' ? '派大星' : '词卡'));
+  cb && cb(null, true);
+}
+
+/* 伴侣 → 派大星窗命令队列(单向;窗口 0.8s 轮询 /pet-patrick.json)。 */
+let patrickCmdSeq = 0;
+const patrickCmds = [];
+function pushPatrickCmd(cmd) {
+  patrickCmdSeq++;
+  patrickCmds.push(Object.assign({ seq: patrickCmdSeq }, cmd));
+  if (patrickCmds.length > 20) patrickCmds.splice(0, patrickCmds.length - 20);
+}
+/* 派大星悬停/点击朗读的目标词:默认当前页第一个词;index 由点击时传。 */
+/* 点击派大星:弹出朗读卡 + **只朗读英文**(单词 + 英文例句),中文不出声。
+ * 卡片显示 词/音标/中文释义/英文例句/例句中译,让用户边听边看。 */
+function patrickSpeakWord(index) {
+  if (!featureOn('betaPatrickVoice')) return;   // 管理员关闭了语音朗读
+  const words = petFirstPassWords();
+  const word = words[Math.max(0, Math.min(index || 0, words.length - 1))];
+  if (!word) return;
+  const ex = exampleForWord(CFG.library, word);
+  // 只读英文:单词 + 英文例句(中文释义/译文只显示,不朗读)
+  const items = [{ text: word.word }];
+  if (ex && ex.en) items.push({ text: ex.en });
+  // 朗读卡与朗读内容必须来自**同一个 word 对象**,否则会出现"卡片显示 A,耳朵听到 B"。
+  speakCardState = { word, example: ex, at: Date.now() };
+  // 卡片上印的正是这两行(词 + 例句),显式放行:即使这个词不在当前 6 个里
+  // (比如右键点词),只要卡片在屏上,读出来就不算幽灵朗读。
+  ttsEnqueue(items, { allow: items.map(i => i.text) });
+  renderSpeakCard();
+  pushPatrickCmd({ cmd: 'speak-card', ms: 7000 });
+  pushPatrickCmd({ cmd: 'pose', pose: 'happy0', ms: 5200 });
+}
+/* 朗读卡状态(与抽查卡互斥:出朗读卡时收起抽查卡,反之亦然)。 */
+let speakCardState = null;
+let answerCardState = null;
+function renderAnswerCard() {
+  if (!answerCardState) return;
+  const svg = buildAnswerSVG(answerCardState.word, answerCardState.answer, petSkin(CFG.uiTheme).dark === true);
+  const svgPath = CARD_PNG.answer.replace(/\.png$/, '.svg');
+  const pngPath = CARD_PNG.answer;
+  try { fs.writeFileSync(svgPath, svg); } catch { return; }
+  execFile('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath], { timeout: 20000 }, (err) => {
+    try { fs.unlinkSync(svgPath); } catch {}
+    if (err) console.error('[companion] 回答卡渲染失败:', err.message);
+  });
+}
+function renderSpeakCard() {
+  if (!speakCardState) return;
+  const svg = buildSpeakSVG(speakCardState.word, speakCardState.example, petSkin(CFG.uiTheme).dark === true);
+  const svgPath = CARD_PNG.speak.replace(/\.png$/, '.svg');
+  const pngPath = CARD_PNG.speak;
+  try { fs.writeFileSync(svgPath, svg); } catch { return; }
+  execFile('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath], { timeout: 20000 }, (err) => {
+    try { fs.unlinkSync(svgPath); } catch {}
+    if (err) console.error('[companion] 朗读卡渲染失败:', err.message);
+  });
+}
+
+
+
+/* ── 本地 magpie(Windows WorkBuddy,经 Tailscale)的 DeepSeek-V4.1-Flash ──
+ * 用来回答用户对单词的追问。密钥**不进仓库**:读运行时配置
+ *   ~/Library/Application Support/WordPaper/companion/magpie.json
+ * 也可用环境变量覆盖。不可达时静默降级(只朗读,不解释)。 */
+let magpieConfig = null;
+let magpieChatModel = '';   // 最近一次成功的模型(限流时自动换到的那个)
+function loadMagpie() {
+  if (magpieConfig) return magpieConfig;
+  const cfgPath = path.join(RUNTIME_ROOT, 'magpie.json');
+  let cfg = { enabled: false, models: [] };
+  try {
+    if (fs.existsSync(cfgPath)) {
+      const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      const primary = String(raw.model || 'workbuddy-ai/deepseek-v4.1-flash');
+      // magpie 同一网关下挂了几个模型别名:主模型限流(429)时换一个继续,别直接失败。
+      const extra = Array.isArray(raw.fallbackModels) ? raw.fallbackModels.map(String) : [];
+      cfg = {
+        enabled: raw.enabled !== false && Boolean(raw.apiKey),
+        baseUrl: String(raw.baseUrl || ''),
+        apiKey: String(raw.apiKey || ''),
+        model: primary,
+        models: [primary, ...extra].filter((m, i, a) => m && a.indexOf(m) === i),
+      };
+    }
+  } catch (e) { console.error('[companion] magpie 配置读取失败:', e.message); }
+  if (process.env.WORDPAPER_MAGPIE === '0') cfg.enabled = false;
+  magpieConfig = cfg;
+  return cfg;
+}
+/* 把上游错误体翻译成一句人话(浮窗直接显示给用户)。
+ * 实测最常见的两个:429 频率限制、401 key 失效。 */
+function magpieErrorText(status, raw) {
+  let msg = '';
+  try { msg = String((JSON.parse(raw).error || {}).message || ''); } catch {}
+  if (!msg) msg = String(raw || '').slice(0, 160);
+  if (status === 429 || /frequency limit|rate_limit/i.test(msg)) {
+    // 上游会带 "reset at 2026-10-26 08:05:06 UTC+8",取出来告诉用户什么时候恢复
+    const m = msg.match(/reset at ([^,\"]+)/i);
+    return '模型被限流了' + (m ? '，' + m[1].trim() + ' 后恢复' : '') + '（已自动换备用模型）';
+  }
+  if (status === 401 || status === 403) return 'magpie 的 API Key 不被接受（401/403），检查 magpie.json';
+  return 'magpie 返回 ' + status + (msg ? '：' + msg.slice(0, 120) : '');
+}
+/* 提问建议:针对当前在背的词,给几个「一问就学到东西」的角度。
+ * 固定模板 × 当前词,离线生成(不耗 API);点击即填入输入框。
+ * 用户要的是「不知道怎么问」时的引导,所以每条都带具体角度而不是泛泛的「什么意思」。 */
+function chatSuggestions() {
+  const words = petFirstPassWords().slice(0, 6);
+  const first = words[0] && words[0].word ? words[0].word : '';
+  if (!first) return [];
+  const out = [];
+  const add = (label, q) => { if (!out.some(o => o.q === q)) out.push({ label, q }); };
+  add('怎么记住它', `"${first}" 有什么好记的记忆法？拆词根或者联想都行`);
+  add('常见搭配', `"${first}" 最常用的搭配有哪些？给两三个例子`);
+  add('区别', `"${first}" 和意思相近的词有什么区别？容易在哪儿用错`);
+  add('造个句子', `用 "${first}" 造三个不同场景的英文句子，附中文`);
+  if (words[1]) add('串起来造句', `用 "${first}" 和 "${words[1].word}" 一起造一句英文`);
+  if (words[2]) add('一起记', `"${first}"、"${words[1] ? words[1].word + '”、' : ''}"${words[2].word}" 这三个词怎么一起记？`);
+  return out;
+}
+
+/* ── 对话管理(多会话)──────────────────────────────────────
+ * 结构:state.chatSessions = [{ id, title, createdAt, updatedAt, messages:[{role,content,at}] }]
+ *  - 按日期分组由前端做(用 updatedAt),服务端只保证顺序与上限。
+ *  - 老数据(state.chatHistory 单条数组)在读取时自动迁移成第一个会话,不丢历史。
+ *  - 上限:每个会话 200 条,总共 100 个会话(超出丢最旧的)。
+ *  - state.chatSessionId 记住「上次在聊的那个」,重开浮窗接着聊。 */
+const CHAT_MAX_MESSAGES = 200;
+const CHAT_MAX_SESSIONS = 100;
+function chatSessions() {
+  if (!Array.isArray(state.chatSessions)) {
+    const legacy = Array.isArray(state.chatHistory) ? state.chatHistory : [];
+    state.chatSessions = legacy.length ? [{
+      id: 's' + Date.now().toString(36),
+      title: chatTitleFrom(legacy),
+      createdAt: Number(legacy[0] && legacy[0].at) || Date.now(),
+      updatedAt: Number(legacy[legacy.length - 1] && legacy[legacy.length - 1].at) || Date.now(),
+      messages: legacy.map(m => ({ role: m.role, content: m.content, at: Number(m.at) || Date.now() })),
+    }] : [];
+    if (state.chatSessions.length && !state.chatSessionId) state.chatSessionId = state.chatSessions[0].id;
+    delete state.chatHistory;      // 迁移完就删掉旧字段,避免两份数据打架
+    saveState();
+  }
+  return state.chatSessions;
+}
+/* 用第一条用户消息给会话起个默认名字(和大多数聊天软件一致)。 */
+function chatTitleFrom(messages) {
+  const first = (messages || []).find(m => m && m.role === 'user' && m.content);
+  if (!first) return '新对话';
+  const t = String(first.content).replace(/\s+/g, ' ').trim();
+  return t.length > 24 ? t.slice(0, 23) + '…' : (t || '新对话');
+}
+function activeChatSession(create) {
+  const list = chatSessions();
+  let s = list.find(x => x.id === state.chatSessionId);
+  if (!s && create) {
+    s = { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: '新对话', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+    list.push(s);
+    state.chatSessionId = s.id;
+    trimChatSessions();
+    saveState();
+  }
+  return s || null;
+}
+function trimChatSessions() {
+  const list = chatSessions();
+  list.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+  if (list.length > CHAT_MAX_SESSIONS) list.length = CHAT_MAX_SESSIONS;
+  state.chatSessions = list;
+}
+function chatSessionSummary(s) {
+  const msgs = Array.isArray(s.messages) ? s.messages : [];
+  return {
+    id: s.id,
+    title: s.title || chatTitleFrom(msgs),
+    createdAt: Number(s.createdAt) || 0,
+    updatedAt: Number(s.updatedAt) || 0,
+    count: msgs.length,
+    preview: (msgs.filter(m => m.role === 'user').pop() || {}).content || '',
+  };
+}
+/* 会话导出:Markdown(好读、好贴)或 JSON(完整、可再导入)。 */
+function chatExportMarkdown(sessions) {
+  const lines = [];
+  sessions.forEach(s => {
+    const when = new Date(Number(s.updatedAt) || Date.now());
+    lines.push(`# ${s.title || '新对话'}`);
+    lines.push('');
+    lines.push(`> ${when.toLocaleString('zh-CN')} · ${(s.messages || []).length} 条消息`);
+    lines.push('');
+    (s.messages || []).forEach(m => {
+      lines.push(`**${m.role === 'user' ? '我' : '派大星'}**：`);
+      lines.push('');
+      lines.push(String(m.content || ''));
+      lines.push('');
+    });
+    lines.push('---');
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+/* 多轮对话(带历史)。历史存在 state.chatHistory,最多保留 40 条。
+ * 系统提示里带上当前单词,让它知道用户在背什么。 */
+function chatWithMagpie(userMessage, cb) {
+  const cfg = loadMagpie();
+  if (!cfg.enabled || !cfg.baseUrl) return cb && cb('', 'not-configured');
+  const sess = activeChatSession(true);
+  if (!sess) return cb && cb('', 'no-session');
+  if (!Array.isArray(sess.messages)) sess.messages = [];
+  const words = petFirstPassWords();
+  const cur = words[0] || {};
+  const sys = [
+    '你是派大星,一个陪用户背单词的桌面宠物,说话轻松口语化,中文回答,通常不超过三句话。',
+    cur.word ? '用户当前在背的词是「' + cur.word + '」(' + (cur.meaning || '') + ')。' : '',
+    '如果用户问单词,解释要简短好记;可以给记忆法或常见搭配。',
+  ].filter(Boolean).join('');
+
+  sess.messages.push({ role: 'user', content: String(userMessage), at: Date.now() });
+  if (sess.messages.length > CHAT_MAX_MESSAGES) sess.messages = sess.messages.slice(-CHAT_MAX_MESSAGES);
+  // 第一条用户消息自动成为会话标题(用户没手动改过才改)
+  if (!sess.title || sess.title === '新对话') sess.title = chatTitleFrom(sess.messages);
+  sess.updatedAt = Date.now();
+  saveState();
+
+  let url;
+  try { url = new URL(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions'); } catch { return cb && cb('', 'bad-url'); }
+  const messages = [{ role: 'system', content: sys }].concat(
+    sess.messages.slice(-12).map(m => ({ role: m.role, content: m.content }))
+  );
+  // 依次尝试主模型与备用模型:429(限流)换下一个,其它错误直接报给用户。
+  const queue = cfg.models && cfg.models.length ? cfg.models.slice() : [cfg.model];
+  const attempt = (model, lastErr) => {
+    if (!model) return cb && cb('', lastErr || 'no-model');
+    const body = JSON.stringify({ model, messages, max_tokens: 400 });
+    const req = http.request({
+      hostname: url.hostname, port: url.port || 80, path: url.pathname, method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + cfg.apiKey,
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 25000,
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          const reason = magpieErrorText(res.statusCode, data);
+          console.error('[companion] magpie', model, res.statusCode, data.slice(0, 200));
+          if ((res.statusCode === 429 || res.statusCode === 503) && queue.length) return attempt(queue.shift(), reason);
+          return cb && cb('', reason);
+        }
+        try {
+          const j = JSON.parse(data);
+          const text = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+          if (text) {
+            magpieChatModel = model;   // 记住这次成功的模型给 /pet-ask.php 用
+            sess.messages.push({ role: 'assistant', content: text, at: Date.now() });
+            if (sess.messages.length > CHAT_MAX_MESSAGES) sess.messages = sess.messages.slice(-CHAT_MAX_MESSAGES);
+            sess.updatedAt = Date.now();
+            saveState();
+            cb && cb(text);
+          } else if (queue.length) attempt(queue.shift(), 'empty');
+          else cb && cb('', '模型返回了空内容（可能也在限流，稍后再试）');
+        } catch { cb && cb('', 'magpie 返回了无法解析的内容'); }
+      });
+    });
+    req.on('error', e => cb && cb('', '连不上 magpie：' + e.message));
+    req.on('timeout', () => { req.destroy(); cb && cb('', 'magpie 超时（25s）'); });
+    req.write(body); req.end();
+  };
+  attempt(queue.shift(), '');
+}
+
+/* 问 DeepSeek 一个关于单词的问题,返回纯文本;失败/未配置返回 ''。 */
+function askMagpie(prompt, cb) {
+  const cfg = loadMagpie();
+  if (!cfg.enabled || !cfg.baseUrl) return cb && cb('');
+  let url;
+  try { url = new URL(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions'); } catch { return cb && cb(''); }
+  const queue = cfg.models && cfg.models.length ? cfg.models.slice() : [cfg.model];
+  const attempt = (model) => {
+    if (!model) return cb && cb('');
+    const body = JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: '你是派大星,一个陪用户背单词的桌面宠物。回答要简短口语化,中文不超过两句话,像朋友聊天。' },
+        { role: 'user', content: String(prompt) },
+      ],
+      max_tokens: 220,
+    });
+    const req = http.request({
+      hostname: url.hostname, port: url.port || 80, path: url.pathname, method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + cfg.apiKey,
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 12000,
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.error('[companion] magpie(ask)', model, res.statusCode, data.slice(0, 200));
+          if ((res.statusCode === 429 || res.statusCode === 503) && queue.length) return attempt(queue.shift());
+          return cb && cb('');
+        }
+        try {
+          const j = JSON.parse(data);
+          const text = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+          cb && cb(text);
+        } catch { cb && cb(''); }
+      });
+    });
+    req.on('error', () => cb && cb(''));
+    req.on('timeout', () => { req.destroy(); cb && cb(''); });
+    req.write(body); req.end();
+  };
+  attempt(queue.shift());
+}
+
+/* ── 内置 SRS 引擎(独立 App 用)────────────────────────────────
+ * 与网页 js/review.js 完全相同的间隔与推进规则,直接读写 user_state.review,
+ * 不再依赖浏览器轮询。这样派大星自己就能出题、自己推进艾宾浩斯。
+ * 账号:单机单账号模式取「最近活跃」的那个 user(通常是本人)。 */
+const SRS_INTERVALS_MIN = [20, 60, 540, 1440, 2880, 4320, 8640, 17280];
+
+function openSrsDb() {
+  const dbPath = path.join(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'), 'wordpaper.sqlite');
+  if (process.env.WORDPAPER_TEST_MODE === '1' && !process.env.WORDPAPER_DATA_DIR) return null;
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA busy_timeout=5000');
+    return db;
+  } catch { return null; }
+}
+/* Use the account last selected through the authenticated local server. */
+function activeUserId(db) {
+  try {
+    if (CFG.srsUserId) {
+      const row = db.prepare('SELECT id FROM users WHERE id=?').get(CFG.srsUserId);
+      return row ? row.id : null;
+    }
+    const active = db.prepare('SELECT user_id FROM sessions WHERE expires_at>? ORDER BY created_at DESC LIMIT 1').get(Date.now());
+    if (active) return active.user_id;
+    const users = db.prepare('SELECT id FROM users LIMIT 2').all();
+    return users.length === 1 ? users[0].id : null;
+  } catch { return null; }
+}
+function syncQuizUser(req) {
+  const userId = Number(req.headers['x-wordpaper-user-id']);
+  if (!Number.isSafeInteger(userId) || userId <= 0 || CFG.srsUserId === userId) return;
+  const db = openSrsDb();
+  if (!db) return;
+  try {
+    if (!db.prepare('SELECT id FROM users WHERE id=?').get(userId)) return;
+    CFG.srsUserId = userId;
+    saveConfig();
+    clearQuizCard(); pendingQuiz = null; quizResultUntil = 0;
+    pushPatrickCmd({ cmd: 'quiz-end' });
+  } finally { db.close(); }
+}
+function readReviewState(db, userId) {
+  try {
+    const row = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='review'").get(userId);
+    if (!row) return {};
+    const parsed = JSON.parse(row.value_json);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+function writeReviewState(db, userId, all) {
+  try {
+    // Can be called inside answerQuiz's read/modify/write transaction.
+    db.exec('SAVEPOINT quiz_review_write');
+    const json = JSON.stringify(all);
+    const now = Date.now();
+    const existing = db.prepare("SELECT revision FROM user_state WHERE user_id=? AND namespace='review'").get(userId);
+    if (existing) {
+      db.prepare("UPDATE user_state SET value_json=?, revision=revision+1, updated_at=? WHERE user_id=? AND namespace='review'")
+        .run(json, now, userId);
+    } else {
+      db.prepare("INSERT INTO user_state (user_id, namespace, value_json, revision, updated_at) VALUES (?,?,?,1,?)")
+        .run(userId, 'review', json, now);
+    }
+    // Native quiz answers can happen while the workspace is closed. Record
+    // their cloud write in the same transaction so a pull cannot erase them.
+    const paired = db.prepare("SELECT value FROM app_meta WHERE key='upstream_pairing'").get();
+    const pairing = paired ? JSON.parse(paired.value) : null;
+    if (pairing && Number(pairing.localUserId) === Number(userId)) {
+      const queued = db.prepare("SELECT value FROM app_meta WHERE key='upstream_queue'").get();
+      const queue = queued ? JSON.parse(queued.value) : {};
+      queue.review = { value: all, baseRevision: queue.review ? queue.review.baseRevision : Number(existing?.revision || 0) };
+      db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('upstream_queue', ?)").run(JSON.stringify(queue));
+    }
+    db.exec('RELEASE quiz_review_write');
+    return true;
+  } catch (e) {
+    try { db.exec('ROLLBACK TO quiz_review_write; RELEASE quiz_review_write'); } catch {}
+    console.error('[companion] SRS 写回失败:', e.message); return false;
+  }
+}
+/* 当前词库里所有到期词(按 due 升序)。 */
+function srsDueWords(db, userId, library) {
+  const all = readReviewState(db, userId);
+  const bucket = all[library];
+  if (!bucket || !bucket.words) return [];
+  const now = Date.now();
+  return Object.keys(bucket.words)
+    .map(k => ({ key: k, item: bucket.words[k] }))
+    .filter(({ item }) => item && item.word && item.due && item.due <= now && (Number(item.stage) || 0) < SRS_INTERVALS_MIN.length)
+    .sort((a, b) => (a.item.due || 0) - (b.item.due || 0));
+}
+/* 推进/重置一个词,规则与 review.js 的 reviewWord 一致:
+ * 记住了 → stage+1,下次间隔取 SRS_INTERVALS_MIN[stage];
+ * 忘了   → stage 归零,20 分钟后再来。 */
+function srsApplyAnswer(db, userId, library, key, correct, word) {
+  const all = readReviewState(db, userId);
+  const bucket = all[library] || { words: {} };
+  if (!bucket.words) bucket.words = {};
+  let item = bucket.words[key];
+  const now = Date.now();
+  const first = !item;
+  if (first) {
+    if (!word) return { ok: false, reason: 'missing' };
+    item = { word, learnedAt: now, stage: 0, due: now + SRS_INTERVALS_MIN[0] * 60000, learnedCount: 1, reviewCount: 0, events: [{ at: now, type: 'learn' }] };
+  } else if (!item.due || item.due > now || item.stage >= SRS_INTERVALS_MIN.length) {
+    return { ok: false, reason: 'not-due' };
+  }
+  if (!first) {
+    item.reviewCount = (Number(item.reviewCount) || 0) + 1;
+    item.events = Array.isArray(item.events) ? item.events : [];
+    if (correct) {
+      item.stage = Math.min((Number(item.stage) || 0) + 1, SRS_INTERVALS_MIN.length);
+      item.successCount = (Number(item.successCount) || 0) + 1;
+      item.due = item.stage < SRS_INTERVALS_MIN.length ? now + SRS_INTERVALS_MIN[item.stage] * 60000 : null;
+      item.events.push({ at: now, type: item.due ? 'review-pass' : 'mastered' });
+    } else {
+      item.stage = 0;
+      item.failCount = (Number(item.failCount) || 0) + 1;
+      item.due = now + SRS_INTERVALS_MIN[0] * 60000;
+      item.events.push({ at: now, type: 'forgot' });
+    }
+    item.lastSeenAt = now;
+  }
+  item.petQuiz = Object.assign({ count: 0, firstAt: now }, item.petQuiz || {});
+  item.petQuiz.count++;
+  item.petQuiz.lastAt = now;
+  item.petQuiz.lastCorrect = correct;
+  item.events = item.events.slice(-64);
+  bucket.words[key] = item;
+  all[library] = bucket;
+  const ok = writeReviewState(db, userId, all);
+  return { ok, stage: item.stage, due: item.due };
+}
+
+/* 伴侣自主抽查:定时检查到期词,自动弹卡。不需要浏览器。 */
+let autoQuizTimer = null;
+let autoQuizLastAt = 0;
+
+/* ── 抽查排队机制 ────────────────────────────────────────────
+ * 用户在「有事做」的时候绝不出下一题,把要出的题攒进队列,等空下来再出:
+ *   1. 刚作答完,卡片还停在屏上(给时间看对错/点造句)      → quizResultUntil
+ *   2. 造句窗开着(正在打字)                                → sentenceWinChild
+ *   3. 刚关掉造句窗的收尾缓冲                              → sentenceClosedAt
+ * 队列只留最近一次请求(同一时刻只需一道题),空下来立刻补出。
+ * 这样就不会出现「来不及造句,下一题突然冒出来」的情况。 */
+const QUIZ_RESULT_DWELL_MS = 4500;        // 作答后卡片停留(够看对错/点造句,又不拖慢连续抽查)
+const SENTENCE_CLOSE_GRACE_MS = 2500;     // 关掉造句窗后再等一会儿
+let quizResultUntil = 0;
+let sentenceClosedAt = 0;
+let pendingQuiz = null;                   // { words, library, srsUserId, at }; never holds an open database
+
+/* 现在能不能出题?返回原因字符串(空串 = 可以)。 */
+function quizBusyReason() {
+  if (patrickQuizState) return 'quiz-in-progress';
+  if (Date.now() < quizResultUntil) return 'showing-result';
+  if (sentenceWinChild) return 'sentencing';
+  if (Date.now() - sentenceClosedAt < SENTENCE_CLOSE_GRACE_MS) return 'sentence-closing';
+  return '';
+}
+/* 把一次出题请求排进队列(后来的覆盖先来的:只保留最新一批到期词)。 */
+function queueQuiz(words, library, srsUserId) {
+  pendingQuiz = { words, library, srsUserId, at: Date.now() };
+}
+/* 空下来时把排队的题出掉。由 autoQuizTick 与各处「空闲」事件调用。 */
+function flushPendingQuiz() {
+  const p = pendingQuiz;
+  if (!p) return false;
+  if (!featureOn('betaPetQuiz')) { pendingQuiz = null; return false; }
+  // 与 /pet-quiz.php 的 offer 闸保持一致:TEST_MODE 放行(端点测试没有真窗口)。
+  const gateOpen = patrickVisible || process.env.WORDPAPER_TEST_MODE === '1';
+  if (CFG.petMode !== 'patrick' || !gateOpen) return false;
+  if (quizBusyReason()) return false;      // 还在忙 → 继续等
+  pendingQuiz = null;
+  let words = p.words;
+  if (p.srsUserId) {
+    const db = openSrsDb();
+    if (!db) return false;
+    try { words = refreshQuizCandidates(db, p.srsUserId, p.library, p.words); }
+    finally { db.close(); }
+  }
+  if (!words.length) return false;
+  autoQuizLastAt = Date.now();
+  return offerQuiz(words, p.library, p.srsUserId);
+}
+/* 供网页/测试查询:当前是否在等、在等什么。 */
+function quizQueueState() {
+  return {
+    queued: Boolean(pendingQuiz),
+    reason: quizBusyReason(),
+    queuedAt: pendingQuiz ? pendingQuiz.at : 0,
+    sentenceOpen: Boolean(sentenceWinChild),
+    resultUntil: quizResultUntil,
+  };
+}
+function quizDueCandidates(db, userId, library) {
+  return srsDueWords(db, userId, library).slice(0, 8).map(({ item }) =>
+    Object.assign({}, item.word, { stage: Number(item.stage) || 0, due: Number(item.due) }));
+}
+function refreshQuizCandidates(db, userId, library, fallback) {
+  const due = quizDueCandidates(db, userId, library);
+  if (due.length) return due;
+  const bucket = readReviewState(db, userId)[library];
+  return fallback.filter(w => !(bucket && bucket.words && bucket.words[wordKey(w)]))
+    .map(w => Object.assign({}, w, { stage: null, due: null }));
+}
+function autoQuizTick() {
+  if (!featureOn('betaPetQuiz') || CFG.quizAutoStart === false) return;
+  if (CFG.petMode !== 'patrick' || !patrickVisible) return;
+  const db = openSrsDb();
+  if (!db) return;
+  try {
+    const userId = activeUserId(db);
+    if (!userId) return;
+    const picks = quizDueCandidates(db, userId, CFG.library);
+    if (!picks.length) {
+      if (flushPendingQuiz() || quizBusyReason()) return;
+      const interval = Math.max(60, Number(CFG.quizIntervalSec) || 300) * 1000;
+      if (Date.now() - autoQuizLastAt < interval) return;
+      const fresh = refreshQuizCandidates(db, userId, CFG.library, petFirstPassWords());
+      autoQuizLastAt = Date.now();
+      if (fresh.length) offerQuiz(fresh, CFG.library, userId);
+      return;
+    }
+    // stage=0 is the first scheduled review, not an unlearned word. A click
+    // sent from the replaced card carries its id and cannot answer the new one.
+    if (patrickQuizState && patrickQuizState.pickedIndex < 0 && patrickQuizState.category !== 'review' && !sentenceWinChild) {
+      console.log('[companion] 复习到期 → 抢占新词卡:', patrickQuizState.word.word);
+      clearQuizCard();
+      pendingQuiz = null;
+      offerQuiz(picks, CFG.library, userId);
+      return;
+    }
+    if (quizBusyReason()) { queueQuiz(picks, CFG.library, userId); return; }
+    pendingQuiz = null;
+    autoQuizLastAt = Date.now();
+    offerQuiz(picks, CFG.library, userId);
+  } catch (e) { console.error('[companion] 抽查检查失败:', e.message); }
+  finally { db.close(); }
+}
+function startAutoQuiz() {
+  if (autoQuizTimer) return;
+  setTimeout(autoQuizTick, 3000);
+  autoQuizTimer = setInterval(autoQuizTick, 15000);
+  if (autoQuizTimer.unref) autoQuizTimer.unref();
+  console.log('[companion] 桌面抽查已启动(每 15s 检查到期词)');
+}
+
+/* ---------------- 抽查(quiz)核心 ----------------
+ * 从网页推来的到期词里选一个,再从同词库抽 3 个干扰项组成 4 选 1。
+ * 题目渲染成 CARD_PNG.quiz(按 PID 分离),由派大星窗加载显示(quiz 子窗);
+ * 作答 → /pet-quiz.php?action=answer → petMemoryEvents(action:'quiz') → 网页
+ * Review.reviewWord 同一条艾宾浩斯链:记住了=推进一档,忘了=回到 20 分钟档。 */
+function pickQuizDistractors(library, answer, excludeKeys) {
+  const pool = loadWords(library).filter(w => {
+    const k = petWordKey(w);
+    if (k === petWordKey(answer)) return false;
+    if (excludeKeys.has(k)) return false;
+    return (w.meaning || '') !== (answer.meaning || '');
+  });
+  const out = [];
+  const seen = new Set();
+  const rand = rng(hash(`quiz:${dateKey(new Date())}:${wordKey(answer)}:${Date.now()}`));
+  for (let guard = 0; guard < 200 && out.length < 3; guard++) {
+    const w = pool[Math.floor(rand() * pool.length)];
+    if (!w) break;
+    const m = w.meaning || '';
+    if (seen.has(m)) continue;
+    seen.add(m);
+    out.push(withPos(w));
+  }
+  while (out.length < 3) out.push('（想不起来了）');
+  return out;
+}
+function wordKey(word) { return String((word && word.word) || '') + '|' + String((word && word.meaning) || ''); }
+/* 悬停状态气泡渲染:buildStatusBubbleSVG → sips → /tmp/dw_status_bubble-<pid>.png。
+ * 桌面词变化(bumpPetWordEpoch)与 SRS 写回后都会触发;另有 5 分钟兜底刷新。 */
+let statusBubbleTimer = null;
+function renderStatusBubble() {
+  try {
+    const st = currentWordStatus();
+    const svg = buildStatusBubbleSVG(st, petSkin(CFG.uiTheme).dark === true);
+    const png = path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`);
+    const svgPath = png.replace(/\.png$/, '.svg');
+    fs.writeFileSync(svgPath, svg);
+    execFile('sips', ['-s', 'format', 'png', svgPath, '--out', png], { timeout: 20000 }, (err) => {
+      try { fs.unlinkSync(svgPath); } catch {}
+      if (err) console.error('[companion] 状态气泡渲染失败:', err.message);
+    });
+  } catch (e) { console.error('[companion] 状态气泡异常:', e.message); }
+}
+function currentWordStatus() {
+  let srsIndex = new Map();
+  try {
+    const db = openSrsDb();
+    const userId = db && activeUserId(db);
+    if (db && userId) {
+      const libState = readReviewState(db, userId)[CFG.library];
+      Object.values((libState && libState.words) || {}).forEach(item => {
+        if (item && item.word && item.word.word) srsIndex.set(String(item.word.word).toLowerCase(), item);
+      });
+    }
+    try { if (db) db.close(); } catch {}
+  } catch {}
+  const now = Date.now();
+  return petFirstPassWords().map(w => {
+    const rec = srsIndex.get(String(w.word || '').toLowerCase());
+    if (!rec) return { word: w.word, kind: 'new' };
+    const due = Number(rec.due) || 0;
+    if ((Number(rec.stage) || 0) >= SRS_INTERVALS_MIN.length) return { word: w.word, kind: 'mastered' };
+    if (!due || due <= now) return { word: w.word, kind: 'due', stage: Number(rec.stage) || 0 };
+    return { word: w.word, kind: 'countdown', stage: Number(rec.stage) || 0, dueInMs: due - now };
+  });
+}
+/* 词页变化/SRS 写回后延迟 2s 重渲(等 sips 空闲),5 分钟兜底 */
+function scheduleStatusBubble() {
+  if (statusBubbleTimer) return;
+  statusBubbleTimer = setTimeout(() => { statusBubbleTimer = null; if (patrickVisible) renderStatusBubble(); }, 2000);
+  if (statusBubbleTimer.unref) statusBubbleTimer.unref();
+}
+
+/* 把 SRS 间隔(分钟)转成人话:"20 分钟" / "9 小时" / "2 天" */
+function fmtIntervalMin(min) {
+  const m = Number(min) || 0;
+  if (m < 60) return m + ' 分钟';
+  if (m < 1440) return Math.round(m / 60) + ' 小时';
+  return Math.round(m / 1440) + ' 天';
+}
+
+function isQuizReviewDue(word) {
+  const due = Number(word && word.due);
+  return Number.isFinite(due) && due > 0 && due <= Date.now() && (Number(word.stage) || 0) < SRS_INTERVALS_MIN.length;
+}
+function quizRoundInfo(stage) {
+  stage = Math.max(0, Math.min(SRS_INTERVALS_MIN.length - 1, Number(stage) || 0));
+  return { stage, total: SRS_INTERVALS_MIN.length,
+    nextIn: stage + 1 < SRS_INTERVALS_MIN.length ? fmtIntervalMin(SRS_INTERVALS_MIN[stage + 1]) : null };
+}
+function offerQuiz(dueWords, library, srsUserId) {
+  // Due reviews (including stage zero), then visible new words, then other new words.
+  dueWords = dueWords.filter(w => !Number(w.due) || isQuizReviewDue(w));
+  let visibleKeys = new Set();
+  try { visibleKeys = new Set(petFirstPassWords().map(petWordKey)); } catch {}
+  const isReviewDue = isQuizReviewDue;
+  const reviewDue = dueWords.filter(isReviewDue);                                  // ① 复习到期
+  const visibleNew = dueWords.filter(w => !isReviewDue(w) && visibleKeys.has(petWordKey(w)));  // ② 屏上新词
+  const others = dueWords.filter(w => !isReviewDue(w) && !visibleKeys.has(petWordKey(w)));     // ③ 其它
+  const pool = reviewDue.length ? reviewDue : (visibleNew.length ? visibleNew : others);
+  if (!pool.length) return false;
+  const answer = pool[Math.floor(Math.random() * pool.length)];
+  autoQuizLastAt = Date.now();
+  const options = pickQuizDistractors(library, answer, new Set(dueWords.map(wordKey)));
+  const answerIndex = Math.floor(Math.random() * 4);
+  options.splice(answerIndex, 0, withPos(answer));
+  patrickQuizState = {
+    id: `${process.pid}-${++quizSequence}`, word: answer, options, answerIndex, pickedIndex: -1, library,
+    key: wordKey(answer), stage: Number(answer.stage) || 0, askedAt: Date.now(), expand: false,
+    // 类别:复习到期(进入艾宾浩斯记忆本)还是桌面新词(还没背第一遍)
+    category: isReviewDue(answer) ? 'review' : (visibleKeys.has(petWordKey(answer)) ? 'fresh' : 'other'),
+    // 复习类:第几轮 + 答对后的下次间隔(给卡片显示)
+    roundInfo: isReviewDue(answer) ? quizRoundInfo(answer.stage) : null,
+    srsUserId: srsUserId || null,
+  };
+  // 上一题的朗读、点击派大星时在念的词/例句 —— 全部立刻掐断。
+  // 用户要求:抽查弹出时**只有**这张卡上的这个词可以出声。
+  ttsStopNow();
+  displayedQuiz = patrickQuizState;
+  const isReview = isReviewDue(answer);
+  const catLabel = isReview
+    ? '⏰ 复习到期（已进艾宾浩斯记忆本）'
+    : (visibleKeys.has(petWordKey(answer)) ? '🆕 桌面新词（还没背第一遍）' : '📚 词库新词（还没背第一遍）');
+  renderQuizCard(() => pushPatrickCmd({ cmd: 'quiz', lines: [
+    { text: catLabel, size: 10, color: 'sub' },
+    { text: '「' + answer.word + '」还记得吗？', size: 12, bold: true },
+  ], ms: 26000 }));
+  // 先把考题词的音频**预合成**好(缓存);等卡片真正滑入上屏、派大星窗回报
+  // 'quiz-shown' 的那一刻再播 —— 声音与弹卡同步,且只读这一个词。
+  ttsPrewarm(answer.word, () => {});   // 失败也无所谓:上屏那刻会回退到现场合成
+  return true;
+}
+function renderQuizCard(onReady) {
+  const q = patrickQuizState || displayedQuiz;
+  if (!q) return;
+  const out = buildQuizSVG({
+    word: q.word.word, phonetic: q.word.phonetic || '', options: q.options,
+    answerIndex: q.answerIndex,
+    pickedIndex: q.pickedIndex,
+    done: q.pickedIndex >= 0,
+    correct: q.pickedIndex === q.answerIndex,
+    category: q.category || '',      // 'review' 复习到期 / 'fresh' 桌面新词
+    roundInfo: q.roundInfo || null,  // {stage,total,nextIn} 仅复习类
+    expand: q.expand === true,       // 超长释义点击展开后为 true
+  }, q.options, petSkin(CFG.uiTheme).dark === true);
+  const revision = ++quizRenderSequence;
+  const pngPath = CARD_PNG.quiz.replace(/\.png$/, `-${revision}.png`);
+  const svgPath = pngPath.replace(/\.png$/, '.svg');
+  fs.writeFileSync(svgPath, out.svg);
+  execFile('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath], { timeout: 20000 }, (err) => {
+    try { fs.unlinkSync(svgPath); } catch {}
+    if (err || revision !== quizRenderSequence || displayedQuiz !== q) {
+      try { fs.unlinkSync(pngPath); } catch {}
+      if (err) console.error('[companion] quiz render failed:', err.message);
+      return;
+    }
+    try {
+      fs.renameSync(pngPath, CARD_PNG.quiz);
+      q.geom = Object.assign(out.geom, { id: q.id, revision, hold: !!q.hold });
+      if (onReady) onReady();
+    } catch (e) { console.error('[companion] quiz publish failed:', e.message); }
+  });
+}
+function answerQuiz(picked, res) {
+  const q = patrickQuizState;
+  if (!q) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'no-quiz' })); }
+  if (!Number.isInteger(picked) || picked < 0 || picked >= q.options.length) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: false, error: 'invalid-option' }));
+  }
+  const correct = picked === q.answerIndex;
+  q.pickedIndex = picked;
+  q.hold = q.expand === true;
+  renderQuizCard();
+  const now = Date.now();
+  state.petMemorySeq = Math.max(0, Number(state.petMemorySeq) || 0) + 1;
+  const event = {
+    id: state.petMemorySeq, at: now, library: q.library, word: q.word,
+    action: 'quiz', correct, stage: Number.isFinite(Number(q.stage)) ? Number(q.stage) : null,
+    page: 0, refilled: false,
+    userId: q.srsUserId || undefined,
+  };
+  // 本地 SRS:伴侣自己推进艾宾浩斯(独立 App 模式,网页没开也生效)。
+  if (q.srsUserId) {
+    const db = openSrsDb();
+    try {
+      if (db) db.exec('BEGIN IMMEDIATE');
+      const r = db && srsApplyAnswer(db, q.srsUserId, q.library, q.key, correct, q.word);
+      if (db) db.exec(r && r.ok ? 'COMMIT' : 'ROLLBACK');
+      if (r && (r.ok || r.reason === 'not-due')) {
+        event.srsApplied = true;
+        event.userId = q.srsUserId;
+        if (r.ok) { console.log('[companion] 抽查已写回 SRS:', q.word.word, '→ stage', r.stage); scheduleStatusBubble(); }
+      }
+    } catch (e) {
+      try { if (db) db.exec('ROLLBACK'); } catch {}
+      console.error('[companion] SRS 写回异常:', e.message);
+    }
+    finally { if (db) db.close(); }
+  }
+  state.petMemoryEvents.push(event);
+  state.petMemoryEvents = state.petMemoryEvents.slice(-160);
+  saveState();
+  // 作答只放对/错音效,**不念任何词**:这个单词在弹卡时已经读过一遍了。
+  // (之前会念 "Nice!/Oops." + 再念一次单词,听起来像多余的声音。)
+  ttsStopNow();
+  playSfx(correct ? 'correct' : 'wrong');
+  const word = q.word;
+  patrickQuizState = null;
+  // 桌面联动:考完的这个词从桌面当前页**原位换成新词**(与点词卡补位同一套逻辑)。
+  // SRS 记忆照旧走数据库——忘了的词 20 分钟后还会回来考,不丢;但桌面空间
+  // 永远留给「正要记」的词。换完推新词到派大星窗 + 重渲壁纸(同步开启时)。
+  try {
+    const deck = ensurePetDeck(q.library);
+    const page = deck.pages[deck.index];
+    const key = petWordKey(word);
+    const idx = page.words.findIndex(item => petWordKey(item) === key);
+    if (idx >= 0) {
+      const inUse = new Set();
+      deck.pages.forEach(p => (p.words || []).forEach(w => inUse.add(petWordKey(w))));
+      inUse.delete(key);   // 被换掉的词自己不占坑
+      const candidate = drawPetWords(q.library, deck, 1, inUse)[0];
+      if (candidate) page.words[idx] = candidate;
+      else { page.words.splice(idx, 1); refillPetPage(q.library, deck, page); }
+      bumpPetWordEpoch();
+      saveState();
+      syncWallpaperToPet();
+      pushPatrickCmd({ cmd: 'words', words: petWordsForPatrick(), keys: currentPetKeys(), exampleLines: petWordsForPatrick().map(x => x.example).filter(Boolean) });
+      console.log('[companion] 桌面已换词:', word.word, '→', candidate ? candidate.word : '(补位)');
+    }
+  } catch (e) { console.error('[companion] 桌面换词失败:', e.message); }
+  // 结果卡要在屏上停留几秒让用户看到对错标记:quiz 子窗轮询 quiz.png 的 mtime,
+  // sips 写完新 PNG 自动重绘;2.6s 后撤卡。气泡走 quiz-end 但**不**立刻藏子窗
+  // (JXA 侧 quiz-end 只清 st.quiz,子窗由 hideQuizCardTimer 撤)。
+  // 作答后把这次考的题记下来:造句窗要用它(词 + 释义 + 这次的对错)。
+  state.lastQuiz = {
+    word: word.word, meaning: word.meaning || '', pos: word.pos || '',
+    phonetic: word.phonetic || '', library: q.library, correct, at: Date.now(),
+  };
+  saveState();
+  pushPatrickCmd({
+    cmd: 'quiz-result',
+    effect: correct ? 'correct' : 'wrong',   // JXA 侧据此播放对/错动画
+    ms: 4500,
+    hold: q.hold,
+    lines: [{ text: correct ? '答对了！' + q.word.word + ' 已进入下一轮复习' : '没关系，"' + q.word.word + '" 会再回来找你', size: 11 }],
+  });
+  // 作答后卡片停留一段时间:让用户看对错,并决定「下一个」还是「造个句子」。
+  // 停留期间不算空,排队的题不会冒出来(quizBusyReason 会挡住)。
+  quizResultUntil = q.hold ? Number.MAX_SAFE_INTEGER : Date.now() + QUIZ_RESULT_DWELL_MS;
+  setTimeout(() => {
+    if (patrickQuizState || displayedQuiz !== q || q.hold) return;
+    if (sentenceWinChild) return;              // 正在造句:卡片留着当参考
+    clearQuizCard();
+    if (!flushPendingQuiz()) autoQuizTick();
+  }, QUIZ_RESULT_DWELL_MS);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  return res.end(JSON.stringify({ ok: true, correct, word: word.word, meaning: word.meaning, queue: quizQueueState() }));
+}
+
+/* 按形态分发:CFG.petMode = 'card' | 'patrick'。所有「召唤小词灵」入口都走这里。 */
 function startPet() {
+  if (CFG.petMode === 'patrick') { startPatrickPet(); return; }
+  startCardPet();
+}
+
+function startCardPet() {
   stopPet();
   const generation = petGeneration;
   if (!isMac || !CFG.petEnabled) return;
@@ -1745,6 +4915,11 @@ function startPet() {
  * 仅当可见词数真的变化（词库见底补不满、翻页词数不同）时才重启窗口，因为原生
  * 命中网格的词数 COUNT 是写死的，词数变了不重启就会点到已消失的卡片。 */
 function refreshPetInPlace(prevCount, nextCount, done) {
+  if (CFG.petMode === 'patrick') {
+    // 派大星:词变了推送新词表(气泡/朗读目标立即更新),无命中网格无需重开。
+    pushPatrickCmd({ cmd: 'words', words: petWordsForPatrick(), keys: currentPetKeys(), exampleLines: petWordsForPatrick().map(x => x.example).filter(Boolean) });
+    return renderPetPng(resolvePetSize().w, resolvePetSize().h, done);   // 同步壁纸词源照旧
+  }
   const { w, h } = resolvePetSize();
   if (!petVisible || !petChild) return renderPetPng(w, h, done);
   if (typeof nextCount === 'number' && nextCount !== prevCount) {
@@ -2107,7 +5282,7 @@ function runAdvance(dir) {
   // 种子根本不参与选词 → 签名不变 → pushWallpaper 短路 → 热键/菜单点了毫无反应。
   // 翻页语义与网页「换一组」按钮完全一致;同步开启时壁纸跟着换;小词灵没开
   // (或已关闭)时退回旧的种子推进,至少壁纸要换一组。
-  if (petVisible && petChild && CFG.petEnabled) {
+  if ((petVisible || patrickVisible) && (petChild || patrickChild) && CFG.petEnabled) {
     const prevCount = petFirstPassWords().length;
     navigatePetPage(dir);
     syncWallpaperToPet();
@@ -2117,7 +5292,7 @@ function runAdvance(dir) {
   if (petWallpaperTimer) { clearTimeout(petWallpaperTimer); petWallpaperTimer = null; }
   advancing = true;
   pushWallpaper(() => {
-    if (!petVisible || !petChild) startPet();
+    if (!petVisible && !patrickVisible) startPet();
     else refreshPetInPlace(petWords.length, petFirstPassWords().length);
     finishWallpaperJob();
   });
@@ -2219,15 +5394,19 @@ function serveStatic(req, res, pathname) {
   if (decoded.includes('\0') || decoded.includes('\\')) { res.writeHead(404); res.end('Not Found'); return; }
   if (decoded === '/') decoded = '/index.html';
   const segments = decoded.split('/').filter(Boolean);
-  const direct = segments.length === 1 && segments[0] === 'index.html';
+  // 根目录只放行白名单里的页面:站点首页 + AI 对话浮窗(WebView 加载)。
+  const ROOT_PAGES = ['index.html', 'pet-chat.html', 'pet-sentence.html'];
+  const direct = segments.length === 1 && ROOT_PAGES.includes(segments[0]);
   const allowed = segments.length >= 2 && ['css', 'js', 'data'].includes(segments[0])
     && !segments.some(segment => segment === '.' || segment === '..' || segment.startsWith('.'));
   if (!direct && !allowed) { res.writeHead(404); res.end('Not Found'); return; }
   const file = path.resolve(ROOT, '.' + decoded);
   const allowedRoot = direct ? ROOT : path.resolve(ROOT, segments[0]);
-  if (file !== path.join(ROOT, 'index.html') && !file.startsWith(allowedRoot + path.sep)) { res.writeHead(404); res.end('Not Found'); return; }
+  const rootPage = direct ? path.join(ROOT, segments[0]) : null;
+  if (file !== rootPage && !file.startsWith(allowedRoot + path.sep)) { res.writeHead(404); res.end('Not Found'); return; }
   const ext = path.extname(file).toLowerCase();
-  const allowedExt = segments[0] === 'css' ? ['.css', '.woff', '.woff2', '.png', '.svg']
+  const allowedExt = direct ? ['.html']
+    : segments[0] === 'css' ? ['.css', '.woff', '.woff2', '.png', '.svg']
     : segments[0] === 'js' ? ['.js'] : segments[0] === 'data' ? ['.json'] : ['.html'];
   if (!allowedExt.includes(ext)) { res.writeHead(404); res.end('Not Found'); return; }
   fs.readFile(file, (err, data) => {
@@ -2339,6 +5518,7 @@ const server = http.createServer((req, res) => {
   if (url === '/pet-sync.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    syncQuizUser(req);
     return readBody(req, body => {
       let payload;
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'invalid json' })); }
@@ -2414,7 +5594,8 @@ const server = http.createServer((req, res) => {
       const result = { ok: true, library, uiTheme: CFG.uiTheme, page: deck.index + 1, words: deck.pages[deck.index].words.length, wordEpoch: state.petWordEpoch };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
-      if (petVisible && (changedLibrary || changedWebOrigin || changedPageKeys || changedTransition || payload.refresh === true)) startPet();
+      if ((petVisible || patrickVisible) && (changedLibrary || changedWebOrigin || changedPageKeys || changedTransition || payload.refresh === true)) startPet();
+      else if (patrickVisible && (changedPageKeys || changedLibrary)) pushPatrickCmd({ cmd: 'words', words: petWordsForPatrick(), keys: currentPetKeys(), exampleLines: petWordsForPatrick().map(x => x.example).filter(Boolean) });
       else if (petVisible && changedUITheme) {
         const size = resolvePetSize();
         renderPetPng(size.w, size.h);
@@ -2469,11 +5650,594 @@ const server = http.createServer((req, res) => {
     const firstId = state.petMemoryEvents.length ? state.petMemoryEvents[0].id : (state.petMemorySeq || 0) + 1;
     const lastId = state.petMemorySeq || 0;
     const reset = stream !== state.petMemoryStreamId || after > lastId || (after > 0 && after < firstId - 1);
-    const events = reset ? [] : state.petMemoryEvents.filter(event => event.id > after);
+    // reset 时也回传事件(after=0 首拉 = 全量):快照只含首轮 learned,quiz/复习事件
+    // 不在其中 —— 丢了它们网页记忆本就漏记抽查结果。app 端 snapshot.concat(events) 已幂等。
+    const events = state.petMemoryEvents.filter(event => event.id > after);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ streamId: state.petMemoryStreamId, firstId, lastId, reset, events, snapshot: reset ? learnedSnapshot() : undefined }));
   }
   // 网页轮询：小词灵「当前页词」+ 代际。点词/翻页/补位 bump epoch，网页据此对齐预览。
+  // 派大星:点击朗读(index=当前页词下标)。仅本机回环可触发。
+  if (url === '/pet-speak.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    let index = 0;
+    try { const q = new URL(req.url, 'http://localhost').searchParams; index = parseInt(q.get('i') || '0', 10) || 0; } catch {}
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      if (payload.clear) ttsClear();     // 切词:丢掉之前排队的朗读
+      patrickSpeakWord(index);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, queued: ttsQueue.length }));
+    });
+  }
+  // 开关 AI 对话浮窗(点击派大星 / 菜单栏 / 网页都能调)
+  if (url === '/pet-chat-window.php') {
+    console.error('[companion] chat-window 请求到达:', req.url);
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    let action = 'toggle';
+    try { action = new URL(req.url, 'http://localhost').searchParams.get('action') || 'toggle'; } catch {}
+    if (action === 'close') { stopChatWindow(); res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, open: false })); }
+    if (action === 'open') {
+      const r = startChatWindow();
+      console.error('[companion] startChatWindow ->', JSON.stringify(r));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(Object.assign({ open: true }, r)));
+    }
+    if (chatWinChild) { stopChatWindow(); res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, open: false })); }
+    const r = startChatWindow();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(Object.assign({ open: true }, r)));
+  }
+  // 抽查卡真正滑入上屏 → 这时才朗读考题词(只有这一个词,其它一律不响)。
+  if (url === '/pet-quiz-shown.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    const q = patrickQuizState;
+    if (!q || !patrickVisible) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, spoken: false })); }
+    const word = q.word.word;
+    // 到点播报:先让派大星喊一句「该复习了」,再念考题词(卡片此刻正印着它)。
+    // 用户要的「到点了直接弹出来 + 播报」就是这条。
+    pushPatrickCmd({ cmd: 'bubble', lines: [{ text: '⏰ 到点啦，考你一个词～', size: 11, bold: true }], ms: 3200 });
+    playSfx('correct');
+    // 卡片已上屏 → 现在正是出声的时刻。先确保音频就绪(命中缓存则同步返回),
+    // 就绪后立刻入队;ttsSpeak 会直接从缓存 afplay,音画同步。
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, spoken: true, word }));
+    ttsPrewarm(word, () => {
+      if (!patrickQuizState || patrickQuizState.word !== q.word) return;   // 已作答/换题
+      ttsQueue.length = 0;   // 队列里只许有它
+      ttsEnqueue([{ text: word, voice: PATRICK_TTS.enVoice, rate: PATRICK_TTS.enRate }], { allow: [word] });
+    });
+    return;
+  }
+  // 造句练习:开/关小窗;取当前考题词(网页用它渲染标题);提交句子交给 DeepSeek 批改。
+  if (url === '/pet-sentence-window.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    let action = 'toggle';
+    try { action = new URL(req.url, 'http://localhost').searchParams.get('action') || 'toggle'; } catch {}
+    if (action === 'close') { stopSentenceWindow(); res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, open: false })); }
+    // 只有刚作答过的题才能造句(还没答题 → 没有题可造)
+    const lq = state.lastQuiz;
+    if (!lq || !lq.word) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, open: false, error: '还没有答过题' }));
+    }
+    if (action === 'open' || (action === 'toggle' && !sentenceWinChild)) {
+      // 造句期间卡片要留在屏上当参考,而且绝不能出下一题。
+      quizResultUntil = 0;          // 卡片不再按 8s 计时撤除(改由关窗流程处理)
+      // 先立刻 spawn 窗口(感知优先);输入法切换并行做 —— 两次 osascript 启动
+      // 各花 300–800ms,放在窗口前会白白挡住开窗。
+      const r = startSentenceWindow();
+      if (!imeRestoreTo) {
+        currentInputSource(cur => { imeRestoreTo = cur || ''; });
+        selectInputSource(EN_INPUT_SOURCE);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(Object.assign({ open: true, word: lq.word }, r)));
+    }
+    stopSentenceWindow();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, open: false }));
+  }
+  // 造句窗请求把输入法切成英文(页面 focus 时调用)。只切英文,不负责切回 ——
+  // 切回由关窗流程统一处理,避免页面反复调用来回跳。
+  if (url === '/pet-ime.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    let lang = 'en';
+    try { lang = new URL(req.url, 'http://localhost').searchParams.get('lang') || 'en'; } catch {}
+    if (!imeRestoreTo) currentInputSource(cur => { imeRestoreTo = cur || ''; });
+    if (lang === 'en') selectInputSource(EN_INPUT_SOURCE);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, lang }));
+  }
+  /* 目标达成庆祝:派大星连跳+撒星星+欢呼音效。网页达标打卡时调。 */
+  if (url === '/pet-celebrate.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    if (patrickVisible) {
+      pushPatrickCmd({ cmd: 'celebrate', ms: 3500 });
+      playSfx('correct');     // Glass + Hero,清脆的胜利感
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, celebrated: patrickVisible }));
+  }
+  /* 造句错题集:列表(GET) / 标星、删除、备注(POST) / 导出(md|json)。
+   * 只收「有值得整理之处」的句子(非满分或没用上词),满分不入库。 */
+  if (url === '/pet-sentence-notes.json') {
+    const kind = (() => { try { return new URL(req.url, 'http://localhost').searchParams.get('kind') || ''; } catch { return ''; } })();
+    let notes = state.sentenceNotes || [];
+    if (kind) notes = notes.filter(n => n.kind === kind);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: true, notes, total: (state.sentenceNotes || []).length }));
+  }
+  if (url === '/pet-sentence-notes.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      const reply = (obj) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      const list = state.sentenceNotes || (state.sentenceNotes = []);
+      const id = Number(payload.id) || 0;
+      const note = list.find(n => Number(n.id) === id);
+      if (payload.action === 'star') {
+        if (!note) return reply({ ok: false, error: '条目不存在' });
+        note.starred = payload.starred === undefined ? !note.starred : Boolean(payload.starred);
+        saveState();
+        return reply({ ok: true, id: note.id, starred: note.starred });
+      }
+      if (payload.action === 'delete') {
+        const idx = list.findIndex(n => Number(n.id) === id);
+        if (idx < 0) return reply({ ok: false, error: '条目不存在' });
+        list.splice(idx, 1);
+        saveState();
+        return reply({ ok: true });
+      }
+      if (payload.action === 'note') {
+        if (!note) return reply({ ok: false, error: '条目不存在' });
+        note.memo = String(payload.memo || '').slice(0, 500);
+        saveState();
+        return reply({ ok: true, id: note.id, memo: note.memo });
+      }
+      return reply({ ok: false, error: 'action must be star|delete|note' });
+    });
+  }
+  /* 错题集导出:md(整理成复习清单) / json(可再处理)。默认全部,?kind= 过滤,?starred=1 只要星标。 */
+  if (url === '/pet-sentence-notes-export') {
+    let kind = '', starredOnly = false, format = 'md';
+    try {
+      const q = new URL(req.url, 'http://localhost').searchParams;
+      kind = q.get('kind') || '';
+      starredOnly = q.get('starred') === '1';
+      format = (q.get('format') || 'md').toLowerCase();
+    } catch {}
+    let notes = (state.sentenceNotes || []).slice();
+    if (kind) notes = notes.filter(n => n.kind === kind);
+    if (starredOnly) notes = notes.filter(n => n.starred);
+    notes.sort((a, b) => (b.at || 0) - (a.at || 0));
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'json') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="wordpaper-sentence-notes-${stamp}.json"`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(JSON.stringify({ format: 'wordpaper-sentence-notes', schemaVersion: 1, exportedAt: new Date().toISOString(), notes }, null, 2));
+    }
+    const KIND_LABEL = { error: '❌ 用法/语法问题', awkward: '⚠️ 不够地道', unused: '🚫 没用上这个词' };
+    const lines = ['# 造句错题集', '', `> 导出于 ${new Date().toLocaleString('zh-CN')} · 共 ${notes.length} 条`, ''];
+    notes.forEach((n, i) => {
+      const when = n.at ? new Date(n.at).toLocaleString('zh-CN') : '';
+      lines.push(`## ${i + 1}. ${n.word}${n.starred ? ' ⭐' : ''}`);
+      lines.push('');
+      lines.push(`- ${KIND_LABEL[n.kind] || n.kind}${n.score ? ` · ${n.score}/5` : ''} · ${when}`);
+      if (n.meaning) lines.push(`- 释义：${n.pos ? n.pos + ' ' : ''}${n.meaning}`);
+      lines.push('');
+      lines.push(`**我写的**：${n.mine}`);
+      if (n.fixed) lines.push(`**改成**：${n.fixed}`);
+      if (n.feedback) lines.push(`**点评**：${n.feedback}`);
+      if (n.example) lines.push(`**例句**：${n.example.replace(/\n/g, ' / ')}`);
+      if (n.memo) lines.push(`**我的笔记**：${n.memo}`);
+      lines.push('');
+    });
+    res.writeHead(200, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="wordpaper-sentence-notes-${stamp}.md"`,
+      'Cache-Control': 'no-store',
+    });
+    res.end(lines.join('\n'));
+    return;
+  }
+  // 造句窗的数据源:当前词 + 本次对错
+  if (url === '/pet-sentence.json') {
+    const lq = state.lastQuiz || null;
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: !!lq, quiz: lq }));
+  }
+  // 提交造句 → DeepSeek 批改。返回 { ok, feedback, fixed, score }。
+  if (url === '/pet-sentence.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      const lq = state.lastQuiz || {};
+      const word = String(lq.word || '');
+      const sentence = String(payload.sentence || '').trim();
+      if (!word) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '还没有答过题' })); }
+      if (!sentence) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '句子是空的' })); }
+      if (sentence.length > 400) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '句子太长了（400 字符以内）' })); }
+      // 要求模型只回 JSON,前端好解析;判分维度固定,方便稳定显示。
+      const prompt = [
+        '你是英语老师,学生在用单词「' + word + '」(' + (lq.meaning || '') + ')造句子。',
+        '请批改这句:' + sentence,
+        '',
+        '只回一个 JSON 对象,不要任何解释文字、不要 Markdown 代码块,格式:',
+        '{"ok": true, "score": 1-5 的整数, "used": 学生是否真的用了这个词(true/false),',
+        ' "fixed": "改好的自然英文句子", "feedback": "一两句中文点评,指出问题并说怎么改",',
+        ' "example": "再用这个词造一个新的英文例句(不要和学生写的一样),中文翻译另起一行" }',
+        '判断标准:语法是否正确、这个词用得是否地道、句子是否自然。如果学生用了别的形式(如复数/时态变化)也算 used=true。',
+      ].join(String.fromCharCode(10));
+      askMagpie(prompt, reply => {
+        const text = String(reply || '').trim();
+        if (!text) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, error: 'DeepSeek 没有回应（可能被限流，稍后再试）' }));
+        }
+        // 模型有时会包 ```json ``` 或加前后缀 → 截取第一个 { 到最后一个 }
+        let parsed = null;
+        try {
+          const a = text.indexOf('{'), b = text.lastIndexOf('}');
+          if (a >= 0 && b > a) parsed = JSON.parse(text.slice(a, b + 1));
+        } catch {}
+        const score = parsed && Number.isFinite(Number(parsed.score)) ? Math.max(1, Math.min(5, Math.round(Number(parsed.score)))) : null;
+        // 例句:先用本地词典里这个词的原句(离线、可靠),再补模型新造的一句。
+        let dictExample = '';
+        try {
+          const ex = exampleForWord(lq.library || CFG.library, { word });
+          if (ex && ex.en) dictExample = ex.zh ? ex.en + '\n' + ex.zh : ex.en;
+        } catch {}
+        const modelExample = parsed && parsed.example ? String(parsed.example).trim() : '';
+        const result = {
+          ok: true, word, sentence,
+          used: parsed ? parsed.used !== false : null,
+          score,
+          fixed: parsed && parsed.fixed ? String(parsed.fixed) : '',
+          feedback: parsed && parsed.feedback ? String(parsed.feedback) : text,
+          // 例句给两条:词典原句(权威)+ DeepSeek 新造(贴近当前语境)
+          example: dictExample || modelExample,
+          example2: dictExample && modelExample ? modelExample : '',
+        };
+        // 自动收录到「造句错题集」:只要这次不是满分(有错 / 不够地道 / 没用上词),
+        // 就把原句、改好的句子、点评、例句一起存起来,方便日后集中复习。
+        // 满分的不收录(没有值得整理的点),避免错题集被冲淡。
+        const noteworthy = (score != null && score < 5) || result.used === false;
+        if (noteworthy) {
+          state.sentenceNoteSeq = Math.max(0, Number(state.sentenceNoteSeq) || 0) + 1;
+          state.sentenceNotes.unshift({
+            id: state.sentenceNoteSeq,
+            at: Date.now(),
+            word,
+            meaning: lq.meaning || '',
+            pos: lq.pos || '',
+            library: lq.library || CFG.library,
+            // 1 = 语法/用法错误(type: 'error'),2~4 = 不够地道('awkward'),未用上词('unused')
+            kind: result.used === false ? 'unused' : (score <= 2 ? 'error' : 'awkward'),
+            score,
+            used: result.used,
+            mine: sentence,
+            fixed: result.fixed || '',
+            feedback: result.feedback || '',
+            example: result.example || '',
+            example2: result.example2 || '',
+            starred: false,
+          });
+          // 上限 500 条,超出丢最旧的;星标的不参与淘汰
+          if (state.sentenceNotes.length > 500) {
+            const starred = state.sentenceNotes.filter(n => n.starred);
+            const rest = state.sentenceNotes.filter(n => !n.starred).slice(0, Math.max(0, 500 - starred.length));
+            state.sentenceNotes = rest.concat(starred).sort((a, b) => b.at - a.at);
+          }
+          saveState();
+        }
+        // 记进事件流,网页记忆本能看到「造句」这条练习记录。
+        state.petMemorySeq = Math.max(0, Number(state.petMemorySeq) || 0) + 1;
+        state.petMemoryEvents.push({
+          id: state.petMemorySeq, at: Date.now(), library: lq.library || CFG.library,
+          word: { word, meaning: lq.meaning || '' }, action: 'sentence',
+          score, sentence: sentence.slice(0, 200), correct: null, page: 0, refilled: false,
+        });
+        state.petMemoryEvents = state.petMemoryEvents.slice(-160);
+        saveState();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+    });
+  }
+  // 多轮 AI 对话(常驻浮窗用)
+  if (url === '/pet-chat.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      if (payload.reset) {
+        const sess = activeChatSession(false);
+        if (sess) { sess.messages = []; sess.updatedAt = Date.now(); saveState(); }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, reset: true }));
+      }
+      const msg = String(payload.message || '').trim();
+      if (!msg) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'empty message' })); }
+      chatWithMagpie(msg, (reply, err) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(reply ? { ok: true, reply } : { ok: false, error: err || 'no-reply' }));
+      });
+    });
+  }
+  // 对话历史(浮窗打开时回填)
+  if (url === '/pet-chat-history.json') {
+    // 可选 ?session=<id> 取指定会话;不带则取当前会话。
+    let wantId = '';
+    try { wantId = new URL(req.url, 'http://localhost').searchParams.get('session') || ''; } catch {}
+    const list = chatSessions();
+    let sess = wantId ? list.find(x => x.id === wantId) : activeChatSession(false);
+    // 会话被删/不存在 → 退回最近更新的那个
+    if (!sess && list.length) sess = list.slice().sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))[0];
+    if (sess && sess.id !== state.chatSessionId) { state.chatSessionId = sess.id; saveState(); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({
+      ok: true,
+      sessionId: sess ? sess.id : '',
+      sessionTitle: sess ? (sess.title || chatTitleFrom(sess.messages)) : '',
+      history: sess && Array.isArray(sess.messages) ? sess.messages : [],
+      sessions: list.slice()
+        .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+        .map(chatSessionSummary),
+      // 提问建议:按当前页的词生成(点一下就填进输入框,省得自己组织问题)
+      suggestions: chatSuggestions(),
+    }));
+  }
+  /* 对话管理:新建 / 切换 / 重命名 / 删除 / 导出。全部仅本机回环 + Origin 校验。 */
+  if (url === '/pet-chat-session.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      const action = String(payload.action || '');
+      const list = chatSessions();
+      const reply = (obj) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+
+      if (action === 'new') {
+        // 必须**新建**一条,不能复用当前会话:复用会把正在聊的内容清空
+        // (用户点「新对话」的预期是并存,不是销毁旧对话)。
+        // 例外:当前会话本来就是空的新对话 → 直接复用它,避免刷出一堆空条目。
+        const cur = activeChatSession(false);
+        if (cur && Array.isArray(cur.messages) && cur.messages.length === 0) {
+          cur.title = '新对话';
+          cur.createdAt = cur.updatedAt = Date.now();
+          state.chatSessionId = cur.id;
+          saveState();
+          return reply({ ok: true, sessionId: cur.id, sessions: list.map(chatSessionSummary), reused: true });
+        }
+        const sess = {
+          id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          title: '新对话', createdAt: Date.now(), updatedAt: Date.now(), messages: [],
+        };
+        list.push(sess);
+        state.chatSessionId = sess.id;
+        trimChatSessions();
+        saveState();
+        return reply({ ok: true, sessionId: sess.id, sessions: list.map(chatSessionSummary) });
+      }
+      if (action === 'select') {
+        const id = String(payload.id || '');
+        const sess = list.find(x => x.id === id);
+        if (!sess) return reply({ ok: false, error: '会话不存在' });
+        state.chatSessionId = id;
+        saveState();
+        return reply({ ok: true, sessionId: id, sessionTitle: sess.title || chatTitleFrom(sess.messages), history: sess.messages || [] });
+      }
+      if (action === 'rename') {
+        const sess = list.find(x => x.id === String(payload.id || ''));
+        if (!sess) return reply({ ok: false, error: '会话不存在' });
+        const title = String(payload.title || '').trim().slice(0, 60);
+        if (!title) return reply({ ok: false, error: '标题不能为空' });
+        sess.title = title;
+        sess.updatedAt = Date.now();
+        saveState();
+        return reply({ ok: true, id: sess.id, title });
+      }
+      if (action === 'delete') {
+        const id = String(payload.id || '');
+        const idx = list.findIndex(x => x.id === id);
+        if (idx < 0) return reply({ ok: false, error: '会话不存在' });
+        list.splice(idx, 1);
+        if (state.chatSessionId === id) {
+          const next = list.slice().sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))[0];
+          state.chatSessionId = next ? next.id : '';
+        }
+        saveState();
+        return reply({ ok: true, sessions: list.map(chatSessionSummary), sessionId: state.chatSessionId || '' });
+      }
+      if (action === 'clear') {
+        // 只清空当前会话的消息,保留会话本身(等价于「清屏重来」)
+        const sess = activeChatSession(false);
+        if (sess) { sess.messages = []; sess.updatedAt = Date.now(); saveState(); }
+        return reply({ ok: true });
+      }
+      return reply({ ok: false, error: 'action must be new|select|rename|delete|clear' });
+    });
+  }
+  /* 导出对话:md(默认,好读)或 json(完整)。?id=<sessionId> 导单个,不带导全部。 */
+  if (url === '/pet-chat-export') {
+    const list = chatSessions();
+    let wantId = '', format = 'md';
+    try {
+      const q = new URL(req.url, 'http://localhost').searchParams;
+      wantId = q.get('id') || '';
+      format = (q.get('format') || 'md').toLowerCase();
+    } catch {}
+    const picked = wantId ? list.filter(x => x.id === wantId) : list.slice().sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+    if (!picked.length) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: '没有可导出的对话' })); }
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'json') {
+      const data = { format: 'wordpaper-chat', schemaVersion: 1, exportedAt: new Date().toISOString(), sessions: picked };
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="wordpaper-chat-${stamp}.json"`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(JSON.stringify(data, null, 2));
+    }
+    const md = chatExportMarkdown(picked);
+    res.writeHead(200, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="wordpaper-chat-${stamp}.md"`,
+      'Cache-Control': 'no-store',
+    });
+    res.end(md);
+    return;
+  }
+  // 问 DeepSeek(本地 magpie)一个关于当前词的问题,回答显示在气泡里
+  if (url === '/pet-ask.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      const words = petFirstPassWords();
+      const word = payload.word || (words[payload.index || 0] && words[payload.index || 0].word) || '';
+      if (payload.clear) ttsClear();     // 提问时别再念旧词
+      const question = String(payload.question || '').trim()
+        || (word ? `用简单的话讲讲 "${word}" 这个词,怎么记、常见搭配是什么` : '');
+      if (!question) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'empty question' })); }
+      askMagpie(question, answer => {
+        const text = String(answer || '').trim();
+        if (text) {
+          answerCardState = { word, answer: text, at: Date.now() };
+          renderAnswerCard();
+          pushPatrickCmd({ cmd: 'answer-card', ms: 15000 });
+          // 不再自动朗读:用户没要求,且容易和卡片上的词不一致。
+        } else {
+          pushPatrickCmd({ cmd: 'bubble', lines: [{ text: '派大星想不出来…网络不太好', size: 11 }], ms: 6000 });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: Boolean(text), answer: text, word }));
+      });
+    });
+  }
+  // 形态切换:card ⇄ patrick(卡片 ⭐ / 派大星菜单 / 网页 / 菜单栏共用)
+  if (url === '/pet-mode.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    let mode = '';
+    try { mode = new URL(req.url, 'http://localhost').searchParams.get('mode') || ''; } catch {}
+    if (!PET_MODES.has(mode)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'mode must be card|patrick' })); }
+    // 同步 POST:切换完成(窗口已重建)才返回,调用方(旧窗口)随后自毁不闪烁。
+    setPetMode(mode, (err) => {
+      res.writeHead(err ? 500 : 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(err ? { ok: false } : { ok: true, mode: CFG.petMode }));
+    });
+    return;
+  }
+  // 派大星窗轮询:新命令(seq 之后) + 当前页词快照
+  if (url === '/pet-patrick.json') {
+    let after = 0;
+    try { after = Math.max(0, parseInt(new URL(req.url, 'http://localhost').searchParams.get('after') || '0', 10) || 0); } catch {}
+    const commands = patrickCmds.filter(c => c.seq > after);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    // quizGeom:当前抽查卡的点击命中区(按内容算的),子窗拿它调窗口高 + 做行命中。
+    return res.end(JSON.stringify({ ok: true, seq: patrickCmdSeq, commands, quizGeom: (displayedQuiz && displayedQuiz.geom) || null }));
+  }
+  // 抽查:网页把到期词推来 → 派大星弹 4 选 1 抽查卡;作答落回 petMemoryEvents。
+  if (url === '/pet-quiz.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload;
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch { res.writeHead(400); return res.end(JSON.stringify({ ok: false, error: 'invalid json' })); }
+      const action = String(payload.action || '');
+      if (payload.quizId && action !== 'offer' && (!displayedQuiz || payload.quizId !== displayedQuiz.id)) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: 'stale-quiz' }));
+      }
+      if (action === 'offer') {
+        if (!featureOn('betaPetQuiz')) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, offered: false, reason: 'feature-off' })); }
+        syncQuizUser(req);
+        const library = String(payload.library || CFG.library);
+        let words = Array.isArray(payload.words) ? payload.words.filter(w => w && w.word && w.meaning) : [];
+        let userId = null;
+        const db = openSrsDb();
+        try {
+          userId = db && activeUserId(db);
+          if (userId) {
+            words = refreshQuizCandidates(db, userId, library, words);
+          }
+        } finally { if (db) db.close(); }
+        if (!words.length) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, offered: false, reason: 'no-due-words' })); }
+        const quizGateOpen = patrickVisible || process.env.WORDPAPER_TEST_MODE === '1';
+        if (CFG.petMode !== 'patrick' || !quizGateOpen) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, offered: false, reason: 'patrick-not-visible' })); }
+        if (patrickQuizState && patrickQuizState.category !== 'review' && words.some(isQuizReviewDue) && !sentenceWinChild) {
+          clearQuizCard(); pendingQuiz = null;
+        }
+        // 忙(已有题/正在看结果/正在造句)→ 排队,别打断用户;空了立刻补出。
+        const busy = quizBusyReason();
+        if (busy) {
+          queueQuiz(words.slice(0, 8), library, userId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: true, offered: false, queued: true, reason: busy }));
+        }
+        const offered = offerQuiz(words.slice(0, 8), library, userId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, offered, word: patrickQuizState && patrickQuizState.word.word }));
+      }
+      if (action === 'expand' || action === 'collapse') {
+        const q = displayedQuiz;
+        if (!q) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'no-quiz' })); }
+        q.expand = action === 'expand';
+        // Once the user reads a result's full text, leave it until Next/Sentence.
+        if (q.pickedIndex >= 0) { q.hold = true; quizResultUntil = Number.MAX_SAFE_INTEGER; }
+        renderQuizCard();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, expanded: q.expand }));
+      }
+      if (action === 'answer') {
+        const picked = typeof payload.picked === 'number' ? payload.picked : -1;
+        return answerQuiz(picked, res);
+      }
+      // 「下一个」:不造句,收掉卡片。若队列里有题就出;没有则等下一次抽查节拍。
+      if (action === 'skip') {
+        clearQuizCard();
+        quizResultUntil = 0;
+        ttsStopNow();
+        try { fs.unlinkSync(CARD_PNG.quiz); } catch {}
+        pushPatrickCmd({ cmd: 'quiz-end', lines: [{ text: '好，下一个～', size: 11 }] });
+        // 稍等一下再出下一题,让撤卡动画走完
+        setTimeout(() => { if (!flushPendingQuiz()) autoQuizTick(); }, 700).unref?.();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, skipped: true, queue: quizQueueState() }));
+      }
+      if (action === 'dismiss') {
+        clearQuizCard();
+        pendingQuiz = null;
+        quizResultUntil = 0;
+        ttsStopNow();   // 题目撤了,这个词就"看不见"了 → 立刻停止朗读
+        try { fs.unlinkSync(CARD_PNG.quiz); } catch {}
+        pushPatrickCmd({ cmd: 'quiz-end', lines: [{ text: '下次再考你', size: 11 }] });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'action must be offer|answer|dismiss' }));
+    });
+  }
   if (url === '/pet-current.json') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({
@@ -2514,10 +6278,12 @@ const server = http.createServer((req, res) => {
     }
     if (action === 'close') {
       try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}
-      stopPet();
+      stopPetAll();
       return res.end(JSON.stringify({ ok: true, pet: false }));
     }
-    return res.end(JSON.stringify({ ok: true, pet: petVisible }));
+    if (action === 'card') { setPetMode('card'); return res.end(JSON.stringify({ ok: true, pet: petVisible, mode: 'card' })); }
+    if (action === 'patrick') { setPetMode('patrick'); return res.end(JSON.stringify({ ok: true, pet: patrickVisible, mode: 'patrick' })); }
+    return res.end(JSON.stringify({ ok: true, pet: petVisible || patrickVisible, mode: CFG.petMode || 'card' }));
   }
 
   // live re-render during a resize drag: render PNG at the new size and respond
@@ -2561,12 +6327,45 @@ const server = http.createServer((req, res) => {
     return done();
   }
 
+  /* 桌面词的复习状态:每个当前页词标注「新词(还没背第一遍)」或
+   * 「倒计时中(SRS 已有记录,还差多久到期)」。派大星悬停气泡用。 */
+  if (url === '/pet-word-status.json') {
+    let srsIndex = new Map();   // word.word(lower) → {stage, due}
+    try {
+      const db = openSrsDb();
+      const userId = db && activeUserId(db);
+      if (db && userId) {
+        const libState = readReviewState(db, userId)[CFG.library];
+        Object.values((libState && libState.words) || {}).forEach(item => {
+          if (item && item.word && item.word.word) srsIndex.set(String(item.word.word).toLowerCase(), item);
+        });
+      }
+      try { if (db) db.close(); } catch {}
+    } catch {}
+    const now = Date.now();
+    const words = petFirstPassWords().map(w => {
+      const rec = srsIndex.get(String(w.word || '').toLowerCase());
+      if (!rec) return { word: w.word, kind: 'new' };
+      const due = Number(rec.due) || 0;
+      if ((Number(rec.stage) || 0) >= SRS_INTERVALS_MIN.length) return { word: w.word, kind: 'mastered' };
+      if (!due || due <= now) return { word: w.word, kind: 'due', stage: Number(rec.stage) || 0 };
+      return { word: w.word, kind: 'countdown', stage: Number(rec.stage) || 0, dueInMs: due - now };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: true, words }));
+  }
   // status endpoint
   if (url === '/status.json') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ mac: isMac, config: CFG, pet: petVisible, hotkey: hotkeyStatus(), menuBar: Boolean(menuBarChild) }));
+    return res.end(JSON.stringify({ mac: isMac, config: CFG, pet: petVisible || patrickVisible, petMode: CFG.petMode || 'card', hotkey: hotkeyStatus(), menuBar: Boolean(menuBarChild), quizQueue: quizQueueState() }));
   }
 
+  /* /api/export/* 转发给主服务。
+   * 页面既可能由主服务(8770)提供,也可能由伴侣自己(8771)提供;伴侣不实现业务 API,
+   * 但用户的会话 cookie 在主服务上 —— 原样透传 Cookie/Content-Disposition 即可。 */
+  if (url.startsWith('/api/export/')) {
+    return proxyToMainApi(req, res);
+  }
   // 菜单栏图标的数据源(JXA 子进程 10s 拉一次;密钥头防其它本机进程干扰显示)
   if (url === '/menu-status.json') {
     if (req.headers['x-wordpaper-local'] !== '1') { res.writeHead(403); return res.end(); }
@@ -2631,10 +6430,12 @@ server.listen(CFG.port, '127.0.0.1', () => {
       try { fs.unlinkSync(PET_CLOSED_PATH); } catch {} // ✕ 关闭只对本次运行有效，重启伴侣恢复
       startPet();
       setInterval(() => {
-        if (!petVisible || !petChild) startPet();
+        if (!petVisible && !patrickVisible) startPet();
         else refreshPetInPlace(petWords.length, petFirstPassWords().length);
       }, Math.max(5, CFG.intervalMinutes) * 60000);
     }
+    // 自主抽查:伴侣自己读 SRS 库出题,不需要浏览器(独立 App 的核心能力)
+    if (CFG.quizAutoStart !== false) startAutoQuiz();
     // global hotkey listener (independent of the pet; survives pet ✕ close)
     startHotkey();
     // menu bar status item:「App 在跑」的可见指示 + 召唤/退出/更新入口。

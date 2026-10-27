@@ -47,7 +47,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
       }),
     });
     if (r.status !== 200) throw new Error('pet-sync failed: ' + r.status);
-    const petPng = path.join(os.tmpdir(), 'dw_pet.png');
+    const petPng = path.join(os.tmpdir(), `dw_pet-${child.pid}.png`);
     try { fs.unlinkSync(petPng); } catch {}
     r = await fetch(base + '/pet-render.php?w=330&h=520');
     if (!r.ok) throw new Error('pet-render failed');

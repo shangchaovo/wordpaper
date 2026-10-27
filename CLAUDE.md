@@ -2,9 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成手机/电脑壁纸的多用户 Web 工具。浏览器仍是无构建的经典脚本 + canvas；`server.js` 同时提供账号认证、同源 API 和 SQLite 持久化。localStorage 只是按用户分区的缓存，服务端数据库才是权威数据源。
+WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成**电脑桌面**壁纸的多用户 Web 工具（不面向手机：尺寸档只有桌面/平板，默认 1920×1080）。浏览器仍是无构建的经典脚本 + canvas；`server.js` 同时提供账号认证、同源 API 和 SQLite 持久化。localStorage 只是按用户分区的缓存，服务端数据库才是权威数据源。
 
 **V3 现状**（2026-08）：12 个内置词库（2 日语 JLPT 开放词表 + 8 个 ECDICT 分级库每库 1500–3000 核心词 + 法语 1155 / 西语 1400 高频词）+ 我的词库；日期/时钟已从壁纸移除（更干净、更专注）；**整个排版可视化拖拽**——单词块/提醒块/自定义文字都能在预览上按住拖到任意位置；字体风格（黑/宋/楷/圆/粗黑）+ 文字颜色可选；界面主题 4 个（糖果/校样/Liquid/暗夜），壁纸「墨璃」暗色玻璃配色与暗夜界面联动；背景可上传**自定义照片**（cover-fit + 留白 scrim 保证可读）。
+
+**小词灵 2.0（2026-10，v2.5.0）——两种形态**：
+- **词卡形态**（原 card）：SVG 渲 PNG 的学习卡，点词记首轮，见下文「桌面伴侣 companion.js」各节。
+- **派大星形态**（patrick）：透明无边框 JXA 小窗 + 精灵图状态机。资产 `assets/patrick/sheet.png`(+flip) 由 `scripts/build_patrick_sheet.py` 从源精灵图重切（6×4 帧，FRAME_MAP 与 `companion.js` 的 `PATRICK_FRAME` 必须同步）。50ms tick 驱动 idle(眨眼/张望)/walk(8 帧循环走向随机目标)/hover(挥手+气泡)/jump/drag/quiz 状态机；`petRoam`/`petRoamInterval` 可关散步。**JXA 三个坑**：registerSubclass 返回值不可用要 `$类名.alloc`；JXA 没有 setTimeout（用 tick 时间戳）；窗口必须显式 `win.orderFrontRegardless` 否则进程活着但永不上屏。
+- **本地 TTS**：`say`（Samantha en / Tingting zh）+ `afplay`，`ttsEnqueue` 串行队列 24 条上限。**抽查期间有硬锁**：`patrickQuizState` 存在时 `ttsEnqueue` 只放行卡上被考的那个词，其余一律丢弃；出题调 `ttsStopNow()`（SIGKILL 在播的 afplay/edge-tts + 换代际作废排队中的合成）；播放由派大星窗在卡片滑入停稳后 POST `/pet-quiz-shown.php` 触发，音频经 `ttsPrewarm` 预合成到 `RUNTIME_ROOT/tts-cache/`（sha1(语音|语速|文本) 为键）以便零延迟出声；作答只放对/错音效、不念词。**只朗读屏幕上看得见的文本**：`ttsEnqueue` 用 `displayedSpeechTexts()` 守卫——当前页 6 个词 + 各自英文例句 + 屏上卡片（抽查/朗读/回答卡）印着的词；不在集合里的一律丢弃并记日志（这就是「幽灵单词朗读」的修复）。调用方可用 `opts.allow` 显式放行屏上文字，`scope:'ui'` 放行 `Nice!/Oops.` 这类反馈词。答题反馈只读英文，不读中文释义。例句来自 `data/examples_*.json`（`scripts/build_examples.py` 用 macOS 词典服务 DCSCopyTextDefinition 经 ctypes 预生成，词典头行要过滤、只留 ▸ 后的例句）。
+- **桌面抽查**：网页 45s 把 SRS 到期词推 `/pet-quiz.php`（90s 节流）→ 派大星弹 4 选 1 卡（quiz 子窗点行作答）→ 事件流 `action:'quiz'` 带回 → 网页 `Review.reviewWord` 同一条艾宾浩斯链。offer 需要 patrick 形态；TEST_MODE 放行 gate 供端点测试。
+- **形态切换**：`CFG.petMode`('card'|'patrick')，入口 = 词卡 ⭐ / 网页下拉 / 菜单栏 / `/pet-mode.php`。切换与窗口重建同步（同步 POST 返回时旧窗才消失，不闪屏）。
 
 ## Commands
 
@@ -13,6 +20,8 @@ npm start                      # 开发服务器 http://localhost:8770（端口�
 npm test                       # 账号隔离/重启持久化/安全边界 + SRS + companion 测试
 python3 scripts/e2e.py         # 端到端验证（73 项断言，自带临时数据库/账号/端口，不碰 8770）
 python3 scripts/render_v3.py   # v3 渲染验证：真渲染 PNG 到 scripts/out_v3/ 并做像素级断言
+python3 scripts/build_patrick_sheet.py  # 从源精灵图重切 assets/patrick/（换派大星皮肤时用）
+python3 scripts/build_examples.py       # 用 macOS 词典服务重生成 data/examples_*.json（重建词库后跑）
 python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json（需 /tmp/ecdict.csv）
 ```
 
@@ -62,6 +71,52 @@ python3 scripts/build_wordlibs.py  # 从 ECDICT 重新生成 data/words_*.json�
 **宠物可拉伸 / 自适应形状**：宠物窗口右下角有圆形缩放把手（`PET_RESIZE`）；拖动时实时重渲，松手把尺寸存进 `state.petSize`。词卡数每次变化会重建透明小窗，使原生命中网格与当前剩余词数一致。`buildPetSVG` 按 `W/H` 比例（`petMode()`）自动切换排列：`tall`（≤0.75）= 逐行堆叠、`square`（0.75–1.5）= 两列网格、`wide`（≥1.5）= 自适应多行网格。尺寸范围 `MIN_PET_W/H`–`MAX_PET`。
 
 **一键启用（仅 local 模式）**：网页 POST `/companion/start` 后，主服务要求请求来自「这台机器自己」（`isSameMachineRequest`：回环或本机网卡 IP）。**同机多账号共享**（2026-08-17 起）：伴侣驱动的是这台 Mac 的桌面（物理共享资源），任何登录账号在本机都能启用/控制它，不再有「切换账号」；用户间数据隔离不受影响——settings/review 等服务端状态仍按账号分命名空间，共享的只是「桌面显示什么」。`companion_owner_user_id` 仍记录首个使用者（仅信息，不再是闸门）。`public` 模式绝不在云主机 probe/spawn 8771，端点返回 404；公网用户需在自己的 Mac 安装伴侣。主 server 的 companion 端口来自 `WORDPAPER_COMPANION_PORT`，不再与应用端口自动漂移冲突。
+
+**AI 对话浮窗**（`pet-chat.html`，v2.5.1）：点击派大星 → `/pet-chat-window.php?action=toggle` → 伴侣 spawn 一个 JXA 进程，**用 WKWebView 加载 `http://127.0.0.1:<port>/pet-chat.html`**。原生 NSTextField 路线已被证伪：launchd 派生的 osascript 拿不到输入法（`IMKCFRunLoopWakeUpReliable` 报错），中文根本打不进去；把 activationPolicy 改成 Regular 又会被 SIGKILL。页面 POST `/pet-chat.php`，历史存 `state.chatHistory` 并由 `/pet-chat-history.json` 回填。**`pet-chat.html` 是根目录单文件，必须同时出现在三处 payload 清单里**（`companion.js` 的 `serveStatic` 根页白名单、`scripts/package_app.py` 的 `PAYLOAD_FILES`、`lib/updater.js` 的 `PAYLOAD_FILES`），否则独立版/自更新后浮窗 404。伴侣侧 `chatWithMagpie` 按 `magpie.json` 的 `models`/`fallbackModels` 顺序尝试，429/503 自动换下一个模型，其它错误经 `magpieErrorText()` 翻成人话回给浮窗（之前全被吞成 `empty`）。
+
+**v2.4.5→2.4.7 的坑（新功能必须规避）**：① 任何渲染到 `/tmp` 的产物都要带 `process.pid`——sips 异步、并发写同一文件会留半张空白图，两个实例还会互相覆盖（2.4.6 修过，卡片走 `CARD_PNG`）；② 宠物派生的所有窗口必须在 `stopPetAll()` 里一起收掉，否则隐藏宠物后浮窗变成幽灵窗；③ 状态开关不要无条件写时间戳（`stopSentenceWindow()` 曾因此让切形态卡住抽查 2.5s）。另外 v2.4.6 的更新失败保活 / 菜单栏 5s 状态同步与 10s 重拉 / 启动器端口复用+互斥锁、v2.4.7 的动效、ADR 0003 的 `hardExit`、端口 fail-fast 都已复核有效，改动这些区域时要跑 `npm test` + `npm run test:motion` + `python3 scripts/test_{launcher,native_lifecycle,package_update}.py`。
+
+**绝不可以在绘制期改窗口**（v2.5.17）：气泡窗懒创建 + 在 `drawBubble()` 期间 `orderFrontRegardless` → AppKit `_crashOnException` → **SIGTRAP**，派大星一启动就崩。所有子窗必须在启动时建好（隐藏），悬停只 `orderFrontRegardless`；尺寸变化先 `orderOut` → 改 frame → 再显示。`drawRect:` 内只贴图 + try/catch。另：JXA 桥**没有 `setFrame`**，要用 `setFrameDisplay`。
+
+**悬停状态气泡是 SVG 渲染卡**（v2.5.16）：伴侣侧 `buildStatusBubbleSVG()`（与抽查卡同配色）→ `sips` → `/tmp/dw_status_bubble-<pid>.png` → 派大星子窗按 mtime 轮询换图。倒计时带艾宾浩斯进度条（stage/8）。触发：`scheduleStatusBubble()`（`bumpPetWordEpoch`/SRS 写回后 2s）+ 5 分钟兜底（dueInMs 文本会过期）。`currentWordStatus()` 与 `/pet-word-status.json` 共用一套分类逻辑。
+
+**悬停气泡必须在独立窗口里画**（v2.5.15）：派大星窗口只有 190×206，气泡(宽可达 340、锚窗口顶)画在 `drawRect` 里会被整个裁掉——这就是「气泡不显示」的根因（旧词卡窗口大所以以前看得见）。气泡走 `bubbleWin`（borderless 子窗，锚派大星头顶上方，`layoutBubbleWin()` 在拖动/走路 tick 里跟随）。`mouseEntered` 事件本身没问题（最小复现已验证 tracking area 正常）。
+
+**新词 vs 倒计时词区分**（v2.5.13）：`GET /pet-word-status.json` 按 SRS 库给桌面当前页每个词标 `new/countdown/due/mastered`（键 = word 小写）。派大星悬停气泡（每 60s 拉一次缓存）分三段展示：❗ 该复习 / ⏳ 第 N 轮剩多久 / 🆕 还没背。注意 hover 气泡曾断线（`showHoverBubble` 无人调用），由 `st.hoverBubbleAt` 在 tick 里到点触发。
+
+**抽查与桌面词联动**（v2.5.12）：`offerQuiz` 优先从 `petFirstPassWords()`（桌面/小词灵当前页）过滤到期词，屏上的问完才退回全量；`answerQuiz` 作答后把该词从当前页**原位换成新词**（与 `completePetFirstPass` 同一套补位），并 `pushPatrickCmd({cmd:'words'})` + `syncWallpaperToPet()`。注意 petWordKey 是 `word|meaning`——测试里伪造的 word 对象 meaning 必须与页面词一致，否则 findIndex 不中。忘了的词 20 分钟后回来考时它已不在屏上，自然落入全量池。
+
+**srsDueWords 的 stage/due 在 item 上**（v2.5.20 踩过）：它返回 `{key, item}`，`item.word` 只是词条，**`stage`/`due` 在 `item` 本身**。只取 `item.word` 会把所有词判成新词、复习到期永远排不上队。传下去时要 `Object.assign({}, item.word, {stage, due})`。
+
+**复习到期抢占**（v2.5.20）：`autoQuizTick` 每 15s 检查——当前挂着新词卡且有复习到期词时，撤卡换复习题（仅 `pickedIndex < 0` 未作答时抢占）。卡片小旗标「⏰ 复习到期」/「🆕 桌面新词」，复习类附「第 N/8 轮 · X 后复习」。
+
+**出题优先级**（v2.5.19）：① 艾宾浩斯复习到期（`stage>0` 或 `due<=now`）**插队**优先；② 桌面当前页的新词；③ 其它到期词。气泡按类型标注「⏰ 该复习了」/「📖 学新词」。
+
+**到期即出题**（v2.5.18）：`autoQuizTick` 查到到期词就**立刻** `offerQuiz`——之前有 300s 节流，423 个到期词也要等 5 分钟才出一道。节流现在只控制「无到期词时」的空转（15s 轮询）。作答停留 `QUIZ_RESULT_DWELL_MS = 4500`。题目上屏时 push `bubble`「⏰ 到点啦」+ `playSfx('correct')` 做播报。
+
+**抽查排队机制**（v2.5.3）：`quizBusyReason()` 判定「用户正忙」——已有题在答 / 作答后卡片停留 8s（`quizResultUntil`）/ 造句窗开着（`sentenceWinChild`）/ 刚关窗 2.5s 缓冲。忙时 `offer` 与自动抽查节拍都走 `queueQuiz()` 攒队列（只留最新一批），`flushPendingQuiz()` 在空下来时补出（由逗留计时器、关窗、`skip`、每分钟节拍触发）。卡片底部两颗按钮：左「下一个」走 `action:'skip'`（700ms 后放行），右「造个句子」弹窗——不是每个词都必须造句。`/status.json` 的 `quizQueue` 暴露 `{queued, reason, sentenceOpen, resultUntil}`。
+
+**造句窗响应提速**（v2.5.11）：开窗次序 = 先 spawn 窗口、输入法切换（两次 osascript execFile）并行在后——次序反了会白等 0.6–1.6s。入场保底定时器 0.05s（entranceStarted 挡重复）。批改等待用骨架屏（shimmer 三行 + 按钮按压态），DeepSeek 限流重试可达数秒，必须有即时反馈。osascript 进程启动 ~500ms 是地板。
+
+**学习进度导入**（v2.5.5）：`POST /api/import/progress`（`{payload, dryRun}`）。`normalizeImportedReview()` 认三种格式：progress JSON（`raw` 或 `words[]` 反查 library）、`wordpaper-backup` 的 `state.review`、裸 review 对象。合并规则：stage 高者胜、`due` 取更早、计数取 max、事件按 `at|type` 去重。**dryRun 时也必须照常统计**（只是不落库），否则预览永远显示 0——这是踩过的坑。镜像模式下 409 拒绝。
+
+**多定时器竞态也是崩点**（v2.5.14）：同一窗口里多个 NSTimer（3s 存位置 + 2s 心跳）在快速开关窗口时交替重入 `$` 桥 → `objc_retain` 段错误。修法：**合并为单定时器**（位置隔次落盘），回调开头 `if (!win.isVisible) return;`——窗口关闭后完全不碰桥。
+
+**JXA bridge 重入是 SIGSEGV 来源**（v2.5.10，排查 10 例 osascript 崩溃得出）：NSTimer 高频回调里读写 `$` 桥（`win.alphaValue`、`$.getppid()` 等）会在 `objc_retain` 上撞野指针。**入场/滑入动画一律用 `win.animator.xxx`（AppKit 在 ObjC 层插值），JS 只发一次指令**；心跳里要用的系统值（getppid）启动时取一次存 JS 变量。睡眠唤醒瞬间 `NSScreen.mainScreen` 可能为 nil——JXA 里读 `screen.origin` 会抛 TypeError，`$.NSScreen.mainScreen.frame` 判空给兜底矩形；伴侣侧对「窗口连续异常退出」做指数退避（≥3 次 1s×2^n，上限 10 分钟），否则唤醒后是崩溃风暴空转整夜。
+
+**浮窗出场动效**（v2.5.7）：两个 WebView 窗都从派大星位置弹出——`alphaValue=0` 上屏 → 以派大星中心为锚偏移 16–18pt → `easeOutBack` 过冲回落到目标位(对话 260ms / 造句 220ms)，alpha 走 `easeOutCubic(p/0.55)` 提前拉满。**必须先等 `webView:didFinishNavigation:` 再播**，否则淡入的是空白页(保底 260ms 定时器)。派大星点击是「蓄力下沉 90ms → 弹起+挥手+请求开窗」，配 400ms 防连点。窗口尺寸 520×600(抽屉展开后主区仍 334pt)、抽屉默认 `hidden`——400 宽 + 抽屉会竖排。
+
+**对话管理**（v2.5.5）：`state.chatSessions = [{id,title,createdAt,updatedAt,messages[]}]`，老 `state.chatHistory` 在 `chatSessions()` 里一次性迁移并删除旧字段。端点 `/pet-chat-session.php`（new/select/rename/delete/clear）与 `/pet-chat-export`（md 默认 / json，`?id=` 单个，不带导全部）。**`action:'new'` 必须真正新建会话**，只有当前会话为空时才复用——早期实现复用并清空消息，会把正在聊的内容销毁。
+
+**数据导出**（v2.5.4）：`GET /api/export/progress?format=csv|json`，只导 `review` namespace（不含设置/凭据）。CSV 带 BOM + RFC4180 转义，列含轮次/到期/各计数。伴侣不实现业务 API，页面在 8771 时经 `proxyToMainApi()` 把 `/api/export/*` 原样透传 Cookie 到 `serverBase()`。回归锁 `scripts/test_export_progress.js`（401、BOM 字节、逗号引号转义、JSON 形状、账号隔离）。注意 `fetch().text()` 会吞 BOM，验 BOM 必须读 arrayBuffer。
+
+**输入法切换**（v2.5.4）：造句窗自动切英文。TIS/Carbon API 走一个临时 JXA（`TIS_JXA`），**关键坑：`TISGetInputSourceProperty` 返回 CFTypeRef，必须 `ObjC.castRefToObject()` 才能 `ObjC.unwrap`/`TISSelectInputSource`**，直接对返回值调方法会得到 function。打开造句窗记下当前输入源（`imeRestoreTo`），关窗 `selectInputSource(back)` 切回；页面 focus 时 POST `/pet-ime.php?lang=en` 再确认一次。
+
+**学习规划 + 三档作答**（v2.5.8）：`dailyPlan` namespace（`dailyGoal / learnedByDay / checkins`）由 `countDailyLearn()`（learn 事件、eventId 去重）累计，`renderPlanModule()` 画进度/打卡/14 天格子/词典通关预测（按最近 7 天日均，无数据时用 dailyGoal）。`Review.reviewWord(lib, word, grade)` 第三参数现在是三档 `'remembered'|'fuzzy'|'forgot'`（布尔兼容）——fuzzy=停留当前档、按档位一半再考。派大星考过走 `Review.markPetQuiz()`（幂等，`item.petQuiz.count/firstAt`），记忆本卡片据此显示 🐾/🆕 标注。达标庆祝：网页 `pet-celebrate.php` → `cmd:'celebrate'`（连跳 + 撒星复用 fx 粒子 + playSfx('correct')）。
+
+**造句错题集**（v2.5.6）：批改后 `score < 5` 或 `used === false` 的句子自动进 `state.sentenceNotes`（满分不收，避免冲淡）。`kind` 判定：`used===false` → `unused`；`score<=2` → `error`；否则 `awkward`。上限 500，星标不参与淘汰。端点 `/pet-sentence-notes.json|php|-export`。UI 在 `pet-sentence.html` 的「错题集」标签页（筛选 / 收藏 / 笔记 / 删除 / 复制改法）。
+
+**造句练习**（v2.5.2）：抽查作答后卡片底部点亮「用它造个句子」（`QUIZ_BTN_TOP/BOTTOM` 与 `buildQuizSVG` 的按钮矩形必须同步；卡高 280）。点它 → `/pet-sentence-window.php?action=open` → 另一个 WKWebView JXA 进程加载 `pet-sentence.html`，数据来自 `/pet-sentence.json`（`state.lastQuiz`，作答时写入）。提交 `POST /pet-sentence.php` → `askMagpie` 按固定 JSON 格式批改（score 1–5 / used / fixed / feedback / example），返回里 `example` 优先取 `exampleForWord()` 的词典原句、`example2` 是模型新造的一句。结果以 `action:'sentence'` 进 `petMemoryEvents`（网页只统计、不改艾宾浩斯阶段）。卡片撤除延到 8s 且造句窗开着时不撤。`pet-sentence.html` 同样要进三处 payload 清单。
 
 **下载独立版**：对外分发走 **WordPaper.app + DMG**(`scripts/package_app.py` 一条命令出三种包)：AppleSilicon/Intel 完整包（自带 Node v24.19.0 运行时，约 44/45MB)+ Slim 国内加速版（1.6MB，首启从 npmmirror 下载运行时，SHA256 与官方 tarball 钉死一致）。启动器运行时解析顺序：包内 → `~/.wordpaper/runtime` 缓存 → 系统 Node(22–24) → 下载；测试钩子 `WORDPAPER_SELFTEST/FORCE_DOWNLOAD/SKIP_COMPANION/RUNTIME_DIR`。图标由 `scripts/make_icon.py`(favicon W 标 → Playwright → iconutil）生成，产物 `assets/icon.icns` 已入库。DMG 托管 GitHub Releases(`companion-v2.0.0`，网站下载弹窗指 `releases/latest/download/`)，因 CF Pages 单文件 ~25MiB 上限不能走静态站。App **未签名**：macOS 15+ 首次需「系统设置 → 隐私与安全性 → 仍要打开」（右键打开已被苹果移除），说明书与下载弹窗都写了指引。本地 `/companion.zip`(`serveCompanionZip` → `scripts/package_companion.py`）保留为兜底。
 

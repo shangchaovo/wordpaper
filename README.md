@@ -7,9 +7,9 @@
 
 网页打开就能预览电脑壁纸。默认 1920×1080，支持 2K、4K 和自定义尺寸。词库有雅思、四六级、考研、JLPT，也可以自己导入一份。复习按艾宾浩斯排，到点会提醒；导出是 PNG，也可以开 Live 模式当动态壁纸一直转。配色、排版、词数都能改。
 
-Mac 上还有个可选的桌面伴侣：装在自己电脑上，能把壁纸直接设到系统桌面，还有个小词灵窗口。网页主体在 Windows / Linux 浏览器里也能用，自动换系统壁纸和 OCR 是 macOS 专属。
+Mac 版以独立 WordPaper.app 窗口呈现，可从 Dock 打开、关闭窗口后重新唤出、用 ⌘Q 退出；同时能设置系统壁纸并显示小词灵。网页主体在 Windows / Linux 浏览器里也能用，自动换系统壁纸和 OCR 是 macOS 专属。
 
-账号存在服务器的 SQLite 里（密码加盐哈希，不存明文）。换电脑登录同一个号，复习进度、自定义词库和布局会跟过来。也可以下载一份 JSON 备份。Google / 微信 / 邮箱都能登，没配的登录按钮会明白写「管理员尚未配置」，不会假装能用。
+账号存在服务器的 SQLite 里（密码加盐哈希，不存明文）。换电脑登录同一个号，复习进度、自定义词库和布局会跟过来。也可以下载一份 JSON 备份。支持 Google / 微信 / 邮箱登录；第三方入口在服务端配置完成后显示。已有账号可在「账号绑定」里连接 Google、微信或更换绑定。
 
 现在是单入口、多用户，结构大概是这样：
 
@@ -19,6 +19,24 @@ Mac 上还有个可选的桌面伴侣：装在自己电脑上，能把壁纸直�
 
 Mac 桌面伴侣（可选）── 127.0.0.1:8771，仅在用户自己的 Mac 上
 ```
+
+## 桌面 App 与云端账号
+
+桌面窗口使用 macOS Cocoa + WKWebView；本机 Node 服务是 App 内部实现，日常使用不需要开终端、输入 localhost 或把浏览器当主窗口。安装包不包含 Google Client Secret、微信 AppSecret 或 `.env`。
+
+1. 从 DMG 安装并打开 WordPaper.app。没有同步服务器时，可以继续使用原本机账号。
+2. 部署账号服务器后，在 App 登录页的「登录同步账号」填入它的 HTTPS 地址，选择 Google、微信或「邮箱 / 原账号登录」。每台设备首次配置一次，之后记住地址。
+3. App 打开系统浏览器完成平台授权（避免在嵌入式 WebView 内登录 Google），浏览器显示当前账号与连接码。核对与 App 相同后，点「允许这台 App 同步」。
+4. App 自动进入同步工作区；网页和不同电脑的 App 使用同一云端账号。前台每 30 秒及窗口重新获得焦点时拉取变化，正在编辑的输入框、弹窗、拖动和待保存内容会暂缓被远端刷新。离线写入排队，联网后补同步；同时修改同一份数据时仍按现有 revision 冲突规则处理。
+5. 绑定或换绑 Google/微信，在 App 的「账号绑定 → 打开账号中心」统一管理。会话失效时从登录页重新授权；无需在设备上保存第三方密码。
+
+桌面授权使用 10 分钟有效的一次性设备码、浏览器明确确认和仅本机服务持有的 SHA-256 verifier；会话令牌通过服务器之间的请求交付，不放进浏览器回跳 URL。每台 App 持有独立云端会话。同步副本按服务器地址和云端账号 ID 区分，不复用同名的本机账号；断开连接不会删除原本机账号。
+
+**交付与上线的区别**：目前仓库列出的 Pages 地址是静态演示站，不能承载账号数据库。需要按下文部署带 SQLite 持久卷的服务并配置平台回调后，真实 Google/微信和跨电脑同步才能启用。微信尚未申请时，其云端入口保持关闭；代码和模拟联调可先完成。
+
+**已有本机账号迁到云端**：先在原入口确认数据已保存并下载账号备份。首次部署一个全新的账号服务器时，按下文「迁移」步骤将原 `wordpaper.sqlite` 迁入服务器的持久卷，再在云端用原账号登录并绑定 Google/微信；之后让各台 App 连接它。不要先在空服务器用 Google 新建另一个账号后期待按同名自动合并。已有云端用户时不要用本机数据库覆盖服务器。
+
+构建：`python3 scripts/package_app.py` 生成三个 DMG；`python3 scripts/test_native_app.py` 使用临时数据验证真实原生窗口、登录桥接及退出后服务清理。首次从旧的“启动浏览器”版本升级到原生窗口，需要安装完整的新 DMG，因为旧更新器不替换主可执行文件。
 
 ## 本机启动
 
@@ -63,7 +81,7 @@ chmod +x scripts/install_macos_service.sh
 
 在卫星机的登录页展开「这台是我的另一台电脑？连接到主账号 →」，填主账号所在电脑的地址和账号密码即可。配对后：本地注册/登录入口让位给「继续」；壁纸、小词灵、记忆本全部照常在本机运行。「断开连接」会删除本机同步副本，不影响主账号。
 
-**主账号地址优先用私有网络，不必走公网**（真实使用留在本地，公网实例只做展示）：
+**旧的密码配对仍支持私有网络**；需要跨网络的 Google/微信同步时，使用上述长期在线的 HTTPS 账号服务器：
 
 - **同一 Wi-Fi / 局域网**：`http://主机名.local:8770`（如 `http://mininn.local:8770`）或局域网 IP `http://192.168.x.x:8770`。
 - **异地 / 不同网络**：用主力机的 Tailscale 地址 `http://100.x.x.x:8770`（两台都装 Tailscale 后，走加密私有网络，不暴露公网）。
@@ -77,7 +95,7 @@ chmod +x scripts/install_macos_service.sh
 
 - 密码使用 Node `crypto.scrypt` 加盐哈希，数据库不保存明文密码。
 - 登录使用随机不透明 session token；数据库只保存 token 的 SHA-256。
-- Cookie 为 `HttpOnly`，邮箱登录默认 `SameSite=Strict`；OAuth 回跳 session 使用 `SameSite=Lax`，HTTPS 下都会自动使用 `Secure`。
+- Cookie 为 `HttpOnly`，邮箱登录默认 `SameSite=Strict`；发起账号绑定时及 OAuth 回跳 session 使用 `SameSite=Lax`，确保从第三方返回时继续处于原账号；写操作仍要求 Origin 与 CSRF 校验，HTTPS 下都会自动使用 `Secure`。
 - `user_state` 的主键是 `(user_id, namespace)`；`user_id` 只从服务端 session 获取，API 不接受客户端指定用户。
 - 设置、背景图、自定义词库、初筛、提醒、轮换状态、复习记录和模块布局都保存进 SQLite。
 - 每个 namespace 有 revision；两台设备同时覆盖同一份数据时返回冲突，而不是静默丢掉其中一份。
@@ -86,15 +104,21 @@ chmod +x scripts/install_macos_service.sh
 
 ## 登录方式：Google、微信与邮箱
 
-登录页始终提供三个入口：
+登录页提供邮箱入口，并按服务端配置显示第三方入口：
 
 - **邮箱 + 密码**：注册时先输入 6 位邮件验证码；旧版用户名账号仍可在登录框中继续使用。
 - **Google**：服务端 Authorization Code + PKCE，范围仅为 `openid email profile`。
 - **微信**：微信开放平台“网站应用”扫码登录，范围为 `snsapi_login`。
 
-Google 和微信首次授权会创建独立 WordPaper 账号，之后以 Google `sub` 或“微信 AppID + openid”定位同一账号。服务器不会保存第三方 access token / refresh token，也不会根据昵称或相同邮箱静默合并账号。即使 Google 邮箱与邮箱账号相同，两种身份仍保持为两个独立数据空间；未来如需合并，必须增加“同时证明两种身份”的显式绑定流程。
+Google 和微信首次从登录页授权时会创建独立 WordPaper 账号，之后以 Google `sub` 或“微信 AppID + openid”定位同一账号。服务器不会保存第三方 access token / refresh token，也不会根据昵称或相同邮箱自动合并账号。
 
-在 `.env` 中填写对应平台参数后，登录页会自动启用按钮；未配置时按钮会保留但明确显示“管理员尚未配置”。完整变量见 [`.env.example`](.env.example)。
+**已有账号的正确使用顺序**：先用原邮箱/用户名和密码登录，在页面顶部点「账号绑定」，再分别点「绑定 Google」「绑定 微信」完成授权。绑定写在原账号下，原密码仍可登录，词库、提醒、布局和复习记录保持不变。以后可用任一绑定方式进入同一账号。每个账号最多绑定一个 Google 和一个微信。
+
+**更换和解除绑定**：在「账号绑定」选择「更换绑定」，Google 选择新账号，微信使用新账号扫码确认。只有新授权成功且身份未被占用时才替换旧绑定；取消、失败或冲突时旧绑定不变。解除绑定必须保留原密码或另一种已配置且已绑定的登录方式。更换/解除绑定会注销其他设备的现有会话；当前设备继续使用。如果登录或最近验证已超过 10 分钟，需要先输入原密码，或使用当前绑定的第三方账号重新验证。
+
+若提示身份已被其他账号占用，请先登录那个账号、保留另一种可用登录方式并解绑，再回到要保留数据的账号绑定。**这不是账号数据合并功能**，不会搬走或覆盖另一个账号的记录。卫星镜像模式需要到主账号所在的网站管理绑定。
+
+在 `.env` 中填写对应平台参数并重启服务后，登录页会自动显示已配置的按钮；未配置的入口隐藏，账号绑定页显示「暂未开放」。完整变量见 [`.env.example`](.env.example)。已有 `.env` 时只补字段，不要用模板覆盖已有密钥。纯静态演示站不具备第三方登录，正式登录须部署 `server.js` 和持久化 SQLite。
 
 Google Cloud 需要创建 Web application 类型 OAuth 客户端，并登记完全一致的回调：
 
@@ -104,6 +128,8 @@ https://你的域名/api/auth/google/callback
 
 参见 [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) 与 [Web Server OAuth 指南](https://developers.google.com/identity/protocols/oauth2/web-server)。
 
+Google 配置使用 `WORDPAPER_GOOGLE_CLIENT_ID`、`WORDPAPER_GOOGLE_CLIENT_SECRET`、`WORDPAPER_GOOGLE_REDIRECT_URI`。开发环境可单独登记 `http://localhost:8770/api/auth/google/callback`，并从 `http://localhost:8770` 访问；`localhost`、`127.0.0.1` 和公网域名不能混用。测试模式下，将需要参与测试的账号加入 Google Auth Platform 的测试用户列表。正式发布前按控制台要求完成品牌、受众及发布设置。
+
 微信需要先在微信开放平台创建并审核“网站应用”，再申请“微信登录”能力；授权域名必须与公网回调域名一致：
 
 ```text
@@ -111,6 +137,25 @@ https://你的域名/api/auth/wechat/callback
 ```
 
 参见 [微信网站应用登录指南](https://developers.weixin.qq.com/doc/oplatform/Website_App/WeChat_Login/Wechat_Login.html)。AppSecret 只放服务器环境变量，禁止提交 Git 或发送给浏览器。
+
+**尚未申请微信网站应用时**：
+
+1. 在 [微信开放平台](https://open.weixin.qq.com/) 注册账号，按平台当前要求完成开发者资质认证。主体资格、材料、费用及审核要求以控制台为准。
+2. 在「管理中心 → 网站应用」创建 WordPaper，提交网站地址、应用信息及平台要求的材料；等待网站应用审核和微信登录能力开通。这套接入使用网站应用的 `snsapi_login`，不能直接填写公众号或小程序的 AppID。
+3. 配置网站应用的授权回调域，确保它与实际访问的 HTTPS 网站域名一致。完整回调 URL 在 WordPaper 环境变量里填写；微信控制台域名字段按该字段说明填写域名。
+4. 取得 AppID / AppSecret 后，只在部署服务器的 `.env` 补充以下字段，不要写进前端、Git 或桌面安装包：
+
+```dotenv
+WORDPAPER_WECHAT_APP_ID=你的微信网站应用AppID
+WORDPAPER_WECHAT_APP_SECRET=你的微信网站应用AppSecret
+WORDPAPER_WECHAT_REDIRECT_URI=https://你的域名/api/auth/wechat/callback
+```
+
+5. 确认 `WORDPAPER_PUBLIC_ORIGIN=https://你的域名`；经受控反代提供 HTTPS 时按下文配置 `TRUST_PROXY=1`。重启部署服务（Compose 使用 `docker compose up -d --build`），从该域名进入原账号的「账号绑定」扫码授权，再退出并使用微信登录，核对原有记录。
+
+微信回调必须回到发起操作的同一云端站点，才能验证浏览器 Cookie。桌面 App 通过设备授权连接该站点，不把第三方回调指向每台电脑的 localhost。独立版不内置 AppSecret，登录绑定在主站统一管理。
+
+验证命令：`node scripts/test_account_links.js` 覆盖绑定安全与数据保留；`node scripts/test_desktop_sync.js` 覆盖两台 App + 云端同步、一次性授权和本机账号隔离；`npm run test:account-browser` 与 `npm run test:desktop-browser` 验证实际页面操作及浏览器授权返回。全部使用临时数据库和模拟平台，不代替开通后使用真实账号的联调。
 
 邮箱验证码使用 [Resend Send Email API](https://resend.com/docs/api-reference/emails/send-email)。先在 Resend 验证发信域名，再在 `.env` 填写：
 
@@ -176,6 +221,34 @@ docker compose up -d --build
 ```
 
 数据库、账号、session 和所有用户状态会一起迁移。恢复前不要在目标卷里放另一套数据。
+
+首次从本机 App 迁到一个**尚无用户数据的新服务器**时，先退出 WordPaper 和伴侣，再用 SQLite 备份 API 导出一致的数据库（不要只复制正在使用的 `.sqlite` 而遗漏 WAL）。默认 App 路径是 `~/.wordpaper/wordpaper.sqlite`；自定义过 `WORDPAPER_DATA_DIR` 时改用实际路径：
+
+```bash
+python3 - <<'PY'
+import sqlite3
+from pathlib import Path
+source = Path.home() / '.wordpaper/wordpaper.sqlite'
+target = Path.cwd() / 'wordpaper-migration.sqlite'
+if not source.is_file() or target.exists():
+    raise SystemExit('请核对源数据库路径，并使用一个尚不存在的导出文件名')
+with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as src:
+    with sqlite3.connect(target) as dst:
+        src.backup(dst)
+PY
+```
+
+将导出文件私下传到新服务器的项目目录，完成服务器 `.env` 后执行：
+
+```bash
+docker compose stop
+docker volume create wordpaper-data
+docker run --rm -v wordpaper-data:/data -v "$PWD":/backup:ro alpine \
+  sh -c 'test ! -e /data/wordpaper.sqlite && cp /backup/wordpaper-migration.sqlite /data/wordpaper.sqlite && chmod 600 /data/wordpaper.sqlite'
+docker compose up -d --build
+```
+
+若复制命令因目标数据库已存在而失败，先核对目标，不能直接覆盖。迁移后在云端用原账号核对词库、提醒和进度，再绑定第三方账号。已是同步副本的 App 不应作为迁移源，应备份它连接的主账号服务器。
 
 ## 两个端口与桌面伴侣
 

@@ -44,7 +44,8 @@ def main():
     port = free_port()
     data_dir = tempfile.mkdtemp(prefix="wordpaper-e2e-")
     env = dict(os.environ, PORT=str(port), HOST="127.0.0.1", WORDPAPER_MODE="local",
-               WORDPAPER_DATA_DIR=data_dir, NODE_ENV="test")
+               WORDPAPER_DATA_DIR=data_dir, NODE_ENV="test",
+               WORDPAPER_COMPANION_PORT=str(free_port()), WORDPAPER_COMPANION_AUTOSTART="0")
     server = subprocess.Popen(["node", "server.js"], cwd=ROOT, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if not wait_up(port):
@@ -101,10 +102,10 @@ def main():
             page.fill("#library-filter", "")
             page.wait_for_timeout(200)
             check("清空搜索恢复全部词书", page.locator("#library-cards .lib-card").count() == 13)
-            # default canvas size phone 1080x2400
+            # default canvas size desktop 1920x1080 (本软件不面向手机)
             # 预览按屏幕像素绘制，壁纸的逻辑尺寸标在 data-wallpaper-w/h 上
             dims = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:+c.dataset.wallpaperW,h:+c.dataset.wallpaperH}; }")
-            check("默认手机画布 1080×2400", dims["w"] == 1080 and dims["h"] == 2400)
+            check("默认电脑画布 1920×1080", dims["w"] == 1920 and dims["h"] == 1080)
 
             # switch library via the cet4 card (locate by text, not index)
             page.locator("#library-cards .lib-card", has_text="四级").first.click()

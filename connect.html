@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>连接桌面 App · WordPaper</title>
+  <link rel="stylesheet" href="/css/auth.css?v=20261027b">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-intro">
+      <p class="card-kicker">WordPaper</p>
+      <h1>把学习进度<br>带到桌面。</h1>
+      <p>授权后，桌面 App 将与网页共用你的词库、提醒和复习进度。断网时仍可使用缓存，重新联网后继续同步。</p>
+    </section>
+    <section class="auth-card">
+      <header class="card-heading"><h2>确认连接你的 App</h2><p id="connect-user">正在读取账号…</p></header>
+      <p>请核对下方连接码与 App 中显示的完全一致。</p>
+      <p id="connect-code" class="connect-code"></p>
+      <p id="connect-status" role="status" aria-live="polite"></p>
+      <button id="connect-approve" type="button" class="submit-auth" disabled>允许这台 App 同步</button>
+      <button id="connect-login" type="button" class="provider-button">更换账号 / 重新登录</button>
+      <p class="migration-note">仅确认你刚刚在自己的 App 中发起的连接。若账号不对或登录已过期，点上方按钮重新登录。</p>
+      <a href="/">返回 WordPaper</a>
+    </section>
+  </main>
+  <script src="/js/connect.js?v=20261027a"></script>
+</body>
+</html>

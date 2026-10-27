@@ -14,7 +14,7 @@ process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 const appPath = path.join(tmp, 'fakeRes', 'WordPaper.app');
 const resPath = path.join(appPath, 'Contents', 'Resources');
 fs.mkdirSync(resPath, { recursive: true });
-for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) {
+for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'pet-chat.html', 'pet-sentence.html']) {
   fs.writeFileSync(path.join(resPath, f), 'stale-' + f);
 }
 fs.writeFileSync(path.join(resPath, 'VERSION'), '2.2.3');
@@ -25,7 +25,7 @@ fs.writeFileSync(path.join(resPath, 'js', 'app.js'), 'stale');
 // ── Fake mounted DMG contents: dmgMount/WordPaper.app/Contents/Resources (v2.3.0) ──
 const mountRes = path.join(tmp, 'dmgMount', 'WordPaper.app', 'Contents', 'Resources');
 fs.mkdirSync(mountRes, { recursive: true });
-for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) {
+for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'pet-chat.html', 'pet-sentence.html']) {
   fs.writeFileSync(path.join(mountRes, f), 'new-' + f);
 }
 fs.writeFileSync(path.join(mountRes, 'VERSION'), '2.3.0');
@@ -42,7 +42,7 @@ fs.writeFileSync(path.join(mountRes, 'assets', 'favicon-32.png'), 'new favicon')
 // Manifest: per-file digests of the NEW payload (as package_app.py generates).
 const digest = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const manifest = { version: '2.2.3', files: {} };
-for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'lib/updater.js', 'js/app.js']) {
+for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'lib/updater.js', 'js/app.js']) {
   manifest.files[rel] = digest(path.join(mountRes, rel));
 }
 manifest.bundleFiles = Object.fromEntries(Object.keys(bundleFiles).map(rel => [rel, digest(path.join(mountRes, '..', rel))]));

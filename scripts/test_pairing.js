@@ -113,6 +113,11 @@ async function main() {
     r = await api(satellite.base, { path: '/api/session', cookie: sat.cookie });
     assert.equal(r.json.mirrored, true, '会话必须标记 mirrored');
     assert.equal(r.json.upstream, 'ok');
+    r = await api(satellite.base, { path: '/api/account', cookie: sat.cookie });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.accountUrl, upstream.base + '/#account', '镜像账号必须引导到主账号站点管理绑定');
+    r = await api(satellite.base, { path: '/api/auth/google/start', cookie: sat.cookie });
+    assert.equal(r.status, 403, '镜像设备不能绕过登录入口直接发起 OAuth');
 
     // 配对后禁止注册/普通登录
     r = await api(satellite.base, { method: 'POST', path: '/api/auth/register', body: { username: 'someoneelse', password: 'whatever-pass' } });
@@ -153,16 +158,19 @@ async function main() {
     w = await api(satellite.base, { method: 'PUT', path: '/api/state/reminders', cookie: sat.cookie, csrf: sat.csrf, body: { value: [{ id: 'r2', text: '离线新增' }], expectedRevision: 1 } });
     assert.equal(w.status, 200, JSON.stringify(w.json));
     assert.equal(w.json.queued, true, '断网写入必须标记 queued');
+    w = await api(satellite.base, { method: 'PUT', path: '/api/state/reminders', cookie: sat.cookie, csrf: sat.csrf, body: { value: [{ id: 'r2', text: '离线再次编辑' }], expectedRevision: w.json.revision } });
+    assert.equal(w.status, 200);
+    assert.equal(w.json.queued, true);
     r = await api(satellite.base, { path: '/api/state', cookie: sat.cookie });
     assert.equal(r.status, 200, '断网读取必须回退缓存');
-    assert.equal(r.json.state.reminders[0].text, '离线新增', '缓存必须包含离线写入');
+    assert.equal(r.json.state.reminders[0].text, '离线再次编辑', '缓存必须包含最新离线写入');
 
     upstream = await startServer(upstreamPort, dirUp, 'public');
     // 任意一次读取都会先 flushQueue 再 pull
     r = await api(satellite.base, { path: '/api/state', cookie: sat.cookie });
     assert.equal(r.status, 200);
     r = await api(upstream.base, { path: '/api/state', cookie: up.cookie });
-    assert.equal(r.json.state.reminders[0].text, '离线新增', '恢复后离线队列必须补推到上游');
+    assert.equal(r.json.state.reminders[0].text, '离线再次编辑', '连续离线编辑必须保留最初云端 revision 并成功补推');
 
     // resume:删掉本机会话后免密恢复(仅回环)
     await api(satellite.base, { method: 'DELETE', path: '/api/session', cookie: sat.cookie, csrf: sat.csrf });

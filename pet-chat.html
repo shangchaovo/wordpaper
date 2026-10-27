@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>派大星 · 聊聊单词</title>
+<style>
+  :root {
+    --pink: #f79ba6;
+    --pink-soft: #ffe8ea;
+    --pink-deep: #e87f8d;
+    --green: #a8d94f;
+    --green-deep: #8cba3a;
+    --purple: #8b6bd9;
+    --outline: #2b1d2e;
+    --ink: #3a1f2b;
+    --sub: #8a6270;
+    --paper: #fffaf6;
+  }
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+  /* 与窗口弹出动效(260ms)错开的轻淡入,避免内容与窗口同时"砸"出来 */
+  @keyframes pageIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+  body { animation: pageIn .2s cubic-bezier(.2,.9,.3,1) both; }
+  @media (prefers-reduced-motion: reduce) {
+    body { animation: none; }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--paper) 0%, var(--pink-soft) 100%);
+    font: 13.5px/1.55 "PingFang SC", "Hiragino Sans GB", -apple-system, sans-serif;
+    color: var(--ink);
+    overflow: hidden;
+  }
+
+  /* ── 顶部旗标 ── */
+  header {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 9px;
+    padding: 12px 14px 10px;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px 5px;
+    background: var(--green);
+    border: 1.5px solid var(--outline);
+    border-radius: 7px;
+    font-size: 11.5px; font-weight: 800; color: var(--outline);
+    letter-spacing: .2px;
+  }
+  .badge svg { width: 12px; height: 12px; }
+  .hint { font-size: 10.5px; color: var(--sub); flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #toggle-drawer {
+    flex: 0 0 auto;
+    width: 26px; height: 24px;
+    display: grid; place-items: center;
+    background: #fff; color: var(--ink);
+    border: 1.4px solid var(--pink); border-radius: 7px;
+    font-size: 12px; line-height: 1; cursor: pointer;
+  }
+  #toggle-drawer:hover { background: var(--pink-soft); }
+  #toggle-drawer.on { background: var(--green); border-color: var(--outline); }
+
+  /* ── 布局:左侧会话抽屉 + 右侧对话 ── */
+  #app { flex: 1 1 auto; display: flex; min-height: 0; }
+  #drawer {
+    flex: 0 0 auto; width: 186px;
+    display: flex; flex-direction: column;
+    margin: 0 0 0 12px;
+    background: #fff;
+    border: 1.6px solid var(--pink);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: width .18s ease, margin .18s ease, opacity .18s ease;
+  }
+  #drawer[hidden] { display: none; }
+  .drawer-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 9px;
+    border-bottom: 1px solid var(--pink-soft);
+  }
+  .drawer-head b { font-size: 11.5px; color: var(--sub); flex: 1 1 auto; }
+  #newchat {
+    padding: 3px 9px 4px;
+    font-size: 11px; font-weight: 800;
+    background: var(--green); color: var(--outline);
+    border: 1.4px solid var(--outline); border-radius: 7px;
+    cursor: pointer;
+  }
+  #newchat:active { transform: scale(.95); }
+  #sessions { flex: 1 1 auto; overflow-y: auto; padding: 6px; }
+  #sessions::-webkit-scrollbar { width: 6px; }
+  #sessions::-webkit-scrollbar-thumb { background: var(--pink-soft); border-radius: 3px; }
+  .daygroup { font-size: 10px; font-weight: 800; color: var(--sub);
+    padding: 7px 5px 3px; letter-spacing: .3px; }
+  .srow {
+    position: relative;
+    display: flex; align-items: center; gap: 4px;
+    padding: 6px 7px;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background .14s;
+  }
+  .srow:hover { background: var(--pink-soft); }
+  .srow.active { background: #eef8dd; box-shadow: inset 0 0 0 1.3px var(--green); }
+  .srow .sname {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 11.5px; font-weight: 600; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .srow .smenu {
+    flex: 0 0 auto; width: 18px; height: 18px;
+    display: grid; place-items: center;
+    border: 0; background: transparent; color: var(--sub);
+    font-size: 13px; line-height: 1; cursor: pointer; border-radius: 5px;
+    opacity: 0; transition: opacity .14s, background .14s;
+  }
+  .srow:hover .smenu, .srow.active .smenu { opacity: 1; }
+  .srow .smenu:hover { background: #fff; }
+  .srow input.rename {
+    flex: 1 1 auto; min-width: 0;
+    font: inherit; font-size: 11.5px;
+    padding: 2px 5px;
+    border: 1.4px solid var(--pink-deep); border-radius: 6px; outline: 0;
+    -webkit-user-select: text; user-select: text;
+  }
+  .drawer-foot {
+    display: flex; gap: 5px; padding: 7px 8px;
+    border-top: 1px solid var(--pink-soft);
+  }
+  .drawer-foot a, .drawer-foot button {
+    flex: 1 1 0;
+    padding: 5px 4px;
+    font: inherit; font-size: 10.5px; font-weight: 800;
+    text-align: center; text-decoration: none;
+    color: var(--pink-deep); background: #fff;
+    border: 1.3px solid var(--pink); border-radius: 7px;
+    cursor: pointer;
+  }
+  .drawer-foot a:hover, .drawer-foot button:hover { background: var(--pink-soft); }
+  .mainpane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* ── 消息区 ── */
+  #log {
+    flex: 1 1 auto;
+    margin: 0 12px;
+    padding: 14px 12px;
+    background: #fff;
+    border: 1.8px solid var(--pink);
+    border-radius: 16px;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    -webkit-user-select: text; user-select: text;
+  }
+  #log::-webkit-scrollbar { width: 8px; }
+  #log::-webkit-scrollbar-thumb { background: var(--pink-soft); border-radius: 4px; }
+  #log::-webkit-scrollbar-thumb:hover { background: var(--pink); }
+
+  .msg {
+    display: flex; gap: 8px;
+    margin-bottom: 12px;
+    animation: pop .26s cubic-bezier(.2, 1.3, .5, 1) both;
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(8px) scale(.97); }
+    to   { opacity: 1; transform: none; }
+  }
+  .msg .who {
+    flex: 0 0 auto;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 14px;
+    border: 1.5px solid var(--outline);
+  }
+  .msg.bot .who { background: var(--pink); }
+  .msg.me .who { background: var(--green); }
+  .bubble {
+    flex: 1 1 auto;
+    padding: 9px 12px;
+    border-radius: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-width: 100%;
+  }
+  .msg.bot .bubble {
+    background: var(--pink-soft);
+    border: 1.4px solid var(--pink);
+    border-top-left-radius: 4px;
+  }
+  .msg.me { flex-direction: row-reverse; }
+  .msg.me .bubble {
+    background: #f3fbe6;
+    border: 1.4px solid var(--green);
+    border-top-right-radius: 4px;
+  }
+
+  /* 打字指示 */
+  .typing .bubble { display: flex; gap: 4px; align-items: center; padding: 12px; }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--pink-deep);
+    animation: bounce 1.1s infinite ease-in-out;
+  }
+  .dot:nth-child(2) { animation-delay: .15s; }
+  .dot:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: .45; }
+    30% { transform: translateY(-5px); opacity: 1; }
+  }
+
+  /* ── 提问建议(不知道怎么问时点一下)── */
+  #suggest {
+    flex: 0 0 auto;
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin: 0 12px 8px;
+    max-height: 74px; overflow-y: auto;
+  }
+  #suggest[hidden] { display: none; }
+  #suggest .sg {
+    padding: 5px 10px 6px;
+    background: #fff;
+    border: 1.4px solid var(--pink);
+    border-radius: 999px;
+    font-size: 11.5px; font-weight: 700; color: var(--pink-deep);
+    cursor: pointer;
+    transition: background .15s, transform .12s, border-color .15s;
+  }
+  #suggest .sg:hover { background: var(--pink-soft); border-color: var(--pink-deep); }
+  #suggest .sg:active { transform: scale(.95); }
+
+  /* ── 输入区 ── */
+  footer {
+    flex: 0 0 auto;
+    display: flex; gap: 8px; align-items: center;
+    margin: 10px 12px 12px;
+    padding: 7px 7px 7px 12px;
+    background: #fff;
+    border: 1.8px solid var(--pink);
+    border-radius: 13px;
+    transition: border-color .18s, box-shadow .18s;
+  }
+  footer:focus-within {
+    border-color: var(--pink-deep);
+    box-shadow: 0 0 0 3px rgba(247, 155, 166, .22);
+  }
+  #q {
+    flex: 1 1 auto;
+    border: 0; outline: 0; background: transparent;
+    font: inherit; color: var(--ink);
+    -webkit-user-select: text; user-select: text;
+    padding: 5px 0;
+  }
+  #q::placeholder { color: #c9a9b4; }
+  #send {
+    flex: 0 0 auto;
+    padding: 7px 16px;
+    border: 1.6px solid var(--outline);
+    border-radius: 9px;
+    background: var(--pink);
+    color: var(--outline);
+    font: inherit; font-weight: 800; font-size: 12.5px;
+    cursor: pointer;
+    transition: transform .12s, background .15s;
+  }
+  #send:hover { background: var(--pink-deep); }
+  #send:active { transform: scale(.95); }
+  #send:disabled { opacity: .45; cursor: default; transform: none; }
+
+  .empty {
+    text-align: center; color: var(--sub);
+    font-size: 12.5px; padding: 26px 10px;
+  }
+  .empty b { color: var(--ink); }
+</style>
+</head>
+<body>
+  <header>
+    <span class="badge">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3l2.4 5.2 5.6.7-4.1 3.9 1.1 5.6L12 15.7 6.9 18.4 8 12.8 3.9 8.9l5.6-.7z"/>
+      </svg>
+      派大星说
+    </span>
+    <span class="hint">聊聊你正在背的单词</span>
+    <button id="toggle-drawer" type="button" title="对话记录" aria-label="对话记录">☰</button>
+  </header>
+
+  <div id="app">
+    <aside id="drawer" hidden>
+      <div class="drawer-head">
+        <b>对话记录</b>
+        <button id="newchat" type="button">＋ 新对话</button>
+      </div>
+      <div id="sessions"></div>
+      <div class="drawer-foot">
+        <a id="export-current" href="/pet-chat-export?format=md" download title="导出当前对话为 Markdown">导出当前</a>
+        <a id="export-all" href="/pet-chat-export?format=json" download title="导出全部对话为 JSON">全部</a>
+      </div>
+    </aside>
+    <div class="mainpane">
+  <div id="log">
+    <div class="empty">
+      <b>嗨！我是派大星～</b><br>
+      想聊哪个单词？问我怎么记、怎么用都行！
+    </div>
+  </div>
+
+  <div id="suggest" hidden></div>
+
+  <footer>
+    <input id="q" type="text" placeholder="问点什么…（回车发送）" autocomplete="off" spellcheck="false">
+    <button id="send">发送</button>
+  </footer>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  var log = document.getElementById('log');
+  var q = document.getElementById('q');
+  var send = document.getElementById('send');
+  var busy = false;
+
+  function clearEmpty() {
+    var e = log.querySelector('.empty');
+    if (e) e.remove();
+  }
+
+  function addMsg(role, text) {
+    clearEmpty();
+    var row = document.createElement('div');
+    row.className = 'msg ' + (role === 'user' ? 'me' : 'bot');
+    var who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = role === 'user' ? '你' : '★';
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    row.appendChild(who);
+    row.appendChild(bubble);
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  function addTyping() {
+    clearEmpty();
+    var row = document.createElement('div');
+    row.className = 'msg bot typing';
+    row.innerHTML = '<div class="who">★</div><div class="bubble">' +
+      '<span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  function ask(text) {
+    if (busy || !text.trim()) return;
+    busy = true;
+    send.disabled = true;
+    addMsg('user', text);
+    q.value = '';
+    var typing = addTyping();
+    fetch('/pet-chat.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        typing.remove();
+        if (j && j.ok && j.reply) addMsg('assistant', j.reply);
+        else addMsg('assistant', '（没连上 DeepSeek：' + ((j && j.error) || '网络不通') + '）');
+      })
+      .catch(function () {
+        typing.remove();
+        addMsg('assistant', '（连不上伴侣服务，检查一下 WordPaper 是否在运行）');
+      })
+      .then(function () {
+        busy = false;
+        send.disabled = false;
+        q.focus();
+        loadSessions();      // 第一条消息会自动成为会话标题
+      });
+  }
+
+  send.addEventListener('click', function () { ask(q.value); });
+  q.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ask(q.value); }
+  });
+
+  /* ── 对话管理:侧栏按日期分组、切换/重命名/删除/导出 ── */
+  var drawer = document.getElementById('drawer');
+  var sessionsBox = document.getElementById('sessions');
+  var toggleBtn = document.getElementById('toggle-drawer');
+  var currentSessionId = '';
+
+  toggleBtn.addEventListener('click', function () {
+    drawer.hidden = !drawer.hidden;
+    toggleBtn.classList.toggle('on', !drawer.hidden);
+  });
+
+  /* 日期分组标签:今天 / 昨天(带具体日期),更早的每个自然日单独一组。
+   * 用户要的是「自动标注每一天」,所以除了今天/昨天都写全日期 + 星期。 */
+  var WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  function dayLabel(ts) {
+    if (!ts) return '更早';
+    var d = new Date(ts), now = new Date();
+    var startOf = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var diffDays = Math.round((startOf(now) - startOf(d)) / 86400000);
+    var full = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + WEEKDAYS[d.getDay()];
+    if (diffDays <= 0) return '今天 · ' + full;
+    if (diffDays === 1) return '昨天 · ' + full;
+    return full;
+  }
+
+  function renderSessions(list) {
+    if (!sessionsBox) return;
+    sessionsBox.innerHTML = '';
+    if (!list || !list.length) {
+      var empty = document.createElement('div');
+      empty.className = 'daygroup';
+      empty.textContent = '还没有对话';
+      sessionsBox.appendChild(empty);
+      return;
+    }
+    var lastDay = '';
+    list.forEach(function (s) {
+      var day = dayLabel(s.updatedAt);
+      if (day !== lastDay) {
+        lastDay = day;
+        var h = document.createElement('div');
+        h.className = 'daygroup';
+        h.textContent = day;
+        sessionsBox.appendChild(h);
+      }
+      var row = document.createElement('div');
+      row.className = 'srow' + (s.id === currentSessionId ? ' active' : '');
+      row.dataset.id = s.id;
+      var name = document.createElement('span');
+      name.className = 'sname';
+      name.textContent = s.title || '新对话';
+      name.title = (s.title || '') + (s.preview ? '\n' + s.preview : '');
+      var menu = document.createElement('button');
+      menu.type = 'button';
+      menu.className = 'smenu';
+      menu.textContent = '⋯';
+      menu.title = '重命名 / 删除';
+      row.appendChild(name);
+      row.appendChild(menu);
+
+      row.addEventListener('click', function (e) {
+        if (e.target === menu) return;
+        selectSession(s.id);
+      });
+      menu.addEventListener('click', function (e) {
+        e.stopPropagation();
+        startRename(row, s);
+      });
+      sessionsBox.appendChild(row);
+    });
+  }
+
+  /* 就地重命名:把标题换成一个输入框,回车确认 / Esc 取消 / 失焦确认。 */
+  function startRename(row, session) {
+    if (row.querySelector('input.rename')) return;
+    var nameEl = row.querySelector('.sname');
+    if (!nameEl) return;
+    var old = session.title || '';
+    var input = document.createElement('input');
+    input.className = 'rename';
+    input.value = old;
+    input.maxLength = 60;
+    row.replaceChild(input, nameEl);
+    input.focus();
+    input.select();
+    var done = false;
+    function commit(save) {
+      if (done) return;
+      done = true;
+      var title = input.value.trim();
+      if (!save || !title || title === old) { renderSessions(lastSessions); return; }
+      postSession({ action: 'rename', id: session.id, title: title })
+        .then(function () { return loadSessions(); });
+    }
+    input.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+    });
+    input.addEventListener('blur', function () { commit(true); });
+    // 删除入口:重命名框旁边长按/右键也能删
+    input.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      if (window.confirm('删除「' + old + '」这个对话？不能撤销。')) {
+        done = true;
+        postSession({ action: 'delete', id: session.id }).then(function () { return loadSessions(); });
+      }
+    });
+  }
+
+  var lastSessions = [];
+
+  function postSession(payload) {
+    return fetch('/pet-chat-session.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); });
+  }
+
+  function clearLog() {
+    log.innerHTML = '';
+  }
+
+  function selectSession(id) {
+    if (!id || id === currentSessionId) return;
+    postSession({ action: 'select', id: id }).then(function (j) {
+      if (!j || !j.ok) return;
+      currentSessionId = id;
+      clearLog();
+      (j.history || []).forEach(function (m) {
+        addMsg(m.role === 'user' ? 'user' : 'assistant', m.content);
+      });
+      if (!(j.history || []).length) showEmpty();
+      updateExportLinks();
+      loadSessions();
+    });
+  }
+
+  function showEmpty() {
+    if (log.querySelector('.msg')) return;
+    log.innerHTML = '<div class="empty"><b>嗨！我是派大星～</b><br>想聊哪个单词？问我怎么记、怎么用都行！</div>';
+  }
+
+  function updateExportLinks() {
+    var cur = document.getElementById('export-current');
+    var all = document.getElementById('export-all');
+    if (cur) cur.href = '/pet-chat-export?format=md' + (currentSessionId ? '&id=' + encodeURIComponent(currentSessionId) : '');
+    if (all) all.href = '/pet-chat-export?format=json';
+  }
+
+  function loadSessions() {
+    return fetch('/pet-chat-history.json', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        lastSessions = j.sessions || [];
+        currentSessionId = j.sessionId || '';
+        renderSessions(lastSessions);
+        updateExportLinks();
+        return j;
+      })
+      .catch(function () { return null; });
+  }
+
+  document.getElementById('newchat').addEventListener('click', function () {
+    postSession({ action: 'new' }).then(function (j) {
+      if (!j || !j.ok) return;
+      currentSessionId = j.sessionId;
+      clearLog();
+      showEmpty();
+      updateExportLinks();
+      loadSessions();
+      q.focus();
+    });
+  });
+
+  /* 提问建议:点一下把问题填进输入框(不直接发送,留个改的余地)。 */
+  var suggestBox = document.getElementById('suggest');
+  function renderSuggestions(list) {
+    if (!suggestBox) return;
+    suggestBox.innerHTML = '';
+    (list || []).forEach(function (item) {
+      if (!item || !item.q) return;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sg';
+      b.textContent = item.label || item.q;
+      b.title = item.q;
+      b.addEventListener('click', function () {
+        q.value = item.q;
+        q.focus();
+        // 光标放末尾,方便直接补一句
+        try { q.setSelectionRange(q.value.length, q.value.length); } catch (e) {}
+      });
+      suggestBox.appendChild(b);
+    });
+    suggestBox.hidden = !suggestBox.children.length;
+  }
+
+  // 回填历史 + 会话列表 + 提问建议
+  fetch('/pet-chat-history.json', { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      currentSessionId = j.sessionId || '';
+      lastSessions = j.sessions || [];
+      (j.history || []).forEach(function (m) {
+        addMsg(m.role === 'user' ? 'user' : 'assistant', m.content);
+      });
+      renderSessions(lastSessions);
+      renderSuggestions(j.suggestions);
+      updateExportLinks();
+      if (!(j.history || []).length) showEmpty();
+    })
+    .catch(function () {})
+    .then(function () { q.focus(); });
+})();
+</script>
+</body>
+</html>

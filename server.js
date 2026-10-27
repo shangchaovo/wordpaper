@@ -20,13 +20,25 @@ if (process.env.NODE_ENV !== 'test' && typeof process.loadEnvFile === 'function'
 const PORT = Number(process.env.PORT || 8770);
 const HOST = process.env.HOST || '127.0.0.1';
 const MODE = process.env.WORDPAPER_MODE || (isLoopbackHost(HOST) ? 'local' : 'public');
-const COMPANION_PORT = Number(process.env.WORDPAPER_COMPANION_PORT || 8771);
+// Tests must opt into their own companion; the user's desktop may already be
+// running on 8771 even when the test web server/database are isolated.
+const COMPANION_PORT = Number(process.env.WORDPAPER_COMPANION_PORT || (process.env.NODE_ENV === 'test' ? 1 : 8771));
 const COMPANION_ENABLED = MODE === 'local' && process.env.WORDPAPER_COMPANION_ENABLED !== '0';
 const DATA_DIR = path.resolve(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'));
 const PUBLIC_ORIGIN = String(process.env.WORDPAPER_PUBLIC_ORIGIN || '').replace(/\/$/, '');
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const SESSION_DAYS = Math.max(1, Math.min(365, Number(process.env.WORDPAPER_SESSION_DAYS) || 30));
 const OAUTH_FLOW_SECONDS = 10 * 60;
+const ACCOUNT_AUTH_MS = 10 * 60 * 1000;
+const ACCOUNT_ERRORS = {
+  identity_in_use: '这个第三方账号已绑定其他 WordPaper 账号，请先在原账号中解除绑定。',
+  binding_changed: '绑定状态已经变化，请刷新后重试。',
+  last_login_method: '请先添加另一种可用的登录方式，再解除绑定。',
+  reauth_required: '请先验证当前账号，再管理绑定。',
+  oauth_expired: '授权已过期或登录状态已改变，请重新尝试。',
+  oauth_cancelled: '已取消授权，原有绑定保持不变。',
+  oauth_failed: '授权未完成，原有绑定保持不变，请稍后重试。',
+};
 const EMAIL_CODE_SECONDS = 10 * 60;
 const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const GOOGLE_CLIENT_ID = String(process.env.WORDPAPER_GOOGLE_CLIENT_ID || '').trim();
@@ -72,6 +84,11 @@ upstream.init({
 });
 upstream.startBackground();
 function mirroring() { return MODE === 'local' && upstream.isPaired(); }
+const handleDeviceAuth = require('./lib/device-auth').createDeviceAuth({
+  storage, upstream, json, readJson, requireOrigin, requireCsrf, requireSession,
+  requestSession, authRateAllowed, expectedOrigin, oauthProviderConfigured, newSession,
+  isLoopbackRequest, mode: MODE, sessionDays: SESSION_DAYS, parseCookies,
+});
 
 // ── 新版本提示(仅独立版/本地模式):仓库根的 VERSION 是唯一版本源,
 //    与 GitHub main 的 VERSION 比较,有新版本时在 /api/session 里带给页面。 ──
@@ -189,6 +206,16 @@ const COMPANION_METHODS = new Map([
   ['/ocr.php', new Set(['HEAD', 'POST'])],
   ['/set-wallpaper.php', new Set(['HEAD', 'POST'])],
   ['/pet.php', new Set(['POST'])],
+  ['/pet-mode.php', new Set(['POST'])],
+  ['/pet-speak.php', new Set(['POST'])],
+  ['/pet-quiz.php', new Set(['POST'])],
+  ['/pet-quiz-shown.php', new Set(['POST'])],
+  ['/pet-sentence-window.php', new Set(['POST'])],
+  ['/pet-sentence.php', new Set(['POST'])],
+  ['/pet-sentence.json', new Set(['GET'])],
+  ['/pet-ime.php', new Set(['POST'])],
+  ['/pet-celebrate.php', new Set(['POST'])],
+  ['/pet-patrick.json', new Set(['GET'])],
   ['/pet-size.php', new Set(['HEAD', 'POST'])],
   ['/pet-page.php', new Set(['POST'])],
   ['/pet-sync.php', new Set(['POST'])],
@@ -275,7 +302,9 @@ function tokenHash(token) {
 function requestSession(req) {
   const cookies = parseCookies(req);
   const token = cookies['__Host-wp_session'] || cookies.wp_session;
-  return token ? storage.findSession(tokenHash(token)) : null;
+  const session = token ? storage.findSession(tokenHash(token)) : null;
+  if (session && mirroring() && session.user.id !== upstream.localUserId()) return null;
+  return session;
 }
 
 function lastForwardedValue(req, headerName) {
@@ -530,17 +559,19 @@ function oauthBinding(req) {
   return String(cookies['__Host-wp_oauth_flow'] || cookies.wp_oauth_flow || '');
 }
 
-function oauthFailure(res, code) {
+function oauthFailure(res, code, flow) {
   appendSetCookies(res, clearOAuthFlowCookies());
-  redirect(res, `/login.html?authError=${encodeURIComponent(code)}`);
+  redirect(res, flow && flow.purpose !== 'login'
+    ? `/?accountError=${encodeURIComponent(code)}#account`
+    : `/login.html?authError=${encodeURIComponent(code)}`);
 }
 
-function oauthStart(req, res, parsed, provider) {
+function oauthStart(req, res, parsed, provider, accountFlow) {
   if (!oauthProviderConfigured(provider)) {
     oauthFailure(res, `${provider}_not_configured`);
     return;
   }
-  if (!authRateAllowed(req)) {
+  if (!accountFlow && !authRateAllowed(req)) {
     oauthFailure(res, 'rate_limited');
     return;
   }
@@ -554,14 +585,22 @@ function oauthStart(req, res, parsed, provider) {
   const state = crypto.randomBytes(32).toString('base64url');
   const binding = crypto.randomBytes(32).toString('base64url');
   const codeVerifier = provider === 'google' ? crypto.randomBytes(48).toString('base64url') : '';
-  const nextPath = safeNextPath(parsed.searchParams.get('next'));
+  const nextPath = accountFlow ? '/#account' : safeNextPath(parsed.searchParams.get('next'));
   const initiatingSession = requestSession(req);
   storage.createOAuthFlow(
     tokenHash(state), tokenHash(binding), provider, codeVerifier,
     initiatingSession && initiatingSession.tokenHash,
     redirectUri, nextPath, Date.now() + OAUTH_FLOW_SECONDS * 1000,
+    accountFlow?.purpose || 'login', accountFlow?.expectedSubject || '',
   );
   res.setHeader('Set-Cookie', oauthFlowCookie(req, binding, OAUTH_FLOW_SECONDS));
+  if (accountFlow && initiatingSession) {
+    // Keep the existing account available on the cross-site callback and its
+    // redirect, including provider cancellation. Mutations still require CSRF.
+    const cookies = parseCookies(req);
+    const token = cookies['__Host-wp_session'] || cookies.wp_session;
+    appendSetCookies(res, [sessionCookie(req, token, Math.max(1, Math.floor((initiatingSession.expiresAt - Date.now()) / 1000)), 'Lax')]);
+  }
 
   if (provider === 'google') {
     const authorization = new URL(GOOGLE_AUTHORIZATION_ENDPOINT);
@@ -573,7 +612,8 @@ function oauthStart(req, res, parsed, provider) {
     authorization.searchParams.set('code_challenge', crypto.createHash('sha256').update(codeVerifier).digest('base64url'));
     authorization.searchParams.set('code_challenge_method', 'S256');
     authorization.searchParams.set('prompt', 'select_account');
-    redirect(res, authorization.toString());
+    if (accountFlow) json(res, 200, { authorizationUrl: authorization.toString() });
+    else redirect(res, authorization.toString());
     return;
   }
 
@@ -584,7 +624,8 @@ function oauthStart(req, res, parsed, provider) {
   authorization.searchParams.set('scope', 'snsapi_login');
   authorization.searchParams.set('state', state);
   authorization.hash = 'wechat_redirect';
-  redirect(res, authorization.toString());
+  if (accountFlow) json(res, 200, { authorizationUrl: authorization.toString() });
+  else redirect(res, authorization.toString());
 }
 
 async function providerJson(url, options) {
@@ -688,15 +729,10 @@ async function oauthCallback(req, res, parsed, provider) {
     oauthFailure(res, `${provider}_not_configured`);
     return;
   }
-  if (parsed.searchParams.get('error')) {
-    oauthFailure(res, 'oauth_cancelled');
-    return;
-  }
-
   const state = String(parsed.searchParams.get('state') || '');
   const code = String(parsed.searchParams.get('code') || '');
   const binding = oauthBinding(req);
-  if (!state || state.length > 256 || !code || code.length > 4096 || !binding || binding.length > 256) {
+  if (!state || state.length > 256 || !binding || binding.length > 256) {
     oauthFailure(res, 'oauth_expired');
     return;
   }
@@ -705,18 +741,118 @@ async function oauthCallback(req, res, parsed, provider) {
     oauthFailure(res, 'oauth_expired');
     return;
   }
+  if (parsed.searchParams.get('error') || !code) {
+    oauthFailure(res, 'oauth_cancelled', flow);
+    return;
+  }
+  if (code.length > 4096) { oauthFailure(res, 'oauth_expired', flow); return; }
 
   try {
+    // Password sessions are SameSite=Strict and may be absent on the cross-site
+    // callback. The Lax flow cookie binds this browser to its initiating session;
+    // that session must still exist, both before and after the provider request.
+    const boundSession = () => {
+      const session = storage.findSession(flow.initiatingSessionHash);
+      const current = requestSession(req);
+      if (!session || (current && current.tokenHash !== session.tokenHash)) {
+        throw Object.assign(new Error('oauth_expired'), { code: 'oauth_expired' });
+      }
+      return session;
+    };
+    if (flow.purpose !== 'login') boundSession();
     const identity = provider === 'google' ? await googleIdentity(code, flow) : await wechatIdentity(code, flow);
+    if (flow.purpose !== 'login') {
+      const session = boundSession();
+      if (flow.purpose === 'reauth') {
+        const linked = storage.accountCredentials(session.user.id).identities.find(row => row.provider === provider);
+        if (!linked || linked.provider_subject !== identity.subject || identity.subject !== flow.expectedSubject) {
+          throw Object.assign(new Error('binding_changed'), { code: 'binding_changed' });
+        }
+        storage.markSessionAuthenticated(session.tokenHash);
+      } else {
+        if (Date.now() - session.authenticatedAt > ACCOUNT_AUTH_MS) {
+          throw Object.assign(new Error('reauth_required'), { code: 'reauth_required' });
+        }
+        storage.bindIdentity(session.user.id, provider, identity.subject, identity.profile, flow.expectedSubject, session.tokenHash);
+      }
+      appendSetCookies(res, clearOAuthFlowCookies());
+      redirect(res, `/?accountSuccess=${flow.purpose === 'reauth' ? 'verified' : 'bound'}#account`);
+      return;
+    }
     const account = storage.findOrCreateFederatedUser(provider, identity.subject, identity.profile);
     newSession(req, res, account.user, account.created, 'Lax');
     if (flow.initiatingSessionHash) storage.deleteSession(flow.initiatingSessionHash);
     appendSetCookies(res, clearOAuthFlowCookies());
     redirect(res, flow.nextPath);
   } catch (error) {
-    console.error(`${provider} OAuth failed:`, error && error.message ? error.message : error);
-    oauthFailure(res, 'oauth_failed');
+    if (!ACCOUNT_ERRORS[error.code]) console.error(`${provider} OAuth failed:`, error && error.message ? error.message : error);
+    oauthFailure(res, ACCOUNT_ERRORS[error.code] ? error.code : 'oauth_failed', flow);
   }
+}
+
+async function handleAccount(req, res, parsed) {
+  const session = requireSession(req, res);
+  if (!session) return;
+  if (mirroring()) {
+    if (parsed.pathname === '/api/account' && req.method === 'GET') {
+      json(res, 200, { managedExternally: true, accountUrl: upstream.pairedInfo().url + '/#account' });
+    } else json(res, 409, { error: '请在主账号所在的 WordPaper 网站管理登录绑定。' });
+    return;
+  }
+  const credentials = storage.accountCredentials(session.user.id);
+  const enabledProviders = ['google', 'wechat'].filter(oauthProviderConfigured);
+  const reauthRequired = () => Date.now() - session.authenticatedAt > ACCOUNT_AUTH_MS;
+  if (parsed.pathname === '/api/account' && req.method === 'GET') {
+    json(res, 200, {
+      user: session.user, hasPassword: Boolean(credentials.passwordHash), reauthRequired: reauthRequired(),
+      providers: ['google', 'wechat'].map(provider => {
+        const identity = credentials.identities.find(row => row.provider === provider);
+        return {
+          provider, enabled: enabledProviders.includes(provider), bound: Boolean(identity),
+          label: identity ? identity.email || identity.display_name || (provider === 'google' ? 'Google 账号' : '微信账号') : '',
+          canUnlink: Boolean(identity && (credentials.passwordHash || credentials.identities.some(row => row.provider !== provider && enabledProviders.includes(row.provider)))),
+        };
+      }),
+    });
+    return;
+  }
+  if (req.method !== 'POST') { json(res, 405, { error: 'Method Not Allowed' }); return; }
+  if (!requireCsrf(req, res, session)) return;
+  if (!authRateAllowed(req)) { json(res, 429, { error: '操作过于频繁，请稍后再试' }); return; }
+  if (parsed.pathname === '/api/account/reauth') {
+    const body = await readJson(req);
+    const password = String(body?.password || '');
+    const valid = credentials.passwordHash && password.length <= 128 && await passwordMatches(password, credentials.passwordHash);
+    if (!valid) { json(res, 403, { error: '当前账号密码不正确' }); return; }
+    if (!storage.findSession(session.tokenHash)) { json(res, 401, { error: '请重新登录' }); return; }
+    storage.markSessionAuthenticated(session.tokenHash);
+    json(res, 200, { ok: true });
+    return;
+  }
+  const match = /^\/api\/account\/(google|wechat)\/(link|replace|unlink|reauth)$/.exec(parsed.pathname);
+  if (!match) { json(res, 404, { error: 'Not Found' }); return; }
+  const [, provider, purpose] = match;
+  const identity = credentials.identities.find(row => row.provider === provider);
+  if ((purpose === 'link' && identity) || (purpose !== 'link' && !identity)) {
+    json(res, 409, { error: ACCOUNT_ERRORS.binding_changed }); return;
+  }
+  if (purpose !== 'reauth' && reauthRequired()) {
+    json(res, 403, { error: ACCOUNT_ERRORS.reauth_required, code: 'reauth_required' }); return;
+  }
+  if (purpose === 'unlink') {
+    try {
+      storage.unlinkIdentity(session.user.id, provider, session.tokenHash, enabledProviders);
+      json(res, 200, { ok: true });
+    } catch (error) {
+      if (!ACCOUNT_ERRORS[error.code]) throw error;
+      json(res, error.status || 409, { error: ACCOUNT_ERRORS[error.code], code: error.code });
+    }
+    return;
+  }
+  if (!oauthProviderConfigured(provider) || !validOAuthRedirectUri(oauthRedirectUri(req, provider), provider)) {
+    json(res, 503, { error: `${provider === 'google' ? 'Google' : '微信'}登录尚未配置完成` }); return;
+  }
+  oauthStart(req, res, parsed, provider, { purpose, expectedSubject: identity?.provider_subject || '' });
 }
 
 function safeStaticPath(pathname) {
@@ -725,6 +861,8 @@ function safeStaticPath(pathname) {
   if (decoded.includes('\0') || decoded.includes('\\')) return null;
   if (decoded === '/' || decoded === '/index.html') return path.join(ROOT, 'index.html');
   if (decoded === '/login' || decoded === '/login.html') return path.join(ROOT, 'login.html');
+  if (decoded === '/connect.html') return path.join(ROOT, 'connect.html');
+  if (decoded === '/pet-sentence.html') return path.join(ROOT, 'pet-sentence.html');
 
   const segments = decoded.split('/').filter(Boolean);
   if (segments.length < 2 || segments.some(segment => segment === '.' || segment === '..' || segment.startsWith('.'))) return null;
@@ -783,11 +921,11 @@ function companionAllowed(req, session, claimOwner) {
   return true;
 }
 
-async function proxyToCompanion(req, res) {
+async function proxyToCompanion(req, res, session) {
   const body = ['GET', 'HEAD'].includes(req.method) ? Buffer.alloc(0) : await readBody(req, MAX_PROXY_BYTES);
   const gracefulWhenStopped = !['/ocr.php', '/set-wallpaper.php'].includes(new URL(req.url, 'http://wordpaper.invalid').pathname);
   await new Promise(resolve => {
-    const headers = {};
+    const headers = { 'X-WordPaper-User-Id': String(session.user.id) };
     if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
     if (body.length) headers['Content-Length'] = body.length;
     const upstream = http.request({
@@ -1003,6 +1141,7 @@ async function handleAuth(req, res, parsed) {
 
   const oauthMatch = /^\/api\/auth\/(google|wechat)\/(start|callback)$/.exec(pathname);
   if (oauthMatch) {
+    if (mirroring()) { json(res, 403, { error: '请在主账号所在的网站使用第三方登录' }); return true; }
     if (req.method !== 'GET') { text(res, 405, 'Method Not Allowed'); return true; }
     const provider = oauthMatch[1];
     if (oauthMatch[2] === 'start') oauthStart(req, res, parsed, provider);
@@ -1033,7 +1172,7 @@ async function handleAuth(req, res, parsed) {
       throw error;
     }
     const session = newSession(req, res, user, true);
-    json(res, 201, session);
+    json(res, 201, Object.assign({}, session, { user: Object.assign({}, session.user, { role: user.role || 'user' }) }));
     return true;
   }
 
@@ -1049,7 +1188,7 @@ async function handleAuth(req, res, parsed) {
     else await scryptAsync(password, Buffer.alloc(16, 7), 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
     if (!user || !valid) { json(res, 401, { error: '邮箱、用户名或密码错误' }); return true; }
     const session = newSession(req, res, { id: Number(user.id), username: user.username }, false);
-    json(res, 200, session);
+    json(res, 200, Object.assign({}, session, { user: Object.assign({}, session.user, { role: user.role || 'user' }) }));
     return true;
   }
   return false;
@@ -1088,6 +1227,12 @@ async function handle(req, res) {
   }
 
   if (await handleAuth(req, res, parsed)) return;
+  if (await handleDeviceAuth(req, res, parsed)) return;
+
+  if (pathname === '/api/account' || pathname.startsWith('/api/account/')) {
+    await handleAccount(req, res, parsed);
+    return;
+  }
 
   const session = requestSession(req);
 
@@ -1154,19 +1299,21 @@ async function handle(req, res) {
   }
 
 
-  if ((pathname === '/' || pathname === '/index.html') && !session) {
-    redirect(res, '/login.html');
+  if ((pathname === '/' || pathname === '/index.html' || pathname === '/connect.html') && !session) {
+    redirect(res, pathname === '/connect.html' ? '/login.html?next=' + encodeURIComponent(pathname + parsed.search) : '/login.html');
     return;
   }
-  if ((pathname === '/login' || pathname === '/login.html') && session) {
-    redirect(res, '/');
+  if ((pathname === '/login' || pathname === '/login.html') && session && !(MODE === 'local' && parsed.searchParams.get('sync') === '1')) {
+    redirect(res, safeNextPath(parsed.searchParams.get('next')));
     return;
   }
 
   if (pathname === '/api/session' && req.method === 'GET') {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    const meRow = storage.findUserById(session.user.id);
     json(res, 200, {
-      user: session.user, csrfToken: session.csrfToken, allowLegacyImport: session.allowLegacyImport,
+      user: Object.assign({}, session.user, { role: (meRow && meRow.role) || 'user' }),
+      csrfToken: session.csrfToken, allowLegacyImport: session.allowLegacyImport,
       mirrored: mirroring(), upstream: mirroring() ? upstream.status() : null,
       update: updateNotice(),
     });
@@ -1180,6 +1327,69 @@ async function handle(req, res) {
     res.setHeader('Set-Cookie', clearSessionCookies());
     json(res, 200, { ok: true });
     return;
+  }
+
+
+  /* ── 管理员接口(内测/账号管理)────────────────────────────────
+   * 只有 users.role='admin' 的账号可用。所有写操作都要 CSRF + 同源校验。
+   * 首次升级时把历史主账号 chaest 提为 admin(幂等,已有 admin 则不动)。 */
+  if (pathname.startsWith('/api/admin/')) {
+    if (!session) { json(res, 401, { error: '请先登录' }); return true; }
+    const me = storage.findUserById(session.user.id);
+    if (!me || me.role !== 'admin') { json(res, 403, { error: '需要管理员权限' }); return true; }
+
+    if (pathname === '/api/admin/users' && req.method === 'GET') {
+      json(res, 200, { users: storage.listUsers() });
+      return true;
+    }
+
+    if (req.method === 'POST') {
+      if (!requireCsrf(req, res, session)) return true;
+      const body = await readJson(req);
+      if (pathname === '/api/admin/password') {
+        const targetId = Number(body.userId);
+        const target = storage.findUserById(targetId);
+        if (!target) { json(res, 404, { error: '账号不存在' }); return true; }
+        const password = String(body.password || '');
+        if (Buffer.byteLength(password, 'utf8') < 8 || Buffer.byteLength(password, 'utf8') > 256) {
+          json(res, 400, { error: '密码长度需为 8-128 个字符' }); return true;
+        }
+        storage.setUserPassword(targetId, await passwordHash(password));
+        json(res, 200, { ok: true, username: target.username });
+        return true;
+      }
+      if (pathname === '/api/admin/role') {
+        const targetId = Number(body.userId);
+        const role = body.role === 'admin' ? 'admin' : 'user';
+        const target = storage.findUserById(targetId);
+        if (!target) { json(res, 404, { error: '账号不存在' }); return true; }
+        if (target.id === session.user.id && role !== 'admin') {
+          json(res, 400, { error: '不能取消自己的管理员权限' }); return true;
+        }
+        json(res, 200, { user: storage.setUserRole(targetId, role) });
+        return true;
+      }
+      if (pathname === '/api/admin/feature') {
+        // 内测功能开关:key 白名单,值存 app_meta('feature:<key>')。
+        const ALLOWED = new Set(['betaPetQuiz', 'betaPatrickVoice', 'betaCompanionRoam', 'betaMirror']);
+        const key = String(body.key || '');
+        if (!ALLOWED.has(key)) { json(res, 400, { error: '未知功能开关' }); return true; }
+        storage.setMeta('feature:' + key, body.enabled ? '1' : '0');
+        json(res, 200, { ok: true, key, enabled: !!body.enabled });
+        return true;
+      }
+    }
+
+    if (pathname === '/api/admin/features' && req.method === 'GET') {
+      const ALLOWED = ['betaPetQuiz', 'betaPatrickVoice', 'betaCompanionRoam', 'betaMirror'];
+      const features = {};
+      ALLOWED.forEach(k => { features[k] = storage.getMeta('feature:' + k) === '1'; });
+      json(res, 200, { features });
+      return true;
+    }
+
+    json(res, 404, { error: 'not found' });
+    return true;
   }
 
   if (pathname === '/api/state' && req.method === 'GET') {
@@ -1212,6 +1422,161 @@ async function handle(req, res) {
     return;
   }
 
+/* 把三种可能的导入输入统一成 { libs: { libId: { words: {...} } } }。
+ *   - progress JSON:{ format:'wordpaper-progress', raw:{ libId:{words} }, words:[...] }
+ *   - 备份 JSON:{ format:'wordpaper-backup', state:{ review:{ libId:{words} } } }
+ *   - 裸 review 对象:{ libId:{ words:{...} } }
+ * 识别不出来返回 null。 */
+function normalizeImportedReview(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const looksLikeReview = obj => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+    const keys = Object.keys(obj);
+    if (!keys.length) return false;
+    // 至少一个词库带着 words 对象才算
+    return keys.some(k => obj[k] && typeof obj[k] === 'object' && obj[k].words && typeof obj[k].words === 'object');
+  };
+  // 1) 完整备份
+  if (payload.state && typeof payload.state === 'object' && looksLikeReview(payload.state.review)) {
+    return { libs: payload.state.review };
+  }
+  // 2) progress JSON 的 raw
+  if (looksLikeReview(payload.raw)) return { libs: payload.raw };
+  // 3) progress JSON 只有 words 数组 → 按 library 字段重新分组
+  if (Array.isArray(payload.words) && payload.words.length) {
+    const libs = {};
+    payload.words.forEach(w => {
+      if (!w || !w.word) return;
+      const libId = String(w.library || 'custom');
+      if (!libs[libId]) libs[libId] = { cursor: 0, groups: {}, words: {} };
+      const key = w.word + '|' + (w.meaning || '');
+      libs[libId].words[key] = {
+        word: { word: w.word, phonetic: w.phonetic || '', pos: w.pos || '', meaning: w.meaning || '' },
+        learnedAt: w.learnedAt ? Date.parse(w.learnedAt) || Date.now() : Date.now(),
+        stage: Number(w.stage) || 0,
+        due: w.due ? Date.parse(w.due) || null : null,
+        lastSeenAt: w.lastSeenAt ? Date.parse(w.lastSeenAt) || 0 : 0,
+        learnedCount: Number(w.learnedCount) || 0,
+        reviewCount: Number(w.reviewCount) || 0,
+        successCount: Number(w.successCount) || 0,
+        failCount: Number(w.failCount) || 0,
+        events: [],
+      };
+    });
+    return Object.keys(libs).length ? { libs } : null;
+  }
+  // 4) 裸 review 对象
+  if (looksLikeReview(payload)) return { libs: payload };
+  return null;
+}
+
+  /* 导入背单词情况(与 /api/export/progress 配套,形成闭环)。
+   * 支持两种输入:
+   *   1) 本应用导出的 progress JSON({format:'wordpaper-progress', raw:{...}} 或 words:[...])
+   *   2) 完整备份 JSON({format:'wordpaper-backup', state:{review:{...}}})
+   * 也接受直接粘贴的 review namespace 对象。
+   * 合并策略(不做整表覆盖,避免误删现有进度):
+   *   - 同一个词(词+释义):保留 stage 更高的那条(学得更久的赢);
+   *   - due 取更早的那个(更该复习);
+   *   - 计数与事件合并累加;词条本身以导入的为准补齐缺失字段。
+   * dryRun=1 时只回统计不落库,便于用户先看会导入多少。 */
+  if (pathname === '/api/import/progress' && req.method === 'POST') {
+    if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    if (!requireOrigin(req, res)) return;
+    if (!requireCsrf(req, res, session)) return;
+    if (mirroring()) { json(res, 409, { error: '已连接主账号，请在主账号那台机器上导入' }); return; }
+    const body = await readJson(req);
+    if (!body || typeof body !== 'object') { json(res, 400, { error: '请求体无效' }); return; }
+    const dryRun = body.dryRun === true;
+    const incoming = normalizeImportedReview(body.payload !== undefined ? body.payload : body);
+    if (!incoming || !incoming.libs) { json(res, 400, { error: '无法识别这份文件：既不是 WordPaper 进度导出，也不是备份 JSON' }); return; }
+    const INTERVALS = [20, 60, 540, 1440, 2880, 4320, 8640, 17280];
+    const current = mirroring() ? await upstream.mirroredState() : storage.getState(session.user.id);
+    const review = (current.state && current.state.review && typeof current.state.review === 'object') ? current.state.review : {};
+    const summary = { added: 0, upgraded: 0, merged: 0, skipped: 0, libraries: {} };
+    Object.keys(incoming.libs).forEach(libId => {
+      if (!libId || libId.length > 64) return;
+      const src = incoming.libs[libId];
+      if (!src || typeof src !== 'object' || !src.words || typeof src.words !== 'object') return;
+      if (!review[libId] || typeof review[libId] !== 'object') review[libId] = { cursor: 0, groups: {}, words: {} };
+      const dstLib = review[libId];
+      if (!dstLib.words || typeof dstLib.words !== 'object') dstLib.words = {};
+      if (!dstLib.groups || typeof dstLib.groups !== 'object') dstLib.groups = {};
+      if (typeof dstLib.cursor !== 'number') dstLib.cursor = 0;
+      summary.libraries[libId] = 0;
+      Object.keys(src.words).forEach(key => {
+        const item = src.words[key];
+        if (!item || typeof item !== 'object') return;
+        const word = item.word || {};
+        if (!word.word) { summary.skipped++; return; }
+        const stage = Math.max(0, Math.min(INTERVALS.length, Number(item.stage) || 0));
+        const clean = {
+          word: {
+            word: String(word.word),
+            phonetic: String(word.phonetic || ''),
+            pos: String(word.pos || ''),
+            meaning: String(word.meaning || ''),
+          },
+          learnedAt: Number(item.learnedAt) || Date.now(),
+          stage,
+          due: stage >= INTERVALS.length ? null : (Number(item.due) || null),
+          learnedCount: Math.max(0, Number(item.learnedCount) || 0),
+          reviewCount: Math.max(0, Number(item.reviewCount) || 0),
+          successCount: Math.max(0, Number(item.successCount) || 0),
+          failCount: Math.max(0, Number(item.failCount) || 0),
+          events: Array.isArray(item.events) ? item.events.slice(-64) : [],
+        };
+        if (item.lastSeenAt) clean.lastSeenAt = Number(item.lastSeenAt);
+        const existing = dstLib.words[key];
+        if (!existing) {
+          // dryRun 也要照常统计(只是最后不落库),否则预览永远显示 0
+          if (!dryRun) dstLib.words[key] = clean;
+          summary.added++;
+          summary.libraries[libId]++;
+          return;
+        }
+        // 合并:stage 高者胜;due 取更早;计数累加上限;事件去重合并
+        const curStage = Math.max(0, Math.min(INTERVALS.length, Number(existing.stage) || 0));
+        if (stage > curStage) {
+          existing.word = clean.word;
+          existing.stage = stage;
+          existing.learnedAt = Math.min(Number(existing.learnedAt) || clean.learnedAt, clean.learnedAt);
+          summary.upgraded++;
+          summary.libraries[libId]++;
+        } else {
+          summary.merged++;
+          summary.libraries[libId]++;      // 合并也是「会处理的词」,预览要算进去
+        }
+        const a = existing.due ? Number(existing.due) : Infinity;
+        const b = clean.due ? Number(clean.due) : Infinity;
+        const mergedDue = Math.min(a, b);
+        existing.due = Number.isFinite(mergedDue) ? mergedDue : null;
+        existing.learnedCount = Math.max(Number(existing.learnedCount) || 0, clean.learnedCount);
+        existing.reviewCount = Math.max(Number(existing.reviewCount) || 0, clean.reviewCount);
+        existing.successCount = Math.max(Number(existing.successCount) || 0, clean.successCount);
+        existing.failCount = Math.max(Number(existing.failCount) || 0, clean.failCount);
+        const seen = new Set((existing.events || []).map(e => (e && e.at) + '|' + (e && e.type)));
+        (clean.events || []).forEach(e => {
+          const k = (e && e.at) + '|' + (e && e.type);
+          if (!seen.has(k)) { seen.add(k); existing.events.push(e); }
+        });
+        existing.events = (existing.events || []).slice(-64);
+      });
+    });
+    const total = Object.keys(summary.libraries).reduce((n, k) => n + summary.libraries[k], 0);
+    if (!dryRun && total > 0) {
+      const rev = Number(current.revisions && current.revisions.review) || 0;
+      const result = mirroring() ? await upstream.pushState('review', review, rev) : storage.putState(session.user.id, 'review', review, rev);
+      if (result.conflict || result.kind === 'conflict') { json(res, 409, { error: '数据刚刚在别处被修改，请重试' }); return; }
+    }
+    json(res, 200, {
+      ok: true, dryRun, imported: total,
+      added: summary.added, upgraded: summary.upgraded, merged: summary.merged, skipped: summary.skipped,
+      libraries: summary.libraries,
+    });
+    return;
+  }
+
   if (pathname === '/api/export' && req.method === 'GET') {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
     const snapshot = storage.getState(session.user.id);
@@ -1219,6 +1584,77 @@ async function handle(req, res) {
       format: 'wordpaper-backup', schemaVersion: 1, exportedAt: new Date().toISOString(),
       username: session.user.username, state: snapshot.state,
     }, { 'Content-Disposition': 'attachment; filename="wordpaper-backup.json"' });
+    return;
+  }
+
+  /* 背单词情况导出:只导复习/学习记录(review namespace),不夹带设置与账号信息。
+   * format=csv → 表格(Excel/ Numbers/ 飞书都能开);其它 → 完整 JSON。
+   * 数据源就是服务端的权威 review 状态,所以导出内容 = 你在任何设备上看到的一致。 */
+  if (pathname === '/api/export/progress' && req.method === 'GET') {
+    if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    let snapshot;
+    try { snapshot = storage.getState(session.user.id); } catch { json(res, 500, { error: '读取数据失败' }); return; }
+    const review = (snapshot && snapshot.state && snapshot.state.review) || {};
+    const url = new URL(req.url, 'http://wordpaper.invalid');
+    const format = String(url.searchParams.get('format') || 'csv').toLowerCase();
+    const INTERVALS = [20, 60, 540, 1440, 2880, 4320, 8640, 17280];
+    const rows = [];
+    Object.keys(review).forEach(libId => {
+      const words = (review[libId] && review[libId].words) || {};
+      Object.keys(words).forEach(key => {
+        const item = words[key] || {};
+        const word = item.word || {};
+        const stage = Number(item.stage) || 0;
+        rows.push({
+          library: libId,
+          word: String(word.word || ''),
+          phonetic: String(word.phonetic || ''),
+          pos: String(word.pos || ''),
+          meaning: String(word.meaning || ''),
+          stage,
+          rounds: INTERVALS.length,
+          mastered: stage >= INTERVALS.length,
+          due: item.due ? new Date(Number(item.due)).toISOString() : '',
+          learnedAt: item.learnedAt ? new Date(Number(item.learnedAt)).toISOString() : '',
+          lastSeenAt: item.lastSeenAt ? new Date(Number(item.lastSeenAt)).toISOString() : '',
+          learnedCount: Number(item.learnedCount) || 0,
+          reviewCount: Number(item.reviewCount) || 0,
+          successCount: Number(item.successCount) || 0,
+          failCount: Number(item.failCount) || 0,
+          events: Array.isArray(item.events) ? item.events.length : 0,
+        });
+      });
+    });
+    rows.sort((a, b) => (a.library === b.library ? a.due.localeCompare(b.due) : a.library.localeCompare(b.library)));
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'json') {
+      json(res, 200, {
+        format: 'wordpaper-progress', schemaVersion: 1,
+        exportedAt: new Date().toISOString(), username: session.user.username,
+        total: rows.length,
+        mastered: rows.filter(r => r.mastered).length,
+        learning: rows.filter(r => !r.mastered).length,
+        words: rows,
+        raw: review,
+      }, { 'Content-Disposition': `attachment; filename="wordpaper-progress-${stamp}.json"` });
+      return;
+    }
+    // CSV:带 BOM,Excel 打开中文不乱码;字段按 RFC4180 转义。
+    const COLS = ['library', 'word', 'phonetic', 'pos', 'meaning', 'stage', 'rounds', 'mastered', 'due', 'learnedAt', 'lastSeenAt', 'learnedCount', 'reviewCount', 'successCount', 'failCount', 'events'];
+    const HEAD = ['词库', '单词', '音标', '词性', '释义', '当前轮次', '总轮次', '已记牢', '下次复习', '首次学习', '最近复习', '学习次数', '复习次数', '记住次数', '遗忘次数', '事件数'];
+    const esc = v => {
+      const t = String(v == null ? '' : v);
+      return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    };
+    const lines = [HEAD.join(',')];
+    rows.forEach(r => lines.push(COLS.map(c => c === 'mastered' ? (r[c] ? '是' : '否') : r[c]).map(esc).join(',')));
+    const csv = '\ufeff' + lines.join('\r\n') + '\r\n';
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="wordpaper-progress-${stamp}.csv"`,
+      'Cache-Control': 'no-store',
+    });
+    res.end(csv);
     return;
   }
 
@@ -1253,7 +1689,7 @@ async function handle(req, res) {
     if (!COMPANION_METHODS.get(pathname).has(req.method)) { text(res, 405, 'Method Not Allowed'); return; }
     if (!['GET', 'HEAD'].includes(req.method) && !requireOrigin(req, res)) return;
     if (!companionAllowed(req, session, true)) { json(res, 404, { ok: false, companion: false }); return; }
-    await proxyToCompanion(req, res);
+    await proxyToCompanion(req, res, session);
     return;
   }
 

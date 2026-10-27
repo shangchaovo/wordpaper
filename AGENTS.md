@@ -8,6 +8,10 @@ WordPaper（原「每日壁纸」）— 把每日单词 + 当天提醒做成手�
 
 ## Commands
 
+**桌面 App / 云端账号（2026-10-27）**：`scripts/native_app.m` 提供 Cocoa + WKWebView 主窗口，打包器编译 universal 可执行程序，内部复用 launcher/Node 服务。第三方授权必须走系统浏览器；`lib/device-auth.js` 的一次性设备码 + 私有 verifier 将独立云端会话交给本机服务，禁止把密钥打进 App 或把会话令牌放进 URL。已有账号绑定/换绑由 `/api/account` 管理，要求最近验证；云端账号中心负责镜像设备的绑定。`connect.html` 必须同时纳入静态白名单、App/伴侣打包和 updater 清单。首次从旧 stub 升到原生主窗口需要完整安装新 App，旧更新器不替换原生可执行文件。
+
+**同步写入**：`upstream.pushState` 将值与队列在 SQLite 同一事务落盘，连续离线写保留最初云端 revision；补推串行，较早回包不能清掉新队列。companion `writeReviewState` 也必须同时入队，以覆盖主窗口关闭时产生的学习记录。新测试：`test_account_links.js`、`test_desktop_sync.js`、`test_native_app.py`；`test:account-browser` / `test:desktop-browser` 走模拟平台，不等于真实 Google/微信已开通。配置和旧账号迁移见 README。
+
 ```bash
 npm start                      # 开发服务器 http://localhost:8770（端口占用时直接失败，不漂移 origin）
 npm test                       # 账号隔离/重启持久化/安全边界 + SRS + companion 测试

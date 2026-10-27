@@ -20,7 +20,7 @@ try {
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
 </script>
-<link rel="stylesheet" href="css/styles.css?v=20261023b">
+<link rel="stylesheet" href="css/styles.css?v=20261027a">
 <link rel="stylesheet" href="css/ui-themes.css?v=20261023d">
 <link rel="stylesheet" href="css/motion.css?v=20261023e">
 <link rel="stylesheet" href="css/liquid-glass.css?v=2026102702">
@@ -47,7 +47,9 @@ try {
   <!-- 模块标题 -->
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.4 C10.2 4.9 7.2 4.5 4.2 5.1 V18.2 C7.2 17.6 10.2 18 12 19.5 C13.8 18 16.8 17.6 19.8 18.2 V5.1 C16.8 4.5 13.8 4.9 12 6.4 Z"/><path d="M12 6.4 V19.5"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 4.2 a5.4 5.4 0 0 1 5.4 5.4 V14 l1.5 2.5 a.85 .85 0 0 1 -.75 1.3 H5.85 a.85 .85 0 0 1 -.75 -1.3 L6.6 14 V9.6 A5.4 5.4 0 0 1 12 4.2 Z"/><path d="M10.1 20.4 a1.9 1.9 0 0 0 3.8 0"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.6"/><path d="M15.6 15.6 L20.6 20.6"/></symbol>
   <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6.5 4.2 h11 a.9 .9 0 0 1 .9 .9 V20.3 L12 16.8 L5.6 20.3 V5.1 a.9 .9 0 0 1 .9 -.9 Z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="22.6 4 22.6 10 16.6 10"/><polyline points="1.4 20 1.4 14 7.4 14"/><path d="M3.9 9 a9 9 0 0 1 14.7 -3.3 L22.6 10 M1.4 14 l4.5 4.3 A9 9 0 0 0 20.1 15"/></symbol>
   <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6 V20.4 A8.4 8.4 0 0 0 12 3.6 Z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.2 V4.4 h14 v1.8"/><path d="M12 4.4 V19.6"/><path d="M9.4 19.6 h5.2"/></symbol>
@@ -95,6 +97,7 @@ try {
       <div class="account-tools" aria-label="账号与同步状态">
         <span id="sync-status" class="sync-status" data-state="saved">已同步</span>
         <span id="account-name" class="account-name"></span>
+        <button id="btn-account" class="account-link account-button" type="button" hidden>账号绑定</button>
         <button id="btn-import-legacy" class="account-link account-button legacy-import" type="button" hidden>迁移旧数据</button>
         <a class="account-link" href="/api/export" download="wordpaper-backup.json">备份</a>
         <button id="btn-logout" class="account-link account-button" type="button">退出</button>
@@ -152,6 +155,17 @@ try {
         <button id="btn-clear-done" class="btn small ghost">清除已完成</button>
       </section>
 
+
+      <details id="module-admin" class="card module-card" hidden>
+        <summary><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg></span>管理 · 内测与账号</summary>
+        <div class="card-body">
+          <p class="hint">仅管理员可见。密码重置会立即生效（当前会话不受影响）。</p>
+          <div id="admin-users" class="admin-users"></div>
+          <h3 class="admin-sub">内测功能开关</h3>
+          <div id="admin-features" class="admin-features"></div>
+          <p id="admin-msg" class="hint" aria-live="polite"></p>
+        </div>
+      </details>
       <section id="module-srs" class="card srs-card module-card">
         <div class="card-head">
           <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-bookmark"/></svg></span>记忆复习</h2>
@@ -165,6 +179,34 @@ try {
           <span class="srs-cd-icon"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg></span>
           <span class="srs-cd-text">下次复习 <b id="srs-cd-time">--:--</b></span>
         </div>
+      </section>
+
+      <section id="module-plan" class="card module-card">
+        <div class="card-head">
+          <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-flag"/></svg></span>学习规划</h2>
+        </div>
+        <p class="hint">定一个目标（每天几个词），配合打卡和词典通关。数据存你自己的账号里，随时可调。</p>
+        <div class="plan-grid">
+          <label class="row"><span>每天目标(词)</span><input id="inp-plan-daily" type="number" min="1" max="200" value="10"></label>
+          <div class="plan-row">
+            <span class="plan-label">今日进度</span>
+            <div class="plan-bar"><div id="plan-bar-fill"></div></div>
+            <b id="plan-progress-text">0/10</b>
+          </div>
+          <div class="plan-row plan-streak">
+            <span class="plan-label">连续打卡</span>
+            <span id="plan-streak">🔥 0 天</span>
+          </div>
+        </div>
+        <div class="plan-dict">
+          <div class="plan-dict-head"><span>词典通关</span><span id="plan-dict-progress" class="plan-dict-progress">0%</span></div>
+          <div class="plan-bar slim"><div id="plan-dict-fill"></div></div>
+          <div id="plan-dict-eta" class="hint plan-eta">按当前速度，通关还需 -- 天</div>
+        </div>
+        <div id="plan-checkin-btnrow">
+          <button id="btn-plan-checkin" class="btn primary small" type="button">今日已学够，打卡 ✓</button>
+        </div>
+        <div id="plan-history" class="plan-history"></div>
       </section>
 
       <details id="module-automation" class="card module-card">
@@ -220,6 +262,13 @@ try {
             <option value="dissolve">柔和淡入</option>
             <option value="pop">轻弹</option>
             <option value="none">无动画</option>
+          </select>
+        </label>
+        <label class="pet-dock-fx" title="词卡=经典学习卡;派大星=在桌面自由散步、悬停打招呼、点击朗读">
+          <span>形态</span>
+          <select id="sel-pet-mode" aria-label="小词灵形态">
+            <option value="card">词卡</option>
+            <option value="patrick">派大星</option>
           </select>
         </label>
         <label class="pet-dock-sync" title="开启后：点词/翻页立即换桌面壁纸，网页预览跟随小词灵，「换一组」推动小词灵翻页；关闭则壁纸/预览各自独立随机">
@@ -390,6 +439,30 @@ try {
 </div>
 
 <!-- ============ Ebbinghaus memory notebook ============ -->
+<dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
+  <div class="modal-head">
+    <h2 id="account-title"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>账号绑定</h2>
+    <button id="btn-close-account" class="modal-close" type="button" aria-label="关闭账号绑定">✕</button>
+  </div>
+  <p id="account-identity" class="hint"></p>
+  <p class="hint">绑定后，Google 和微信都可以登录当前账号。更换绑定不会改变词库、提醒和学习记录。</p>
+  <p id="account-status" class="account-status" role="status" aria-live="polite"></p>
+  <section id="account-verify" hidden aria-label="验证当前账号">
+    <p class="hint">为保护你的账号，请先验证身份。验证后 10 分钟内可管理绑定。</p>
+    <form id="account-password-form" hidden>
+      <label for="account-password">当前账号密码</label>
+      <div class="account-actions">
+        <input id="account-password" type="password" autocomplete="current-password" maxlength="128" required>
+        <button class="btn" type="submit">验证</button>
+      </div>
+    </form>
+    <div id="account-verify-providers" class="account-actions"></div>
+  </section>
+  <div id="account-providers" class="account-providers"></div>
+  <a id="account-connect-cloud" class="account-link" href="/login.html?sync=1" hidden>连接同步账号 / 更换同步服务器</a>
+  <p class="hint">更换或解绑后，其他设备需要重新登录。至少保留一种可用的登录方式。</p>
+</dialog>
+
 <div id="memory-modal" class="modal-overlay memory-modal" hidden>
   <div class="modal-card memory-card" role="dialog" aria-modal="true" aria-labelledby="memory-title">
     <div class="modal-head">
@@ -397,6 +470,16 @@ try {
       <button id="btn-close-memory" class="modal-close" type="button" title="关闭" aria-label="关闭记忆本">✕</button>
     </div>
     <div id="memory-summary" class="memory-summary"></div>
+    <div class="memory-export">
+      <span class="memory-export-hint">数据是你的，随时可以带走：</span>
+      <a class="chip" href="api/export/progress?format=csv" download>导出表格 CSV</a>
+      <a class="chip" href="api/export/progress?format=json" download>导出完整 JSON</a>
+      <label class="chip memory-import-chip" title="导入之前导出的进度文件（会与现有进度合并，不会覆盖）">
+        导入进度
+        <input id="file-import-progress" type="file" accept=".json,application/json" hidden>
+      </label>
+      <span id="memory-import-status" class="memory-import-status" role="status" aria-live="polite"></span>
+    </div>
     <div id="memory-notebook-list" class="memory-notebook-list" aria-live="polite"></div>
     <button id="btn-enable-srs-notice" class="chip srs-notice" type="button">开启系统复习提醒</button>
   </div>
@@ -525,7 +608,7 @@ try {
 <script src="js/review.js?v=20260812a"></script>
 <script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=2026102702"></script>
+<script src="js/app.js?v=20261027-v260"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

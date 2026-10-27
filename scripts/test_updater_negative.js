@@ -15,7 +15,7 @@ process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 const appPath = path.join(tmp, 'fakeRes', 'WordPaper.app');
 const resPath = path.join(appPath, 'Contents', 'Resources');
 fs.mkdirSync(resPath, { recursive: true });
-for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) fs.writeFileSync(path.join(resPath, f), 'stale');
+for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'pet-chat.html', 'pet-sentence.html']) fs.writeFileSync(path.join(resPath, f), 'stale');
 fs.writeFileSync(path.join(resPath, 'VERSION'), '2.2.3');
 for (const d of ['lib', 'css', 'js', 'data', 'assets']) fs.mkdirSync(path.join(resPath, d), { recursive: true });
 fs.writeFileSync(path.join(resPath, 'lib', 'updater.js'), 'x');
@@ -23,7 +23,7 @@ fs.writeFileSync(path.join(resPath, 'js', 'app.js'), 'x');
 
 const mountRes = path.join(tmp, 'dmgMount', 'WordPaper.app', 'Contents', 'Resources');
 fs.mkdirSync(mountRes, { recursive: true });
-for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html']) fs.writeFileSync(path.join(mountRes, f), 'new');
+for (const f of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'pet-chat.html', 'pet-sentence.html']) fs.writeFileSync(path.join(mountRes, f), 'new');
 fs.writeFileSync(path.join(mountRes, 'VERSION'), '2.3.0');
 for (const d of ['lib', 'css', 'js', 'data', 'assets']) fs.mkdirSync(path.join(mountRes, d), { recursive: true });
 fs.writeFileSync(path.join(mountRes, 'lib', 'updater.js'), '// ok');
@@ -32,7 +32,7 @@ fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// CLEAN');
 
 const digest = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const manifest = { version: '2.2.3', files: {} };
-for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'lib/updater.js', 'js/app.js']) {
+for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'lib/updater.js', 'js/app.js']) {
   manifest.files[rel] = digest(path.join(mountRes, rel));   // digest the CLEAN payload
 }
 fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// CORRUPTED');  // then corrupt AFTER digesting

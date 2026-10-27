@@ -4,7 +4,7 @@
   const NS = 'wp:';
   const STATE_KEYS = [
     'settings', 'uiTheme', 'customWords', 'knownWords', 'reminders', 'engine',
-    'review', 'seeded', 'moduleLayout', 'hiddenModules', 'petMemoryCursor', 'petSyncCursor', 'dragHint',
+    'review', 'seeded', 'moduleLayout', 'hiddenModules', 'petMemoryCursor', 'petSyncCursor', 'dragHint', 'dailyPlan',
   ];
   let cache = {};
   let revisions = {};
@@ -14,6 +14,8 @@
   let userPrefix = '';
   let availableLegacy = {};
   let localMode = false;   // 静态托管本地模式:只写 localStorage,无任何同步
+  let mirrored = false;
+  let stateEpoch = 0;
   const syncing = new Map();
   const timers = new Map();
 
@@ -21,7 +23,7 @@
     uiTheme: 'liquid',         // 'anime' | 'editorial' | 'liquid' | 'darkliquid'（网站界面皮肤）
     library: 'ielts',          // see LIBRARIES in app.js (chuzhong/gaozhong/cet4/.../custom)
     layout: 'group',           // 唯一版式;旧数据里的 'poster' 会自动落到 group 渲染
-    size: 'desktop-1920x1080',   // see SIZES in app.js
+    size: 'desktop-1920x1080',   // see SIZES in app.js (本软件不面向手机)
     theme: 'pearl',            // match the default Liquid interface with a clean glass wallpaper
     bgPattern: 'none',         // 'none'|'soft'|'dots'|'grid'|'diag'|'waves'|'blobs'
     wordsPerGroup: 6,          // words shown in 'group' layout (multi-col wraps 7+)
@@ -109,7 +111,8 @@
   }
 
   async function syncKey(key) {
-    if (!pending[key] || syncing.has(key) || !csrfToken) return true;
+    if (syncing.has(key)) return syncing.get(key);
+    if (!pending[key] || !csrfToken) return true;
     const snapshot = pending[key];
     const serialized = JSON.stringify(snapshot.value);
     emit('wordpaper:sync-status', { state: 'saving' });
@@ -125,6 +128,7 @@
         throw new Error('登录已过期');
       }
       if (response.status === 409) {
+        stateEpoch++;
         revisions[key] = Number(body.revision) || 0;
         if (sameJSON(body.value, snapshot.value)) {
           const latest = pending[key];
@@ -141,7 +145,7 @@
         return false;
       }
       if (!response.ok) throw new Error(body.error || '保存失败');
-
+      stateEpoch++;
       revisions[key] = Number(body.revision) || snapshot.expectedRevision + 1;
       const latest = pending[key];
       if (latest && JSON.stringify(latest.value) === serialized && latest.expectedRevision === snapshot.expectedRevision) {
@@ -172,6 +176,54 @@
     return results.every(Boolean) && Object.keys(pending).length === 0;
   }
 
+  // The local companion can advance SRS while this page stays open. Refresh
+  // both the value and revision before consuming its already-persisted events.
+  async function refreshKey(key) {
+    if (!currentUser || !STATE_KEYS.includes(key)) return false;
+    if (syncing.has(key)) await syncing.get(key);
+    if (pending[key] && !await syncKey(key)) return false;
+    const epoch = stateEpoch;
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const remote = await response.json();
+      if (!currentUser || epoch !== stateEpoch || !remote.user || remote.user.id !== currentUser.id || pending[key] || syncing.has(key)) return false;
+      if (!mirrored && (Number(remote.revisions && remote.revisions[key]) || 0) < (Number(revisions[key]) || 0)) return false;
+      cache[key] = (remote.state || {})[key];
+      revisions[key] = Number(remote.revisions && remote.revisions[key]) || 0;
+      localSet(userPrefix + key, cache[key]);
+      stateEpoch++;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  let remoteRefreshBusy = false;
+  async function refreshRemote(canApply) {
+    if (localMode || !currentUser || remoteRefreshBusy) return [];
+    remoteRefreshBusy = true;
+    const userId = currentUser.id;
+    const epoch = stateEpoch;
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (response.status === 401) { location.assign('/login.html'); return []; }
+      if (!response.ok) return [];
+      const remote = await response.json();
+      if (epoch !== stateEpoch || !currentUser || currentUser.id !== userId || remote.user?.id !== userId || (canApply && !canApply())) return [];
+      const changed = [];
+      STATE_KEYS.forEach(key => {
+        const revision = Number(remote.revisions?.[key]) || 0;
+        if (pending[key] || syncing.has(key) || (!mirrored && revision < (Number(revisions[key]) || 0))) return;
+        const value = remote.state?.[key];
+        if (revision === (Number(revisions[key]) || 0) && sameJSON(value, cache[key])) return;
+        cache[key] = value; revisions[key] = revision;
+        localSet(userPrefix + key, value); changed.push(key);
+      });
+      if (changed.length) stateEpoch++;
+      return changed;
+    } catch { return []; }
+    finally { remoteRefreshBusy = false; }
+  }
+
   /* settings 里带着背景照片的 dataURL（可达数 MB）；滑块每动一格都同步序列化 + 写
    * localStorage 会把主线程卡住。内存缓存立即生效，本地落盘合并到 250ms 一次，
    * 页面隐藏 / 关闭 / 登出前强制落盘。 */
@@ -195,6 +247,7 @@
 
   function queueWrite(key, value) {
     if (!STATE_KEYS.includes(key)) return false;
+    stateEpoch++;
     cache[key] = value;
     if (userPrefix) localDirty.add(key);
     if (key === 'uiTheme') localSet(NS + 'uiTheme', value); // harmless pre-paint preference, shared only on this browser
@@ -241,6 +294,7 @@
     }
     const session = await sessionResponse.json();
     currentUser = session.user;
+    mirrored = Boolean(session.mirrored);
     csrfToken = session.csrfToken;
     if (session.update && session.update.latest) {
       emit('wordpaper:storage-warning', { message: 'WordPaper 有新版本 v' + session.update.latest + ':在「支持与反馈」里点「一键更新」即可,数据不受影响' });
@@ -318,6 +372,7 @@
 
   async function importLegacy() {
     if (!currentUser || !Object.keys(availableLegacy).length) return false;
+    stateEpoch++;
     Object.keys(availableLegacy).forEach(function (key) {
       const value = availableLegacy[key];
       cache[key] = value;
@@ -341,6 +396,8 @@
     init,
     importLegacy,
     flush,
+    refreshKey,
+    refreshRemote,
     currentUser() { return currentUser; },
     csrfToken() { return csrfToken; },
     async logout() {

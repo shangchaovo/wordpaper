@@ -111,6 +111,13 @@ h1 { max-width: 650px; margin: 0; font: 720 clamp(42px,4.7vw,64px)/1.08 Georgia,
 .card-heading h2 { margin: 0 0 7px; font-size: 25px; font-weight: 720; letter-spacing: -.025em; }
 .card-heading > p:last-child { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
+.desktop-sync { margin-bottom: 22px; padding-bottom: 20px; border-bottom: 1px solid rgba(60,60,67,.14); }
+.desktop-sync h3 { margin: 0 0 8px; }
+.desktop-sync label { display: block; margin: 14px 0 6px; font-size: 13px; }
+.desktop-login-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.desktop-login-buttons .send-code-button { grid-column: 1 / -1; }
+.desktop-sync [role="status"] { font-size: 13px; line-height: 1.6; }
+.connect-code { font-family: ui-monospace, monospace; font-size: 24px; font-weight: 650; letter-spacing: .04em; overflow-wrap: anywhere; }
 .provider-stack { display: grid; gap: 10px; }
 .provider-button {
   display: grid;

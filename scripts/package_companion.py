@@ -176,9 +176,9 @@ def main():
         for path, arch in node_bins:
             add_file(zf, path, f"{BUNDLE}/bin/node-{arch}", mode=0o755)
         # Complete portable local service + website.
-        for name in ("server.js", "companion.js", "index.html", "login.html", "package.json", ".node-version"):
+        for name in ("server.js", "companion.js", "index.html", "login.html", "connect.html", "pet-chat.html", "pet-sentence.html", "package.json", ".node-version"):
             add_file(zf, os.path.join(ROOT, name), f"{BUNDLE}/{name}")
-        for directory in ("lib", "css", "js", "data"):
+        for directory in ("lib", "css", "js", "data", "assets"):
             source_dir = os.path.join(ROOT, directory)
             for current, dirs, files in os.walk(source_dir):
                 dirs[:] = sorted(d for d in dirs if not d.startswith("."))

@@ -52,9 +52,19 @@ async function startMockProvider(port, exchanges) {
     'google-code-a': { sub: 'google-subject-a', email: 'google.one@example.test', email_verified: true, name: '谷歌用户' },
     'google-code-conflict': { sub: 'google-subject-conflict', email: 'mail.user@example.test', email_verified: true, name: '冲突用户' },
     'google-code-squat': { sub: 'google-subject-squat', email: 'provider.safe@example.test', email_verified: true, name: 'victim@example.test' },
+    'google-code-b': { sub: 'google-subject-b', email: 'google.two@example.test', email_verified: true, name: 'Google B' },
+    'google-code-c': { sub: 'google-subject-c', email: 'google.three@example.test', email_verified: true, name: 'Google C' },
+    'google-code-unverified': { sub: 'google-unverified', email: 'unverified@example.test', email_verified: false },
   };
   const server = http.createServer(async (req, res) => {
     const parsed = new URL(req.url, `http://127.0.0.1:${port}`);
+    const authorize = /^\/(google|wechat)\/authorize$/.exec(parsed.pathname);
+    if (authorize) {
+      const redirect = new URL(parsed.searchParams.get('redirect_uri'));
+      redirect.searchParams.set('state', parsed.searchParams.get('state'));
+      redirect.searchParams.set('code', `${authorize[1]}-code-${server.loginIdentity || 'a'}`);
+      res.writeHead(302, { Location: redirect.toString() }); res.end(); return;
+    }
     if (parsed.pathname === '/resend/emails' && req.method === 'POST') {
       assert.equal(req.headers.authorization, 'Bearer resend-test-key');
       assert.ok(req.headers['idempotency-key']);
@@ -89,6 +99,7 @@ async function startMockProvider(port, exchanges) {
       assert.equal(parsed.searchParams.get('secret'), 'wechat-secret-test');
       assert.equal(parsed.searchParams.get('grant_type'), 'authorization_code');
       const code = parsed.searchParams.get('code');
+      if (code === 'wechat-code-failed') { responseJson(res, { errcode: 40029 }); return; }
       const openid = code === 'wechat-code-b' ? 'wechat-openid-b' : 'wechat-openid-a';
       exchanges.push({ provider: 'wechat', code, openid });
       responseJson(res, { access_token: `wechat-token-${openid}`, expires_in: 7200, openid, scope: 'snsapi_login' });
@@ -119,7 +130,7 @@ async function waitFor(base, child, output) {
   throw new Error('server did not become ready:\n' + output.join(''));
 }
 
-async function startApp(port, dataDir, mockBase) {
+async function startApp(port, dataDir, mockBase, overrides = {}) {
   const output = [];
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server.js'], {
@@ -142,6 +153,7 @@ async function startApp(port, dataDir, mockBase) {
       WORDPAPER_RESEND_API_KEY: 'resend-test-key',
       WORDPAPER_EMAIL_FROM: 'WordPaper <login@example.test>',
       WORDPAPER_TEST_RESEND_ENDPOINT: mockBase + '/resend/emails',
+      ...overrides,
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -206,7 +218,7 @@ async function registerEmail(base, email, password) {
   return { response, body, cookie: cookieValue(response, 'wp_session') };
 }
 
-(async function main() {
+if (require.main === module) (async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wordpaper-oauth-test-'));
   const appPort = await freePort();
   const mockPort = await freePort();
@@ -390,3 +402,5 @@ async function registerEmail(base, email, password) {
   console.error(error);
   process.exitCode = 1;
 });
+
+module.exports = { freePort, startMockProvider, startApp, stopApp, startFlow, callback, cookieValue, registerEmail };

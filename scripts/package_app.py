@@ -8,10 +8,10 @@ Variants (uploaded to GitHub Releases, linked from the site's download modal):
                                       on first launch (npmmirror CDN first,
                                       nodejs.org fallback, SHA256-verified)
 
-CFBundleExecutable is a tiny UNIVERSAL (arm64+x86_64) C stub that execs
-MacOS/launcher.sh — a pure-script executable makes LaunchServices classify the
-bundle as Intel-only and Apple-Silicon Macs without Rosetta get the
-"你需要安装 Rosetta" prompt. The stub kills that prompt for good.
+CFBundleExecutable is a UNIVERSAL (arm64+x86_64) Cocoa + WKWebView app.
+It owns a native workspace window and starts MacOS/launcher.sh for local
+services. Google/WeChat authorization opens the system browser; a private
+device grant connects the App to the shared account server.
 
 DMG window is dressed like a real installer: assets/dmg-background.png baked
 background (arrow + Gatekeeper hint), icons pinned to fixed positions, custom
@@ -24,7 +24,7 @@ Prereqs:
   - assets/dmg-background.png   (python3 scripts/make_dmg_bg.py)
   - scripts/node-dist/node-arm64|node-x64  (official v24.19.0 bin/node; only
     needed for the full variants — slim builds without them)
-  - clang (Xcode CLT) for the universal stub
+  - clang (Xcode CLT) with Cocoa/WebKit for the universal application
 
 Output: scripts/dist/*.dmg
 
@@ -66,28 +66,10 @@ BUNDLE_ID = "cc.cd.wordpaper.companion"
 VERSION = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
 VOLNAME = "WordPaper 每日壁纸"
 
-PAYLOAD_FILES = ["server.js", "companion.js", "package.json", "index.html", "login.html", "VERSION"]
+PAYLOAD_FILES = ["server.js", "companion.js", "package.json", "index.html", "login.html", "connect.html", "pet-chat.html", "pet-sentence.html", "VERSION"]
 PAYLOAD_DIRS = ["lib", "css", "js", "data", "assets"]
 
-# Universal launcher stub: LaunchServices 只认 Mach-O 的架构;纯脚本可执行文件
-# 会被当成 Intel-only,Apple 芯片机器上弹「需要安装 Rosetta」。stub 找到同目录
-# 的 launcher.sh 并 exec /bin/bash(系统 bash 是 universal,不会触发 Rosetta)。
-STUB_C = r'''#include <libgen.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-
-int main(int argc, char **argv) {
-    (void)argc;
-    char self[PATH_MAX];
-    if (!realpath(argv[0], self)) return 1;
-    char script[PATH_MAX];
-    snprintf(script, sizeof(script), "%s/launcher.sh", dirname(self));
-    execl("/bin/bash", "bash", script, (char *)NULL);
-    return 1;
-}
-'''
+# Native Cocoa workspace; launcher.sh retains runtime/service lifecycle logic.
 
 LAUNCHER = r'''#!/bin/bash
 # WordPaper 每日壁纸 · Mac 桌面伴侣启动器(由 Contents/MacOS/WordPaper stub 拉起)。
@@ -261,6 +243,14 @@ COMP_PORT="${WORDPAPER_COMPANION_PORT:-8771}"
 export WORDPAPER_COMPANION_PORT="$COMP_PORT"
 export WORDPAPER_PORT="$COMP_PORT"
 
+native_ready() {
+  if [ -n "${WORDPAPER_NATIVE_READY_FILE:-}" ]; then
+    local owned=false; [ -n "$SERVER_PID" ] && owned=true
+    printf '{"url":"http://localhost:%s","owned":%s}' "$PORT" "$owned" >"$WORDPAPER_NATIVE_READY_FILE.tmp"
+    mv "$WORDPAPER_NATIVE_READY_FILE.tmp" "$WORDPAPER_NATIVE_READY_FILE"
+  fi
+}
+
 SERVER_PID=""
 COMP_PID=""
 cleanup() {
@@ -299,7 +289,7 @@ fi
 #    没有这一步时,重复双击会让第二个伴侣撞 EADDRINUSE 秒退,
 #    从用户看就是「双击图标毫无反应」。─────────────────────────
 if server_up && companion_up; then
-  open "http://localhost:$PORT"
+  if [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ]; then native_ready; else open "http://localhost:$PORT"; fi
   exit 0
 fi
 
@@ -317,6 +307,7 @@ if ! server_up; then
   wp_alert "$(printf 'WordPaper 主服务启动失败。\n请把日志文件发给开发者:\n%s/server.log' "$LOG_DIR")"
   exit 1
 fi
+native_ready
 
 if [ "${WORDPAPER_SKIP_COMPANION:-0}" = "1" ]; then
   release_start_lock
@@ -413,10 +404,11 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
       检查更新 / 一键更新 · 退出 WordPaper
   • 自动把桌面壁纸换成今天的单词,每 30 分钟换一组。
   • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习;关掉后随时从菜单栏召回。
-  • 浏览器会打开本机端口(默认 8770;若被 AirPlay 等占用会自动换下一个可用口),首次使用请创建账号。
+  • 工作区在独立的 WordPaper 窗口打开，Dock、⌘Q、关闭/重新显示窗口均按 Mac App 使用。
+  • 使用同步账号：填写账号服务器 HTTPS 地址，选择 Google、微信或原账号；在系统浏览器核对连接码并授权后，App 自动打开同步工作区。
+  • 没有服务器时可继续使用本机账号；跨电脑同步需要先部署账号服务器。
   • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。
-  • 已经在运行时再次双击图标,会重新打开浏览器里的页面,
-    不会重复启动——看到「没反应」时先看浏览器是不是已经开着了。
+  • 已经在运行时再次双击图标，会回到 WordPaper 窗口。关闭窗口不退出，⌘Q 退出。
 
 退出:点菜单栏「词」图标 → 「退出 WordPaper」。(主服务与桌面小词灵
   会一起干净退出;再次双击 App 即可重新打开。)
@@ -479,16 +471,17 @@ def build_app(dest, bundled_arch):
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
+        "CFBundleURLTypes": [{"CFBundleURLName": "WordPaper window", "CFBundleURLSchemes": ["wordpaper"]}],
     }
     with open(os.path.join(dest, "Contents", "Info.plist"), "wb") as f:
         plistlib.dump(plist, f)
 
-    # universal stub (CFBundleExecutable) + the real logic in launcher.sh
-    stub_c = os.path.join(BUILD, "wordpaper_stub.c")
-    with open(stub_c, "w") as f:
-        f.write(STUB_C)
-    run(["clang", "-arch", "arm64", "-arch", "x86_64", "-O2",
-         "-mmacosx-version-min=12.0", "-o", os.path.join(macos, EXEC_NAME), stub_c])
+    # Native workspace window owns the existing service launcher. OAuth always
+    # uses the system browser, then the App receives a private device grant.
+    run(["clang", "-arch", "arm64", "-arch", "x86_64", "-O2", "-fobjc-arc",
+         "-mmacosx-version-min=13.0", "-framework", "Cocoa", "-framework", "WebKit",
+         "-o", os.path.join(macos, EXEC_NAME), os.path.join(HERE, "native_app.m")])
     launcher = os.path.join(macos, "launcher.sh")
     with open(launcher, "w") as f:
         f.write(LAUNCHER)

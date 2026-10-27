@@ -27,13 +27,37 @@
       <header class="card-heading">
         <p class="card-kicker">安全登录</p>
         <h2>继续使用 WordPaper</h2>
-        <p>首次使用 Google 或邮箱时会自动创建独立账号。</p>
+        <p>已有账号？请先按原方式登录，再到「账号绑定」连接 Google 或微信，继续使用原有数据。</p>
       </header>
+
+      <section id="desktop-sync" class="desktop-sync" hidden aria-labelledby="desktop-sync-title">
+        <h3 id="desktop-sync-title">登录同步账号</h3>
+        <p class="field-hint">在浏览器完成授权后自动回到 App。网页与各台电脑共用词库、提醒和学习进度。</p>
+        <label for="desktop-origin">账号服务器地址</label>
+        <input id="desktop-origin" type="url" placeholder="https://你的账号服务器域名" autocomplete="url">
+        <div class="desktop-login-buttons">
+          <button class="submit-auth" type="button" data-cloud-provider="google">Google 登录</button>
+          <button class="submit-auth" type="button" data-cloud-provider="wechat">微信登录</button>
+          <button class="send-code-button" type="button" data-cloud-provider="email">邮箱 / 原账号登录</button>
+        </div>
+        <p id="desktop-sync-status" role="status" aria-live="polite"></p>
+        <div id="desktop-sync-pending" hidden>
+          <p>请在浏览器核对连接码：</p><p id="desktop-sync-code" class="connect-code"></p>
+          <a id="desktop-sync-open" href="#" target="_blank" rel="noopener">重新打开授权页面</a>
+          <button id="desktop-sync-cancel" class="pair-unpair" type="button">取消等待</button>
+        </div>
+        <p class="migration-note">连接后使用云端账号的数据；已有本机账号的数据仍保留在本机。首次部署时需将要保留的账号迁入服务器。</p>
+      </section>
 
       <div class="provider-stack" aria-label="第三方账号登录">
         <button id="auth-google" class="provider-button provider-button-google" type="button" data-provider="google" disabled aria-disabled="true" style="display:none">
           <span class="provider-mark google" aria-hidden="true">G</span>
           <span class="provider-copy"><strong>使用 Google 继续</strong><small data-provider-state>正在检查可用性…</small></span>
+          <span class="provider-arrow" aria-hidden="true">›</span>
+        </button>
+        <button id="auth-wechat" class="provider-button" type="button" data-provider="wechat" disabled aria-disabled="true" style="display:none">
+          <span class="provider-mark wechat" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3C4.6 3 1 5.7 1 9c0 1.8 1.1 3.4 2.8 4.5L3 16l3-1.5c.9.3 1.9.5 3 .5l.8-.1A6 6 0 0 1 9 12c0-3.3 3.1-6 7-6h.2C14.8 4.2 12.1 3 9 3Zm-3 4a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm6 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/><path d="M23 12c0-2.8-2.9-5-6.5-5S10 9.2 10 12s2.9 5 6.5 5c.8 0 1.6-.1 2.3-.4L22 18l-.9-2.6A4.4 4.4 0 0 0 23 12Zm-9-1a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6Zm5 0a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6Z"/></svg></span>
+          <span class="provider-copy"><strong>使用微信继续</strong><small data-provider-state>正在检查可用性…</small></span>
           <span class="provider-arrow" aria-hidden="true">›</span>
         </button>
       </div>
@@ -105,9 +129,10 @@
         </div>
       </details>
 
-      <p class="migration-note">首次注册会将本浏览器原有的 WordPaper 数据迁入该账号；Google 和邮箱账号之间不会自动共享或合并数据。</p>
+      <p class="migration-note">新用户首次授权会创建账号；已有账号可在登录后绑定 Google 和微信。不同账号不会按相同邮箱自动合并。</p>
     </section>
   </main>
-  <script src="/js/auth.js?v=20261023d"></script>
+  <script src="/js/auth.js?v=20261027a"></script>
+  <script src="/js/desktop-auth.js?v=20261027a"></script>
 </body>
 </html>

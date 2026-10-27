@@ -67,7 +67,7 @@
   let themeTransition = null;
   let queuedUITheme = null;
   const MODULE_DEFAULTS = {
-    left: ['module-library', 'module-reminders', 'module-srs', 'module-automation'],
+    left: ['module-library', 'module-reminders', 'module-srs', 'module-plan', 'module-automation'],
     right: ['module-appearance', 'module-custom'],
   };
 
@@ -814,6 +814,23 @@
         window.Store.write('petTransition', petFx.value);
         syncCompanionLearningContext();
         toast('换词特效：' + petFx.options[petFx.selectedIndex].text);
+      });
+    }
+    // 形态下拉:词卡 ⇄ 派大星。POST /pet-mode.php 即时切换(伴侣保存 config 并重建窗口)。
+    const petModeSel = $('#sel-pet-mode');
+    if (petModeSel) {
+      petModeSel.value = window.Store.read('petMode', 'card');
+      petModeSel.addEventListener('change', async () => {
+        const mode = petModeSel.value === 'patrick' ? 'patrick' : 'card';
+        try {
+          const r = await fetch('pet-mode.php?mode=' + mode, { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          window.Store.write('petMode', mode);
+          toast(mode === 'patrick' ? '派大星来啦！它会在桌面散步' : '已切回词卡形态');
+        } catch (e) {
+          toast('切换形态失败：桌面伴侣没在运行');
+          petModeSel.value = window.Store.read('petMode', 'card');
+        }
       });
     }
     // 壁纸/预览同步总闸:默认开。关掉后壁纸/预览回退各自独立随机,不再跟随小词灵。
@@ -1971,6 +1988,7 @@
       petBadge.hidden = !due.length;
       petBadge.setAttribute('aria-label', `${due.length} 个词到期`);
     }
+    renderPlanModule();
     const previousDue = srsDueKeysByLibrary[settings.library] || new Set();
     const currentDue = new Set(due.map(item => window.Review.wordKey(item.word)));
     const newlyDue = due.filter(item => !previousDue.has(window.Review.wordKey(item.word))).length;
@@ -2027,9 +2045,224 @@
     window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     openMemoryNotebook();
   }
+  /* ── 学习规划:每日目标 / 打卡 / 词典通关预测 ──────────────────
+   * 存 dailyPlan namespace:{ dailyGoal, learnedByDay:{'2026-10-26':5,...}, checkins:{'2026-10-26':1}, goal }
+   *  - learnedByDay 只统计「新学的词」(learn 事件),复习不计入;
+   *  - 打卡 = 当天 learnedByDay >= dailyGoal 时点「打卡」(或自动判定)。
+   *  - 词典通关 = 当前词库总词数 vs 已学词数,按最近 7 天日均速度预测剩余天数。 */
+  const PLAN_LIB_LABELS = {};
+  function todayKey() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function readPlan() {
+    return window.Store.read('dailyPlan', { dailyGoal: 10, learnedByDay: {}, checkins: {} });
+  }
+  function writePlan(plan) { window.Store.write('dailyPlan', plan); }
+
+  /* 新学的词 +1(learn 事件才走这里;快照回放可能带旧事件,靠 eventId 去重)。 */
+  const dailyLearnSeen = new Set();
+  function countDailyLearn(event) {
+    if (!event || event.action !== 'learn') return;
+    const eid = String(event.id || '') + '|' + (event.word && event.word.word) + '|' + String(event.at || '');
+    if (dailyLearnSeen.has(eid)) return;
+    dailyLearnSeen.add(eid);
+    const plan = readPlan();
+    const day = todayKey();
+    plan.learnedByDay[day] = (Number(plan.learnedByDay[day]) || 0) + 1;
+    // 保留最近 90 天,防止无限膨胀
+    const days = Object.keys(plan.learnedByDay).sort();
+    while (days.length > 90) { delete plan.learnedByDay[days.shift()]; }
+    writePlan(plan);
+    renderPlanModule();
+  }
+
+  function renderPlanModule() {
+    const dailyInput = $('#inp-plan-daily');
+    const fill = $('#plan-bar-fill');
+    const progressText = $('#plan-progress-text');
+    const streakEl = $('#plan-streak');
+    const dictFill = $('#plan-dict-fill');
+    const dictProgress = $('#plan-dict-progress');
+    const dictEta = $('#plan-dict-eta');
+    const history = $('#plan-history');
+    if (!dailyInput || !window.Review || !window.Store) return;
+    if (!dailyInput.dataset.bound) {
+      dailyInput.dataset.bound = '1';
+      dailyInput.addEventListener('change', () => {
+        const plan = readPlan();
+        plan.dailyGoal = Math.max(1, Math.min(200, Number(dailyInput.value) || 10));
+        dailyInput.value = plan.dailyGoal;
+        writePlan(plan);
+        renderPlanModule();
+        toast('目标已设为每天 ' + plan.dailyGoal + ' 个词');
+      });
+      const checkin = $('#btn-plan-checkin');
+      if (checkin) {
+        checkin.addEventListener('click', () => {
+          const plan = readPlan();
+          const day = todayKey();
+          if (plan.checkins[day]) { toast('今天已经打过了 ✓'); return; }
+          const learned = Number(plan.learnedByDay[day]) || 0;
+          if (learned < plan.dailyGoal) { toast(`今天还差 ${plan.dailyGoal - learned} 个词,继续加油`); return; }
+          plan.checkins[day] = 1;
+          writePlan(plan);
+          renderPlanModule();
+          celebratePlanHit();
+        });
+      }
+    }
+    const plan = readPlan();
+    if (Number(dailyInput.value) !== plan.dailyGoal) dailyInput.value = plan.dailyGoal;
+    const day = todayKey();
+    const learned = Number(plan.learnedByDay[day]) || 0;
+    const pct = Math.min(100, Math.round((learned / plan.dailyGoal) * 100));
+    if (fill) {
+      fill.style.width = pct + '%';
+      fill.classList.toggle('done', learned >= plan.dailyGoal);
+    }
+    if (progressText) progressText.textContent = `${learned}/${plan.dailyGoal}`;
+    // 连续打卡:从今天(或昨天)往前数连续有 checkin 的天数
+    let streak = 0;
+    const cursor = new Date();
+    if (!plan.checkins[todayKey()]) cursor.setDate(cursor.getDate() - 1);   // 今天还没打也从昨天起算
+    for (;;) {
+      const k = cursor.getFullYear() + '-' + String(cursor.getMonth() + 1).padStart(2, '0') + '-' + String(cursor.getDate()).padStart(2, '0');
+      if (plan.checkins[k]) { streak++; cursor.setDate(cursor.getDate() - 1); }
+      else break;
+    }
+    if (streakEl) streakEl.textContent = `🔥 ${streak} 天`;
+    const checkin = $('#btn-plan-checkin');
+    if (checkin) {
+      const done = Boolean(plan.checkins[day]);
+      checkin.disabled = done;
+      checkin.textContent = done ? '今日已打卡 ✓' : (learned >= plan.dailyGoal ? '今日已学够，打卡 ✓' : `还差 ${plan.dailyGoal - learned} 个词`);
+    }
+    // 词典通关:当前词库
+    const lib = LIBRARIES.find(l => l.id === settings.library);
+    const total = (lib && libCounts[lib.id]) || 0;
+    const learnedAll = window.Review.allWords(settings.library).length;
+    const dictPct = total ? Math.min(100, Math.round((learnedAll / total) * 100)) : 0;
+    if (dictFill) {
+      dictFill.style.width = dictPct + '%';
+      dictFill.classList.toggle('done', dictPct >= 100);
+    }
+    if (dictProgress) dictProgress.textContent = dictPct + '%';
+    if (dictEta) {
+      if (!total) dictEta.textContent = '按当前速度，通关还需 -- 天';
+      else if (dictPct >= 100) dictEta.textContent = '🎉 这个词库已经通关了！';
+      else {
+        // 最近 7 天日均(不含今天,今天还没结束)
+        const speeds = [];
+        for (let i = 1; i <= 7; i++) {
+          const d = new Date(); d.setDate(d.getDate() - i);
+          const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+          speeds.push(Number(plan.learnedByDay[k]) || 0);
+        }
+        const avg = speeds.reduce((a, b) => a + b, 0) / 7;
+        const remain = total - learnedAll;
+        const perDay = Math.max(1, plan.dailyGoal);
+        const days = Math.ceil(remain / (avg > 0 ? Math.max(avg, 1) : perDay));
+        dictEta.textContent = avg > 0
+          ? `按最近 7 天速度(日均 ${avg.toFixed(1)} 词)，通关这个词库还需约 ${days} 天`
+          : `还没开始学 —— 按每天 ${plan.dailyGoal} 词算，约 ${days} 天通关`;
+      }
+    }
+    // 近 14 天打卡格子
+    if (history) {
+      history.innerHTML = '';
+      for (let i = 13; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        const cell = document.createElement('span');
+        cell.className = 'ph-day' + (plan.checkins[k] ? ' hit' : '') + (i === 0 ? ' today' : '');
+        cell.title = k + (plan.checkins[k] ? ' · 已打卡' : '') + ` · 学了 ${Number(plan.learnedByDay[k]) || 0} 词`;
+        cell.textContent = d.getDate();
+        history.appendChild(cell);
+      }
+    }
+  }
+
+  /* 达标庆祝:派大星开心跳 + 撒花特效 + 音效(经伴侣)。 */
+  function celebratePlanHit() {
+    toast('🎉 今日目标达成！派大星为你欢呼～');
+    try { fetch('pet-celebrate.php', { method: 'POST' }); } catch (e) {}
+  }
+
+  /* 导入背单词进度:读文件 → 先 dryRun 看统计,再真正落库。
+   * 与现有进度**合并**(stage 高者胜、due 取更早、计数取大、事件去重),
+   * 不会覆盖或删除你现有的记录。 */
+  function bindProgressImport() {
+    const input = $('#file-import-progress');
+    const status = $('#memory-import-status');
+    if (!input || input.dataset.bound === '1') return;
+    input.dataset.bound = '1';
+    const setStatus = (text, warn) => {
+      if (!status) return;
+      status.textContent = text || '';
+      status.classList.toggle('warn', Boolean(warn));
+    };
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.value = '';                       // 允许重复选同一个文件
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) { setStatus('文件太大了（8MB 以内）', true); return; }
+      setStatus('正在读取…');
+      let payload;
+      try {
+        payload = JSON.parse(await file.text());
+      } catch (e) {
+        setStatus('不是有效的 JSON 文件', true);
+        return;
+      }
+      const csrf = () => { try { return window.Store.csrfToken() || ''; } catch { return ''; } };
+      const post = (dryRun) => fetch('api/import/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() },
+        body: JSON.stringify({ payload, dryRun }),
+      }).then(async r => ({ ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) }));
+
+      try {
+        const preview = await post(true);
+        if (!preview.ok) { setStatus((preview.data && preview.data.error) || '无法识别这份文件', true); return; }
+        if (!preview.data.imported) { setStatus('这份文件里没有可导入的词', true); return; }
+        const d = preview.data;
+        const msg = `将合并 ${d.imported} 个词（新增 ${d.added} · 升级 ${d.upgraded} · 合并 ${d.merged}）`;
+        if (!window.confirm(msg + '。\n\n不会删除你现有的记录，确定导入吗？')) { setStatus('已取消'); return; }
+        setStatus('正在导入…');
+        const done = await post(false);
+        if (!done.ok) { setStatus((done.data && done.data.error) || '导入失败', true); return; }
+        const r2 = done.data;
+        setStatus(`已导入 ${r2.imported} 个词（新增 ${r2.added} · 升级 ${r2.upgraded} · 合并 ${r2.merged}）`);
+        // 让页面拿到服务端新状态并重绘
+        try { await window.Store.init(); } catch (e) {}
+        renderMemoryNotebook();
+        updateSrsUI();
+      } catch (e) {
+        setStatus('导入失败：' + (e.message || '网络错误'), true);
+      }
+    });
+  }
+
+  /* 记忆本搜索:按词或释义过滤;实时输入、清空按钮。 */
+  function bindMemorySearch() {
+    const input = $('#memory-search-input'), clear = $('#memory-search-clear');
+    if (!input || input.dataset.bound === '1') return;
+    input.dataset.bound = '1';
+    let timer = null;
+    input.addEventListener('input', () => {
+      if (clear) clear.hidden = !input.value;
+      clearTimeout(timer);
+      timer = setTimeout(renderMemoryNotebook, 120);   // 轻微防抖
+    });
+    if (clear) clear.addEventListener('click', () => { input.value = ''; clear.hidden = true; renderMemoryNotebook(); input.focus(); });
+  }
+
   function renderMemoryNotebook() {
     const list = $('#memory-notebook-list'), summary = $('#memory-summary');
     if (!list || !summary || !window.Review) return;
+    bindProgressImport();
+    bindMemorySearch();
     const ROUNDS = window.Review.INTERVALS_MIN.length;              // 一共 8 轮
     const active = window.Review.activeWords(settings.library);     // 还在记(没跑满 8 轮)
     const mastered = window.Review.masteredWords(settings.library); // 已经记住(跑满 8 轮)
@@ -2048,6 +2281,10 @@
       return;
     }
 
+    /* 卡片来源标注:🐾=派大星考过(patrickQuiz 事件 / markPetQuiz);🆕=新词(还没作答过)。 */
+    const petTag = (item) => item.petQuiz && item.petQuiz.count ? '<span class="memory-tag pet">🐾 派大星考过' + (item.petQuiz.count > 1 ? '×' + item.petQuiz.count : '') + '</span>' : '';
+    const newTag = (item) => (Number(item.reviewCount) || 0) === 0 ? '<span class="memory-tag new">🆕 新词</span>' : '';
+
     const buildCard = (item, masteredFlag) => {
       const dueNow = isDue(item);
       const card = document.createElement('article');
@@ -2059,12 +2296,17 @@
           : `还在记 · 第 ${item.stage + 1}/${ROUNDS} 轮 · ${fmtCountdown(item.due - now)}后考你`;
       const meaningClass = masteredFlag ? 'memory-meaning' : 'memory-meaning locked';
       const meaningText = masteredFlag ? escapeHTML((item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || '')) : '中文释义已遮盖';
-      card.innerHTML = `<b>${escapeHTML(item.word.word)}</b><span class="memory-meta">${meta}</span><span class="${meaningClass}" aria-label="${masteredFlag ? '已记住，显示释义' : '作答后显示中文释义'}">${meaningText}</span>`;
+      card.innerHTML = `<b>${escapeHTML(item.word.word)}</b>` +
+        `<span class="memory-tags">${petTag(item)}${newTag(item)}</span>` +
+        `<span class="memory-meta">${meta}</span><span class="${meaningClass}" aria-label="${masteredFlag ? '已记住，显示释义' : '作答后显示中文释义'}">${meaningText}</span>`;
       if (dueNow && !masteredFlag) {
         const actions = document.createElement('div'); actions.className = 'memory-actions';
-        actions.innerHTML = '<button type="button" class="memory-answer forgot">还没记住</button><button type="button" class="memory-answer remembered">记住了</button>';
-        actions.querySelector('.forgot').addEventListener('click', () => answerNotebookWord(item, card, false));
-        actions.querySelector('.remembered').addEventListener('click', () => answerNotebookWord(item, card, true));
+        actions.innerHTML = '<button type="button" class="memory-answer forgot">不会</button>' +
+          '<button type="button" class="memory-answer fuzzy">模糊</button>' +
+          '<button type="button" class="memory-answer remembered">背过了</button>';
+        actions.querySelector('.forgot').addEventListener('click', () => answerNotebookWord(item, card, 'forgot'));
+        actions.querySelector('.fuzzy').addEventListener('click', () => answerNotebookWord(item, card, 'fuzzy'));
+        actions.querySelector('.remembered').addEventListener('click', () => answerNotebookWord(item, card, 'remembered'));
         card.appendChild(actions);
       }
       return card;
@@ -2081,27 +2323,48 @@
       items.forEach(item => list.appendChild(buildCard(item, masteredFlag)));
     };
 
-    const sortedActive = active.slice().sort((a, b) => (isDue(b) - isDue(a)) || ((a.due || Infinity) - (b.due || Infinity)));
-    const sortedMastered = mastered.slice().sort((a, b) => ((b.lastSeenAt || b.learnedAt || 0) - (a.lastSeenAt || a.learnedAt || 0)));
-    addSection('📌 还在记', '到点的排在最前面，答「记住了」进入下一轮；跑满 8 轮就毕业', sortedActive, false, '没有还在记的词 —— 全都记住了 🎉');
+    const q = String(($('#memory-search-input') || {}).value || '').trim().toLowerCase();
+    const hit = (item) => !q
+      || String(item.word.word || '').toLowerCase().includes(q)
+      || String(item.word.meaning || '').toLowerCase().includes(q);
+    const sortedActive = active.filter(hit).slice().sort((a, b) => (isDue(b) - isDue(a)) || ((a.due || Infinity) - (b.due || Infinity)));
+    const sortedMastered = mastered.filter(hit).slice().sort((a, b) => ((b.lastSeenAt || b.learnedAt || 0) - (a.lastSeenAt || a.learnedAt || 0)));
+    if (q && !sortedActive.length && !sortedMastered.length) {
+      list.innerHTML = `<div class="memory-empty">没有找到「${escapeHTML(q)}」相关的词</div>`;
+      return;
+    }
+    addSection('📌 还在记', '到点的排在最前面，答「背过了」进入下一轮；跑满 8 轮就毕业', sortedActive, false, '没有还在记的词 —— 全都记住了 🎉');
     addSection('✅ 已经记住', '跑满全部 8 轮复习，以后不用再管', sortedMastered, true, '还没有已经记住的词 —— 跑满 8 轮复习的词会自动进到这里。');
   }
-  function answerNotebookWord(item, card, remembered) {
+  function answerNotebookWord(item, card, grade) {
     card.querySelectorAll('.memory-answer').forEach(button => { button.disabled = true; });
-    const result = window.Review.reviewWord(settings.library, item.word, remembered);
+    const result = window.Review.reviewWord(settings.library, item.word, grade);
     if (!result || result.action === 'missing' || result.action === 'early') { toast('这张词卡还没到复习时间'); renderMemoryNotebook(); return; }
     const meaning = card.querySelector('.memory-meaning');
     if (meaning) { meaning.classList.remove('locked'); meaning.textContent = (item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || ''); }
-    card.classList.remove('due'); card.classList.add('answered', remembered ? 'remembered' : 'forgotten');
+    card.classList.remove('due'); card.classList.add('answered', result.action === 'remembered' || result.action === 'mastered' ? 'remembered' : (result.action === 'fuzzy' ? 'fuzzy' : 'forgotten'));
     const actions = card.querySelector('.memory-actions'); if (actions) actions.remove();
     const meta = card.querySelector('.memory-meta');
-    if (meta) meta.textContent = result.action === 'mastered' ? '全部周期完成 · 已真正记住' : (remembered ? '本轮通过 · 已安排下一周期' : '已记录没记住 · 20 分钟后重新检测');
-    const resultTag = document.createElement('span'); resultTag.className = 'memory-result'; resultTag.textContent = remembered ? '✓ 记住了' : '↺ 还没记住'; card.appendChild(resultTag);
+    if (meta) {
+      meta.textContent =
+        result.action === 'mastered' ? '全部周期完成 · 已真正记住' :
+        result.action === 'fuzzy' ? '有点模糊 · 不进不退，稍后再考一次' :
+        result.action === 'forgot' ? '已记录不会 · 20 分钟后重新开始' :
+        '本轮通过 · 已安排下一周期';
+    }
+    const resultTag = document.createElement('span'); resultTag.className = 'memory-result';
+    resultTag.textContent = result.action === 'fuzzy' ? '≈ 模糊' : (result.action === 'forgot' ? '↺ 不会' : '✓ 背过了');
+    card.appendChild(resultTag);
     // 防误触:作答后可撤销,恢复到点击前状态。
     const undoBtn = document.createElement('button'); undoBtn.type = 'button'; undoBtn.className = 'memory-undo'; undoBtn.textContent = '撤销';
     undoBtn.addEventListener('click', () => undoNotebookWord(item, card));
     card.appendChild(undoBtn);
-    toast(remembered ? `${item.word.word}：本轮通过，中文释义已显示` : `${item.word.word}：已记录遗忘，从第一周期重新开始`);
+    const gradeMsg = {
+      remembered: `${item.word.word}：背过了，进入下一轮`,
+      fuzzy: `${item.word.word}：模糊，稍后再考一次（不进不退）`,
+      forgot: `${item.word.word}：不会，20 分钟后重新开始`,
+    };
+    toast(gradeMsg[grade] || gradeMsg.remembered);
     updateSrsUI();
     // 作答后的中文一直保留，直到用户关闭或重新打开记忆本；不再定时遮回去。
   }
@@ -2141,7 +2404,40 @@
       if (newlyDue > 0 && !memoryOpen) refresh(false);
     }, 30000);
     setInterval(syncPetMemoryEvents, 15000);
+    setInterval(pushPetQuiz, 45000);   // 派大星抽查推送(内部有条件闸,非到期/非派大星空转)
+    setTimeout(pushPetQuiz, 4000);     // 页面打开 4s 后先推一次,不用等第一个 45s tick
     setInterval(syncPetCurrent, 5000);   // 小词灵词代际轮询：点词/翻页后 ≤5s 预览对齐
+  }
+
+  /* 派大星抽查:把当前到期词推给伴侣,派大星弹 4 选 1 卡。作答经
+   * petMemoryEvents(action:'quiz') 流回来,由 syncPetMemoryEvents 走艾宾浩斯链。
+   * 条件闸:srsEnabled + 到期词非空 + 节流 90s(避免多标签页/频繁弹卡打扰)。 */
+  let lastQuizPushAt = 0;
+  async function pushPetQuiz() {
+    if (!settings || !settings.srsEnabled || !window.Review) return;
+    if (!petCurrentSupported) return;
+    if (window.Store.currentUser() && !await window.Store.refreshKey('review')) return;
+    const due = window.Review.dueWords(settings.library);
+    if (!due.length) return;
+    if (Date.now() - lastQuizPushAt < 90000) return;   // 90s 节流,避免连弹
+    lastQuizPushAt = Date.now();
+    try {
+      // 不依赖 companionUp 缓存:页面刚打开时它还是 false,会让抽查永远不触发。
+      // 直接 POST,伴侣不在就静默失败(下一次 tick 再试)。
+      const r = await fetch('pet-quiz.php', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'offer', library: settings.library,
+          words: due.slice(0, 8).map(item => Object.assign({}, item.word, { stage: item.stage, due: item.due })),
+        }),
+      });
+      if (r.status === 404) { petCurrentSupported = false; return; }
+      const j = await r.json().catch(() => ({}));
+      if (j && j.offered) {
+        companionUp = true;
+        toast('派大星要抽查你 ' + j.word + '，看桌面～');
+      }
+    } catch (e) { /* 伴侣未运行时静默跳过 */ }
   }
 
   async function syncPetMemoryEvents() {
@@ -2154,13 +2450,39 @@
       if (!r.ok) return;
       const data = await r.json(); const events = Array.isArray(data.events) ? data.events : [];
       const snapshot = data.reset && Array.isArray(data.snapshot) ? data.snapshot : [];
+      const user = window.Store.currentUser();
+      const localAnswers = events.some(event => event.srsApplied && user && Number(event.userId) === user.id);
+      if (localAnswers && !await window.Store.refreshKey('review')) return;
+      let quizApplied = 0;
+      let sentences = 0;
       snapshot.concat(events).forEach(event => {
-        if (event.word && event.library) window.Review.rememberWord(event.library, event.word);
+        if (!event.word || !event.library) return;
+        if (event.userId && (!user || Number(event.userId) !== user.id)) return;
+        // 造句练习:只统计,不改艾宾浩斯阶段(造句是输出练习,不是回忆测试)。
+        if (event.action === 'sentence') { sentences++; return; }
+        if (event.action === 'quiz') {
+          if (event.srsApplied) { quizApplied++; return; }
+          // 派大星抽查作答:与记忆本「记住了/还没记住」同一条艾宾浩斯链。
+          // 先幂等登记首轮(快照/重放语义),再按作答推进或重置阶段。
+          const reg = window.Review.rememberWord(event.library, event.word);
+          if (reg && reg.action === 'learn') quizApplied++;   // 新词:只登记,作答才是复习
+          // reviewWord 只在到期时可作答;未到期的抽查结果记为首次确认(learn 语义)。
+          const result = window.Review.reviewWord(event.library, event.word, !!event.correct);
+          if (result.action === 'review' || result.action === 'mastered' || result.action === 'forgot') quizApplied++;
+          // 记下「这个词条被派大星考过」——记忆本里要显示 🐾 标注。
+          // (伴侣本地 SRS 也写库,但网页这条链是权威展示源,两边都打上不冲突。)
+          try { window.Review.markPetQuiz(event.library, event.word, !!event.correct); } catch (e) {}
+          return;
+        }
+        window.Review.rememberWord(event.library, event.word);
+        countDailyLearn(event);               // 纳入每日目标进度(新学的才算)
       });
       window.Store.write('petMemoryCursor', { streamId: String(data.streamId || ''), lastId: Number(data.lastId) || 0 });
       if (events.length || snapshot.length) {
         updateSrsUI(); if ($('#memory-modal') && !$('#memory-modal').hidden) renderMemoryNotebook();
-        toast(data.reset ? `已从小词灵恢复 ${snapshot.length} 个首轮记录` : `小词灵已记录 ${events.length} 个首轮词并自动补位`);
+        if (sentences) toast(`派大星批改了 ${sentences} 个造句`);
+        else if (quizApplied) toast(`派大星抽查已记录 ${quizApplied} 个作答`);
+        else toast(data.reset ? `已从小词灵恢复 ${snapshot.length} 个首轮记录` : `小词灵已记录 ${events.length} 个首轮词并自动补位`);
       }
     } catch (e) { /* 独立网页或伴侣未运行时静默跳过 */ }
     finally { petMemorySyncing = false; }
@@ -2210,7 +2532,7 @@
     petContextTimer = setTimeout(async () => {
       if (!settings) return;
       try {
-        await fetch('pet-sync.php', {
+        const response = await fetch('pet-sync.php', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             library: settings.library, wordsPerGroup: settings.wordsPerGroup,
@@ -2229,6 +2551,7 @@
             customWords: settings.library === 'custom' ? window.Store.getCustomWords() : undefined,
           }),
         });
+        await response.json();
       } catch (e) { /* 伴侣未运行时静默跳过 */ }
     }, 180);
   }
@@ -2408,6 +2731,9 @@
         const topBtn = $('#btn-companion-top');
         if (topBtn) { topBtn.textContent = '桌面宠物已开启'; topBtn.disabled = true; }
         syncPetControls(j);
+        // 形态下拉对齐伴侣实际形态(可能被另一个标签页/菜单栏切换过)。
+        const petModeSel = $('#sel-pet-mode');
+        if (petModeSel && j.petMode) petModeSel.value = j.petMode;
         // 伴侣在线即把当前特效同步过去:特效值变了 companion 会重建小窗,无需手动刷新。
         syncCompanionLearningContext();
         // 立即拉一次小词灵当前页词，让预览/壁纸尽快对齐（不等首个 5s tick）。
@@ -2433,8 +2759,7 @@
   let petOn = false;
   function syncPetControls(j) {
     const box = $('#pet-controls');
-    if (!box) return;
-    box.style.display = 'block';
+    if (box) box.style.display = 'block';
     petOn = !!(j && j.pet);
     companionAction = 'control';
     const btn = $('#btn-pet-toggle');
@@ -2747,6 +3072,125 @@
     };
   }
 
+  function bindAccountUI() {
+    const trigger = $('#btn-account');
+    const dialog = $('#account-dialog');
+    if (!trigger || !dialog || Store.isLocalMode()) return;
+    trigger.hidden = false;
+    const status = $('#account-status');
+    const say = (message, error = false) => { status.textContent = message; status.dataset.error = String(error); };
+    const names = { google: 'Google', wechat: '微信' };
+    const callbackErrors = {
+      identity_in_use: '这个第三方账号已绑定其他 WordPaper 账号。请先在原账号中解除绑定，再回来重试。',
+      binding_changed: '绑定状态已变化，或验证时选择了不同账号，请重新尝试。',
+      reauth_required: '请先验证当前账号，再管理绑定。',
+      oauth_expired: '授权已过期或登录状态已改变，请重新尝试。',
+      oauth_cancelled: '已取消授权，原有绑定保持不变。',
+      oauth_failed: '授权未完成，原有绑定保持不变，请稍后重试。',
+    };
+    let busy = false;
+    async function request(url, body) {
+      const response = await fetch(url, body === undefined ? { cache: 'no-store' } : {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': Store.csrfToken() },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '操作失败，请重试');
+      return data;
+    }
+    function button(text, parent, action, disabled = false) {
+      const el = document.createElement('button');
+      el.type = 'button'; el.className = 'btn'; el.textContent = text; el.disabled = disabled;
+      el.addEventListener('click', action); parent.appendChild(el);
+      return el;
+    }
+    async function load() {
+      $('#account-providers').replaceChildren();
+      $('#account-verify').hidden = true;
+      const data = await request('/api/account');
+      const health = await request('/healthz');
+      $('#account-connect-cloud').hidden = health.mode !== 'local';
+      if (data.managedExternally) {
+        $('#account-identity').textContent = '当前使用同步账号，登录方式在账号中心统一管理。';
+        button('打开账号中心', $('#account-providers'), () => {
+          if (window.WordPaperDesktop) WordPaperDesktop.openExternal(data.accountUrl);
+          else window.open(data.accountUrl, '_blank', 'noopener');
+        });
+        return;
+      }
+      $('#account-identity').textContent = `当前账号：${data.user.username}${data.hasPassword ? ' · 保留原密码登录' : ''}`;
+      $('#account-verify').hidden = !data.reauthRequired;
+      $('#account-password-form').hidden = !data.hasPassword;
+      const verify = $('#account-verify-providers');
+      verify.replaceChildren();
+      data.providers.forEach(provider => {
+        const name = names[provider.provider];
+        if (provider.bound && provider.enabled) {
+          button(`用已绑定的${name}验证`, verify, () => act(provider, 'reauth'));
+        }
+        const row = document.createElement('section'); row.className = 'account-provider';
+        row.dataset.provider = provider.provider;
+        const title = document.createElement('strong'); title.textContent = name;
+        const detail = document.createElement('p');
+        detail.textContent = provider.bound ? `已绑定 · ${provider.label}` : provider.enabled ? '尚未绑定' : '暂未开放，完成平台配置后即可绑定';
+        const actions = document.createElement('div'); actions.className = 'account-actions';
+        button(provider.bound ? '更换绑定' : `绑定 ${name}`, actions, () => act(provider, provider.bound ? 'replace' : 'link'), !provider.enabled || data.reauthRequired);
+        if (provider.bound) {
+          const unlink = button('解除绑定', actions, () => act(provider, 'unlink'), !provider.canUnlink || data.reauthRequired);
+          if (!provider.canUnlink) unlink.title = '这是当前唯一可用的登录方式，请先绑定另一种方式';
+        }
+        row.append(title, detail, actions); $('#account-providers').appendChild(row);
+      });
+    }
+    async function run(action) {
+      if (busy) return;
+      busy = true;
+      dialog.setAttribute('aria-busy', 'true');
+      dialog.querySelectorAll('button, input').forEach(el => { if (el.id !== 'btn-close-account') el.disabled = true; });
+      try { await action(); }
+      catch (error) { say(error.message, true); }
+      finally {
+        busy = false; dialog.removeAttribute('aria-busy');
+        $('#account-password').disabled = false;
+        $('#account-password-form button').disabled = false;
+        try { await load(); } catch (error) { say(error.message, true); }
+      }
+    }
+    function act(provider, action) {
+      if (busy) return;
+      if (action === 'unlink' && !window.confirm(`解除 ${names[provider.provider]}（${provider.label}）绑定？之后请使用其他已绑定方式或原密码登录。`)) return;
+      if (action === 'replace' && !window.confirm(`更换 ${names[provider.provider]} 绑定？新账号授权成功后才会替换「${provider.label}」，所有数据保留。`)) return;
+      run(async () => {
+        if (!await Store.flush()) throw new Error('当前改动尚未同步，请稍后再试');
+        say(action === 'unlink' ? '正在解除绑定…' : '正在准备授权…');
+        const data = await request(`/api/account/${provider.provider}/${action}`, {});
+        if (data.authorizationUrl) location.assign(data.authorizationUrl);
+        else say('已解除绑定，账号数据已保留。');
+      });
+    }
+    $('#account-password-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const input = $('#account-password');
+      const password = input.value; input.value = '';
+      run(async () => { await request('/api/account/reauth', { password }); say('身份已验证，可以管理绑定。'); });
+    });
+    async function open() {
+      if (!dialog.open) dialog.showModal();
+      try { await load(); } catch (error) { say(error.message, true); }
+    }
+    trigger.addEventListener('click', () => { say(''); open(); });
+    $('#btn-close-account').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => { $('#account-password').value = ''; trigger.focus(); });
+    const params = new URLSearchParams(location.search);
+    if (location.hash === '#account' || params.has('accountError') || params.has('accountSuccess')) {
+      if (params.has('accountError')) say(callbackErrors[params.get('accountError')] || '授权失败，请重新尝试。', true);
+      else if (params.has('accountSuccess')) say(params.get('accountSuccess') === 'verified' ? '身份已验证，可以管理绑定。' : '绑定成功，今后可以用此方式登录当前账号。');
+      params.delete('accountError'); params.delete('accountSuccess');
+      history.replaceState(null, '', location.pathname + (params.size ? '?' + params.toString() : ''));
+      open();
+    }
+  }
+
   function seedOnce() {
     if (window.Store.getSeeded()) return;
     window.Reminders.save([
@@ -2775,11 +3219,113 @@
     if (e.target instanceof HTMLInputElement && e.target.type === 'range') syncRangeFill(e.target);
   }, { passive: true });
 
+
+  /* ── 管理员面板(仅 role='admin')────────────────────────────────
+   * 内测功能开关 + 账号密码管理。所有请求带 CSRF,失败静默降级
+   * (非管理员/旧服务端时卡片保持 hidden)。 */
+  async function initAdminPanel() {
+    const card = $('#module-admin');
+    if (!card) return;
+    let session = null;
+    try {
+      const r = await fetch('api/session', { cache: 'no-store' });
+      if (!r.ok) return;
+      session = await r.json();
+    } catch { return; }
+    const role = session && session.user && session.user.role;
+    if (role !== 'admin') return;
+    card.hidden = false;
+    const csrf = session.csrfToken || '';
+    const msg = $('#admin-msg');
+    const say = (t) => { if (msg) msg.textContent = t; };
+
+    async function postJson(path, body) {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      return data;
+    }
+
+    async function renderUsers() {
+      const box = $('#admin-users');
+      if (!box) return;
+      const r = await fetch('api/admin/users', { cache: 'no-store' });
+      if (!r.ok) return;
+      const { users } = await r.json();
+      box.innerHTML = '';
+      (users || []).forEach(u => {
+        const row = document.createElement('div');
+        row.className = 'admin-user';
+        const who = document.createElement('span');
+        who.className = 'admin-user-name';
+        who.textContent = u.username + (u.role === 'admin' ? ' · 管理员' : '');
+        const pwBtn = document.createElement('button');
+        pwBtn.type = 'button'; pwBtn.className = 'btn small ghost'; pwBtn.textContent = '改密码';
+        pwBtn.addEventListener('click', async () => {
+          const pw = window.prompt(`给「${u.username}」设置新密码（至少 8 位）`);
+          if (!pw) return;
+          try { await postJson('api/admin/password', { userId: u.id, password: pw }); say(`已重置 ${u.username} 的密码`); }
+          catch (e) { say('重置失败：' + e.message); }
+        });
+        const roleBtn = document.createElement('button');
+        roleBtn.type = 'button'; roleBtn.className = 'btn small ghost';
+        roleBtn.textContent = u.role === 'admin' ? '取消管理员' : '设为管理员';
+        roleBtn.addEventListener('click', async () => {
+          try {
+            await postJson('api/admin/role', { userId: u.id, role: u.role === 'admin' ? 'user' : 'admin' });
+            await renderUsers();
+            say(`已更新 ${u.username} 的角色`);
+          } catch (e) { say('更新失败：' + e.message); }
+        });
+        row.append(who, pwBtn, roleBtn);
+        box.appendChild(row);
+      });
+    }
+
+    async function renderFeatures() {
+      const box = $('#admin-features');
+      if (!box) return;
+      const r = await fetch('api/admin/features', { cache: 'no-store' });
+      if (!r.ok) return;
+      const { features } = await r.json();
+      const LABELS = {
+        betaPetQuiz: '桌面抽查弹窗',
+        betaPatrickVoice: '派大星语音朗读',
+        betaCompanionRoam: '派大星自由散步',
+        betaMirror: '主账号镜像',
+      };
+      box.innerHTML = '';
+      Object.keys(features).forEach(key => {
+        const label = document.createElement('label');
+        label.className = 'admin-feature';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = !!features[key];
+        input.addEventListener('change', async () => {
+          try { await postJson('api/admin/feature', { key, enabled: input.checked }); say(`${LABELS[key] || key} 已${input.checked ? '开启' : '关闭'}`); }
+          catch (e) { input.checked = !input.checked; say('切换失败：' + e.message); }
+        });
+        const span = document.createElement('span');
+        span.textContent = LABELS[key] || key;
+        label.append(input, span);
+        box.appendChild(label);
+      });
+    }
+
+    await renderUsers();
+    await renderFeatures();
+  }
+
   async function init() {
     const showAccount = bindPersistenceUI();
     bindUpdateUI();
     await window.Store.init();
     showAccount();
+    bindAccountUI();
     loadSettings();
     seedOnce();
     fillSizeSelect();
@@ -2794,6 +3340,26 @@
     loadBgImage();
     await refresh(false);
     openRequestedMemoryNotebook();
+    let syncPointerDown = false;
+    document.addEventListener('pointerdown', () => { syncPointerDown = true; }, { passive: true });
+    document.addEventListener('pointerup', () => { syncPointerDown = false; }, { passive: true });
+    document.addEventListener('pointercancel', () => { syncPointerDown = false; }, { passive: true });
+    window.addEventListener('blur', () => { syncPointerDown = false; });
+    const canApplyRemote = () => !document.hidden && !syncPointerDown && !moduleEditing
+      && !document.querySelector('dialog[open], .modal-overlay:not([hidden])')
+      && !document.activeElement?.matches('input, textarea, [contenteditable="true"]');
+    const syncRemote = async () => {
+      if (!canApplyRemote()) return;
+      const changed = await Store.refreshRemote(canApplyRemote);
+      if (!changed.length) return;
+      loadSettings(); applySettingsToUI(); renderReminderUI(); updateSrsUI();
+      if (changed.includes('settings')) loadBgImage();
+      await refresh(false);
+      syncCompanionLearningContext();
+    };
+    setInterval(syncRemote, 30000);
+    window.addEventListener('focus', syncRemote);
+    initAdminPanel();   // 管理员才显示;失败静默
     startSrsTicker();
     syncPetMemoryEvents();
     syncCompanionLearningContext();

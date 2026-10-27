@@ -20,16 +20,17 @@
   const errorBox = document.querySelector('#auth-error');
   const authStatus = document.querySelector('#auth-status');
   const providerStatus = document.querySelector('#provider-status');
-  const googleButton = document.querySelector('#auth-google');
+  const providerButtons = Array.from(document.querySelectorAll('[data-provider]'));
   let mode = 'login';
   let emailRegistrationEnabled = null;
   let codeTimer = 0;
 
   const oauthErrors = {
     google_not_configured: 'Google 登录尚未配置，请暂时使用邮箱登录。',
-    oauth_cancelled: '你取消了 Google 授权，可以重新尝试或改用邮箱。',
+    wechat_not_configured: '微信登录尚未配置，请暂时使用其他方式登录。',
+    oauth_cancelled: '你取消了授权，可以重新尝试或改用邮箱。',
     oauth_expired: '登录请求已过期或不是从当前浏览器发起，请重新尝试。',
-    oauth_failed: 'Google 登录暂时失败，请稍后重试。',
+    oauth_failed: '第三方登录暂时失败，请稍后重试。',
     rate_limited: '尝试次数过多，请稍后再试。',
   };
 
@@ -160,17 +161,17 @@
     }
     if (providers.pairingAllowed) pairSection.hidden = false;
 
-    const enabled = Boolean(providers.google && providers.google.enabled);
-    const state = googleButton.querySelector('[data-provider-state]');
-    // 未配置时(独立版)整条隐藏 Google 入口和分隔线,不显示「管理员尚未配置」
-    // 这种误导文案——独立版本来就是本地账号,没有"管理员"。
-    googleButton.style.display = enabled ? '' : 'none';
+    let anyEnabled = false;
+    providerButtons.forEach(function (button) {
+      const enabled = Boolean(providers[button.dataset.provider]?.enabled);
+      anyEnabled = anyEnabled || enabled;
+      button.style.display = enabled ? '' : 'none';
+      button.disabled = !enabled;
+      button.setAttribute('aria-disabled', String(!enabled));
+      button.querySelector('[data-provider-state]').textContent = enabled ? '首次使用将自动创建账号' : '';
+    });
     const divider = document.querySelector('.auth-divider');
-    if (divider) divider.style.display = enabled ? '' : 'none';
-    googleButton.disabled = !enabled;
-    googleButton.setAttribute('aria-disabled', String(!enabled));
-    state.textContent = enabled ? '首次使用将自动创建账号' : '';
-    googleButton.title = enabled ? '' : '';
+    if (divider) divider.style.display = anyEnabled ? '' : 'none';
   }
 
   // ── 配对 / 继续 / 断开 ──────────────────────────────────
@@ -224,12 +225,14 @@
     }
   });
 
-  googleButton.addEventListener('click', function () {
-    if (googleButton.disabled) return;
-    googleButton.disabled = true;
-    googleButton.setAttribute('aria-busy', 'true');
-    providerStatus.textContent = '正在连接 Google…';
-    location.assign(`/api/auth/google/start?next=${encodeURIComponent(destination())}`);
+  providerButtons.forEach(function (button) {
+    button.addEventListener('click', function () {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      providerStatus.textContent = `正在连接${button.dataset.provider === 'google' ? ' Google' : '微信'}…`;
+      location.assign(`/api/auth/${button.dataset.provider}/start?next=${encodeURIComponent(destination())}`);
+    });
   });
 
   function startCodeCountdown(seconds) {

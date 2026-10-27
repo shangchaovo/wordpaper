@@ -70,16 +70,38 @@
   /* 记忆本中的明确作答。只有到期词可以作答：
    * - 记住了：推进一档；跑完全部 8 档后才 mastered。
    * - 还没记住：记录一次遗忘，并从 20 分钟档重新开始整条周期。 */
-  function reviewWord(lib, word, remembered) {
+  /* 分档作答:除了「记住了 / 还没记住」,还支持「模糊」。
+   *  - remembered(背过了): 推进一档
+   *  - fuzzy(模糊):         停在**当前档**再练一次(不从零重来,也不前进)
+   *  - forgot(不会):        回到第一档
+   * 第二参数兼容旧的布尔写法(true/false)。
+   * opts.reason 只用于事件记录,方便以后统计。 */
+  function reviewWord(lib, word, remembered, opts) {
+    var grade = remembered;
+    if (typeof remembered === 'boolean') grade = remembered ? 'remembered' : 'forgot';
+    if (grade == null) grade = 'remembered';
     var L = getLib(lib), key = wordKey(word), t = nowMs(), item = L.words[key];
     if (!item) return { action: 'missing', item: null };
     if (item.stage >= INTERVALS_MIN.length) return { action: 'mastered', item: item };
     if (!item.due || item.due > t) return { action: 'early', item: item };
+    if (grade !== 'remembered' && grade !== 'fuzzy' && grade !== 'forgot') grade = 'remembered';
     // 撤销快照:变更前完整复制,供 undoReview 恢复(防误触)。随 saveReview 持久化。
     var snapshot = JSON.parse(JSON.stringify(item)); delete snapshot.lastUndo;
     item.events = item.events || [];
     item.reviewCount = (item.reviewCount || 0) + 1;
-    if (remembered) {
+    if (grade === 'fuzzy') {
+      // 模糊:不前进也不归零,保持当前档,缩短一点再来一次(档位间隔的一半,最少 20 分钟)
+      var stageNow = Math.max(0, Math.min(INTERVALS_MIN.length - 1, Number(item.stage) || 0));
+      var wait = Math.max(INTERVALS_MIN[0], Math.round(INTERVALS_MIN[stageNow] / 2));
+      item.due = t + wait * 60000;
+      item.fuzzyCount = (item.fuzzyCount || 0) + 1;
+      item.events.push({ at: t, type: 'fuzzy' }); item.events = item.events.slice(-64);
+      item.lastSeenAt = t;
+      item.lastUndo = { snapshot: snapshot, action: 'fuzzy', at: t };
+      saveLib(lib, L);
+      return { action: 'fuzzy', item: item };
+    }
+    if (grade === 'remembered') {
       item.stage = Math.min((Number(item.stage) || 0) + 1, INTERVALS_MIN.length);
       item.successCount = (item.successCount || 0) + 1;
       item.due = item.stage < INTERVALS_MIN.length ? t + INTERVALS_MIN[item.stage] * 60000 : null;
@@ -118,6 +140,22 @@
     return { records: records, cursor: L.cursor };
   }
 
+  /* 给词条打「派大星考过」标记(幂等)。first=true 表示这是它第一次被考 ——
+   * 记忆本据此显示「🐾 派大星考过」;若它是从记忆本之外(伴侣本地 SRS)第一次
+   * 出现在这条链上,还会显示「新词」。 */
+  function markPetQuiz(lib, word, correct) {
+    var L = getLib(lib), key = wordKey(word), item = L.words[key];
+    if (!item) return null;
+    if (!item.petQuiz) item.petQuiz = { count: 0, lastAt: 0, lastCorrect: null, firstAt: 0 };
+    var pq = item.petQuiz;
+    pq.count += 1;
+    pq.lastAt = nowMs();
+    pq.lastCorrect = !!correct;
+    if (!pq.firstAt) pq.firstAt = pq.lastAt;
+    saveLib(lib, L);
+    return item;
+  }
+
   function getWord(lib, word) { return getLib(lib).words[wordKey(word)] || null; }
   function allWords(lib) {
     var L = getLib(lib);
@@ -143,7 +181,7 @@
   window.Review = { INTERVALS_MIN: INTERVALS_MIN, wordKey: wordKey, groupKeyFor: groupKeyFor, currentGroupKey: currentGroupKey,
     getLib: getLib, getWord: getWord, allWords: allWords, masteredWords: masteredWords,
     activeWords: activeWords, dueWords: dueWords, soonestDue: soonestDue,
-    rememberWord: rememberWord, rememberWords: rememberWords, reviewWord: reviewWord,
+    rememberWord: rememberWord, rememberWords: rememberWords, reviewWord: reviewWord, markPetQuiz: markPetQuiz,
     undoReview: undoReview, canUndo: canUndo,
     stats: stats, recentWords: recentWords, reset: reset };
 })();

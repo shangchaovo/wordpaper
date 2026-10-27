@@ -26,6 +26,21 @@
 /* HTML 的 hidden 属性不能被组件的 display:flex / display:grid 覆盖。
    否则「自定义尺寸」会在非自定义尺寸时仍然露出来，也会让设置值看起来和当前壁纸不一致。 */
 [hidden] { display: none !important; }
+.account-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; margin: auto; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--ink); box-shadow: var(--shadow); }
+.account-dialog .modal-head h2 { display: flex; align-items: center; gap: 8px; }
+.account-dialog .modal-head .ic { width: 20px; height: 20px; flex: 0 0 20px; }
+.account-dialog::backdrop { background: rgba(18, 28, 24, .45); }
+.account-dialog .hint { line-height: 1.7; }
+.account-status { min-height: 1.7em; font-size: 13px; line-height: 1.7; }
+.account-status[data-error="true"] { color: var(--danger); }
+.account-providers { display: grid; gap: 12px; margin: 18px 0; }
+.account-provider { padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+.account-provider p { margin: 6px 0 12px; overflow-wrap: anywhere; font-size: 13px; color: var(--sub); }
+.account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account-actions input { flex: 1; min-width: 120px; }
+.account-dialog .btn { min-height: 36px; }
+#account-verify { padding: 12px; border-radius: 12px; background: var(--bg); }
+#account-verify-providers { margin-top: 8px; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -395,16 +410,65 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 .memory-pill { padding:6px 10px; border-radius:999px; background:#fff; color:var(--sub); font-size:12px; font-weight:800; border:1px solid var(--line); }
 .memory-pill b { color:var(--accent-2); }
 .memory-pill-forgot { background:#fff7f1; border-color:#f2c8ad; }
+/* 学习规划模块 */
+.plan-grid { display:flex; flex-direction:column; gap:9px; margin-bottom:10px; }
+.plan-row { display:flex; align-items:center; gap:8px; font-size:12.5px; }
+.plan-label { flex:0 0 auto; color:var(--sub); font-weight:700; min-width:56px; }
+.plan-bar { flex:1 1 auto; height:9px; background:rgba(0,0,0,.07); border-radius:999px; overflow:hidden; }
+.plan-bar.slim { height:7px; flex:1 1 auto; }
+.plan-bar > div { height:100%; width:0%; background:linear-gradient(90deg,#63b57f,#8fd19e); border-radius:999px; transition:width .5s cubic-bezier(.2,.9,.3,1); }
+.plan-bar > div.done { background:linear-gradient(90deg,#3f9e6b,#69c78f); }
+#plan-progress-text { font-size:12px; color:var(--ink); min-width:44px; text-align:right; }
+#plan-streak { font-size:12.5px; font-weight:800; color:var(--accent-2); }
+.plan-dict { margin:10px 0; padding-top:10px; border-top:1px dashed var(--line); }
+.plan-dict-head { display:flex; justify-content:space-between; font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:5px; }
+.plan-dict-progress { color:var(--accent-2); }
+.plan-eta { margin-top:5px; }
+#plan-checkin-btnrow { margin-bottom:8px; }
+#btn-plan-checkin:disabled { opacity:.55; cursor:default; }
+.plan-history { display:flex; gap:4px; flex-wrap:wrap; }
+.plan-history .ph-day {
+  width:22px; height:22px; border-radius:7px;
+  display:grid; place-items:center;
+  font-size:9.5px; font-weight:800;
+  background:#f3ede4; color:var(--sub);
+}
+.plan-history .ph-day.hit { background:linear-gradient(135deg,#3f9e6b,#69c78f); color:#fff; }
+.plan-history .ph-day.today { box-shadow:0 0 0 2px rgba(63,158,107,.45); }
+
+/* 记忆本搜索栏 */
+.memory-search { display:flex; align-items:center; gap:7px; margin:0 0 11px; padding:7px 11px; background:#fff; border:1px solid var(--line); border-radius:11px; }
+.memory-search .ic { width:14px; height:14px; color:var(--sub); flex:0 0 auto; }
+.memory-search input { flex:1 1 auto; min-width:0; border:0; outline:0; background:transparent; font:inherit; font-size:13px; color:var(--ink); }
+.memory-search input::placeholder { color:#c0b3a8; }
+.memory-search button { flex:0 0 auto; border:0; background:transparent; color:var(--sub); font-size:12px; cursor:pointer; padding:2px 4px; border-radius:6px; }
+.memory-search button:hover { background:#f3ede4; }
+/* 卡片上的来源/状态徽标 */
+.memory-tags { position:absolute; top:9px; right:12px; display:flex; gap:4px; }
+.memory-tag { font-size:9.5px; font-weight:800; padding:1px 6px 2px; border-radius:999px; letter-spacing:.03em; }
+.memory-tag.pet { background:#f1ecfd; color:#6746b8; }      /* 派大星考过 */
+.memory-tag.new { background:#fff2df; color:#b0611d; }      /* 新词(还没作答过) */
+/* 三档作答按钮 */
+.memory-answer.fuzzy { color:#8a5a17; border:1px solid #ecd39f; background:#fffaf0; box-shadow:0 3px 0 #f3e2bb; }
+.memory-answer.fuzzy:hover { filter:saturate(1.08); }
+
+/* 导出条:数据可带走。放在汇总下面,不抢记忆卡片的位置。 */
+.memory-export { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+.memory-export-hint { font-size:11.5px; color:var(--sub); }
+.memory-export .chip { text-decoration:none; }
+.memory-import-chip { cursor:pointer; }
+.memory-import-status { font-size:11.5px; font-weight:700; color:var(--accent-2); }
+.memory-import-status.warn { color:#b5542a; }
 .memory-notebook-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; max-height:min(56vh,530px); overflow:auto; padding:2px 3px 8px; }
 .memory-entry { position:relative; min-height:128px; text-align:left; border:1px solid rgba(175,116,62,.20); border-radius:18px; padding:15px 15px 13px; background:rgba(255,255,255,.78); color:var(--ink); box-shadow:0 5px 14px rgba(116,72,32,.08); cursor:default; overflow:hidden; transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
-.memory-entry.due { padding-bottom:62px; border-color:rgba(255,143,77,.62); background:linear-gradient(145deg,#fff,#fff1df); }
+.memory-entry.due { padding-bottom:70px; border-color:rgba(255,143,77,.62); background:linear-gradient(145deg,#fff,#fff1df); }
 .memory-entry.due::before { content:"到期复习"; position:absolute; right:-18px; top:8px; transform:rotate(34deg); padding:3px 21px; background:var(--accent); color:#fff; font-size:10px; font-weight:900; letter-spacing:.08em; }
 .memory-entry.due:hover { transform:translateY(-2px) rotate(-.35deg); box-shadow:0 11px 22px rgba(183,96,35,.17); }
 .memory-entry b { display:block; font-size:20px; letter-spacing:.02em; margin-right:35px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .memory-entry .memory-meta { display:block; margin-top:5px; font-size:11px; color:var(--accent-2); font-weight:800; }
 .memory-entry .memory-meaning { display:block; margin-top:13px; color:var(--sub); font-size:13px; line-height:1.45; }
 .memory-entry .memory-meaning.locked { color:transparent; user-select:none; border-radius:7px; background:repeating-linear-gradient(-45deg,#eed7bd 0 5px,#f6e8d7 5px 10px); width:82%; height:18px; }
-.memory-actions { position:absolute; left:14px; right:14px; bottom:13px; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.memory-actions { position:absolute; left:14px; right:14px; bottom:13px; display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
 .memory-answer { min-height:34px; border-radius:12px; font:800 12px/1 var(--font); cursor:pointer; transition:transform .14s ease, box-shadow .14s ease, filter .14s ease; }
 .memory-answer:hover { transform:translateY(-2px); filter:saturate(1.08); }
 .memory-answer:active { transform:translateY(1px); }
@@ -412,6 +476,7 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 .memory-answer.forgot { color:#9a4c31; border:1px solid #e8ad91; background:#fff8f3; box-shadow:0 3px 0 #f1d0bd; }
 .memory-answer.remembered { color:#32694d; border:1px solid #9bc9ae; background:#f2fff7; box-shadow:0 3px 0 #c6e4d1; }
 .memory-entry.answered { min-height:148px; animation:memory-answer-pop .34s cubic-bezier(.34,1.56,.64,1); }
+.memory-entry.answered.fuzzy { border-color:#e2c37c; background:linear-gradient(145deg,#fff,#fffaef); }
 .memory-entry.answered.remembered { border-color:#88c7a2; background:linear-gradient(145deg,#fff,#effbf4); }
 .memory-entry.answered.forgotten { border-color:#e8ad91; background:linear-gradient(145deg,#fff,#fff2e9); }
 .memory-entry.mastered { border-color:#a7ccb5; background:linear-gradient(145deg,#fbfff9,#edf8f1); }
@@ -1116,9 +1181,11 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
 .memory-entry b { font-family: var(--font-editorial); font-size: 19px; }
 .memory-entry .memory-meta { color: var(--accent-2); font-family: var(--font-mono); font-size: 9.5px; }
 .memory-entry .memory-meaning.locked { border-radius: 3px; background: repeating-linear-gradient(-45deg,#dfd7ca 0 4px,#eee9df 4px 8px); }
-.memory-answer { min-height: 34px; border-radius: 5px; box-shadow: none !important; }
+.memory-actions { grid-template-columns: repeat(3,1fr); gap: 6px; }
+.memory-answer { min-height: 34px; border-radius: 5px; box-shadow: none !important; font-size: 11.5px; }
 .memory-answer:hover { transform: translateY(-1px); }
 .memory-answer.forgot { color: var(--danger); border: 1px solid #d7a49b; background: transparent; }
+.memory-answer.fuzzy { color: #8a5a17; border: 1px solid #d8b878; background: transparent; }
 .memory-answer.remembered { color: #fff; border: 1px solid var(--good); background: var(--good); }
 .memory-entry.answered { animation: memory-answer-pop .2s ease-out; }
 @keyframes memory-answer-pop { from { opacity: .6; transform: translateY(3px); } to { opacity: 1; transform: none; } }
@@ -1127,6 +1194,12 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
 .memory-empty { border-radius: 7px; }
 
 .toast { border-radius: 6px; background: var(--indigo); color: #fff; box-shadow: 0 10px 26px rgba(28,44,54,.22); transition: opacity .2s ease, transform .2s ease; }
+
+/* 记忆本卡片窄于 200px 时,三颗作答按钮改竖排(横排字会挤碎) */
+@media (max-width: 760px) {
+  .memory-notebook-list { grid-template-columns: 1fr; }
+  .memory-actions { grid-template-columns: repeat(3,1fr); }
+}
 
 /* Responsive：中屏预览优先，小屏操作区不横向溢出。 */
 @media (max-width: 1420px) {
@@ -1216,3 +1289,11 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
 .dl-gate summary { cursor: pointer; color: var(--accent); font-size: 12.5px; font-weight: 700; }
 .dl-gate ol { margin: 8px 0 6px; padding-left: 20px; color: var(--ink); font-size: 12.5px; line-height: 1.9; }
 .dl-gate p { margin: 6px 0 0; color: var(--sub); font-size: 11.5px; line-height: 1.7; }
+
+/* ── 管理员面板（仅管理员可见）────────────────────────────── */
+.admin-users { display:flex; flex-direction:column; gap:6px; margin:8px 0 12px; }
+.admin-user { display:flex; align-items:center; gap:6px; padding:6px 8px; border:1px solid var(--line, rgba(0,0,0,.1)); border-radius:8px; }
+.admin-user-name { flex:1 1 auto; font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.admin-sub { font-size:12px; margin:12px 0 6px; opacity:.75; font-weight:600; }
+.admin-features { display:flex; flex-direction:column; gap:6px; }
+.admin-feature { display:flex; align-items:center; gap:7px; font-size:12.5px; cursor:pointer; }
