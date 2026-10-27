@@ -133,7 +133,7 @@ function featureOn(key) {
   const flags = featureFlags();
   return Object.prototype.hasOwnProperty.call(flags, key) ? flags[key] === true : true;
 }
-if (process.env.WORDPAPER_WEB_ORIGIN) {
+if (process.env.WORDPAPER_WEB_ORIGIN && (!nativeAppPath() || process.env.WORDPAPER_NATIVE_UI === '1')) {
   try {
     const origin = new URL(process.env.WORDPAPER_WEB_ORIGIN);
     if (origin.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(origin.hostname)) CFG.webOrigin = origin.origin;
@@ -2666,7 +2666,6 @@ function buildQuizSVG(word, options, dark) {
 
 function buildPetJXA(W, H) {
   const meta = JSON.stringify({ btn: PET_BTN, frame: PET_FRAME, footerH: PET_FOOTER_H, rsz: PET_RESIZE, minW: MIN_PET_W, minH: MIN_PET_H, max: MAX_PET, port: CFG.port, count: petWords.length, wordKeys: petWords.map(petWordKey), dark: petSkin(CFG.uiTheme).dark === true, morphUrl: 'http://127.0.0.1:' + CFG.port + '/pet-mode.php?mode=patrick' });
-  const memoryTarget = localWebOrigin(CFG.webOrigin) || `http://localhost:${CFG.port}`;
   return `
 ObjC.import('Cocoa');
 ObjC.import('QuartzCore');
@@ -2682,7 +2681,7 @@ function run(argv){
   var MORPH_URL = META.morphUrl;   // ⭐ → 派大星形态切换
   var rememberUrl = 'http://127.0.0.1:' + PORT + '/remember.php?i=';
   var pageUrl = 'http://127.0.0.1:' + PORT + '/pet-page.php?dir=';
-  var memoryUrl = ${JSON.stringify(memoryTarget + '/?openMemory=1')};
+  var memoryUrl = 'http://127.0.0.1:' + PORT + '/menu.php?cmd=workspace-memory';
   var sizeUrl = 'http://127.0.0.1:' + PORT + '/pet-size.php';
   var renderUrl = 'http://127.0.0.1:' + PORT + '/pet-render.php';
   var img = $.NSImage.alloc.initWithContentsOfFile(pngPath);
@@ -2691,6 +2690,7 @@ function run(argv){
   function postUrl(u){
     var req = $.NSMutableURLRequest.alloc.initWithURL($.NSURL.URLWithString(u));
     req.setHTTPMethod('POST');
+    req.setValueForHTTPHeaderField('1', 'X-WordPaper-Local');
     var data = $.NSURLConnection.sendSynchronousRequestReturningResponseError(req, $(), $());
     try { return $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js; } catch (e) { return ''; }
   }
@@ -2861,7 +2861,7 @@ function run(argv){
       if (action === 'prev') { applyKeys(postUrl(pageUrl + '-1')); reloadImg(); return; }
       if (action === 'next') { applyKeys(postUrl(pageUrl + '1')); reloadImg(); return; }
       if (action === 'memory') {
-        $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString(memoryUrl));
+        postUrl(memoryUrl);
         return;
       }
       wordIndex = wordAt(p);
@@ -3648,7 +3648,7 @@ function serverBase() {
   return `http://127.0.0.1:${new URL(CFG.webOrigin || 'http://localhost:8770').port || 8770}`;
 }
 
-function buildMenuBarJXA(port, ownerPid, nativeOrigin = '') {
+function buildMenuBarJXA(port, ownerPid) {
   return `ObjC.import('Cocoa');
 ObjC.import('stdlib');
 ObjC.bindFunction('getppid', ['int', []]);
@@ -3682,19 +3682,11 @@ function run(argv){
       rebuildMenu(true);
     });
   }
-  function openURL(u){
-    var nativeOrigin = ${JSON.stringify(nativeOrigin)};
-    if (nativeOrigin && (u === nativeOrigin || u.indexOf(nativeOrigin + '/') === 0)) {
-      u = 'wordpaper://open?path=' + encodeURIComponent(u.slice(nativeOrigin.length) || '/');
-    }
-    $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString(u));
-  }
   var MenuTarget = ObjC.registerSubclass({ name: 'DWMenuBarTarget', methods: {
     // JXA 无法从 JS 函数推断 ObjC 签名,必须显式 types(['void', ['id']]),否则 -2700
     'fire:': { types: ['void', ['id']], implementation: function(sender) {
       var cmd = ObjC.unwrap(sender.representedObject) || '';
       if (cmd === '') return;
-      if (cmd.indexOf('open:') === 0) { openURL(cmd.slice(5)); return; }
       if (cmd === 'quit') {
         item.menu = $();             // 先摘菜单再退出,图标立刻消失(nil 用 $())
         $.NSStatusBar.systemStatusBar.removeStatusItem(item);
@@ -3739,7 +3731,7 @@ function run(argv){
       if (!st || !st.ok) {          // 服务不可达:降级为「重启 WordPaper」
         var m2 = $.NSMenu.alloc.init;
         addItem(m2, 'WordPaper 暂时没有响应…', '', true);
-        addItem(m2, '重新打开 WordPaper', 'open:' + (st && st.web ? st.web : 'http://localhost:8770'), false);
+        addItem(m2, '正在重新连接 WordPaper…', '', true);
         item.menu = m2;
         return;
       }
@@ -3749,8 +3741,8 @@ function run(argv){
       else addItem(menu, '召唤小词灵', 'pet-open', false);
       addItem(menu, st.petMode === 'patrick' ? '切换到词卡形态' : '切换到派大星形态', 'pet-mode', false);
       addItem(menu, '换一组词', 'next', false);
-      addItem(menu, '记忆复习本…', 'open:' + st.web + '/?openMemory=1', false);
-      addItem(menu, '打开控制面板…', 'open:' + st.web, false);
+      addItem(menu, '记忆复习本…', 'workspace-memory', false);
+      addItem(menu, '打开控制面板…', 'workspace-home', false);
       sep(menu);
       var u = st.update || {};
       if (st.appMode && u.applying) {
@@ -3804,7 +3796,7 @@ function startMenuBar() {
   // 每个伴侣写自己的脚本副本(PID 烙进去),不共用 /tmp 同名文件 —— 共享文件
   // 会让旧实例的菜单栏读到新 PORT,对着新实例显示幽灵图标(双图标 bug)。
   const scriptPath = path.join(os.tmpdir(), `dw_menubar-${process.pid}.jxa.js`);
-  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid, process.env.WORDPAPER_NATIVE_UI === '1' ? localWebOrigin(CFG.webOrigin) || 'http://localhost:8770' : '')); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
+  try { fs.writeFileSync(scriptPath, buildMenuBarJXA(CFG.port, process.pid)); } catch (err) { console.error('[companion] menubar script failed:', err.message); return; }
   const { spawn } = require('child_process');
   // stderr 丢弃('ignore')而非 pipe:父进程死后没人读管道,子进程写满 64KB
   // 缓冲会整体冻结(定时器停摆,失联自毁永远跑不到 → 幽灵图标)。
@@ -3867,8 +3859,14 @@ function syncMenuUpdate() {
   });
 }
 function handleMenuCommand(cmd, res) {
-  const jsonOut = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+  const jsonOut = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   switch (cmd) {
+    case 'workspace-home':
+    case 'workspace-memory':
+      return openWorkspace(cmd === 'workspace-memory' ? '/?openMemory=1' : '/', (error, opened) => {
+        if (error) console.error('[companion] workspace navigation failed:', error.message);
+        jsonOut(error ? { ok: false, error: '无法打开 WordPaper，请重新启动 App' } : { ok: true, opened }, error ? 500 : 200);
+      });
     case 'pet-open':
       try { fs.unlinkSync(PET_CLOSED_PATH); } catch {}
       startPet();
@@ -5430,9 +5428,40 @@ function trustedLocalMutation(req) {
 function localWebOrigin(value) {
   try {
     const parsed = new URL(String(value || ''));
-    if (parsed.protocol !== 'http:' || !['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)) return '';
+    if (parsed.protocol !== 'http:' || !['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password) return '';
     return parsed.origin;
   } catch { return ''; }
+}
+
+function validatedAppPath(value) {
+  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.endsWith('.app')) return '';
+  try {
+    const app = fs.realpathSync(value);
+    if (!app.endsWith('.app') || !fs.statSync(path.join(app, 'Contents/Resources/server.js')).isFile()) return '';
+    fs.accessSync(path.join(app, 'Contents/MacOS/WordPaper'), fs.constants.X_OK);
+    return app;
+  } catch { return ''; }
+}
+function nativeAppPath() {
+  return validatedAppPath(CFG.desktopAppPath)
+    || validatedAppPath(process.env.WORDPAPER_NATIVE_APP_PATH)
+    || (APP_MODE ? validatedAppPath(path.resolve(ROOT, '../..')) : '');
+}
+function openWorkspace(destination, callback = () => {}) {
+  const app = nativeAppPath();
+  if (!app && (CFG.desktopAppPath || process.env.WORDPAPER_NATIVE_APP_PATH || process.env.WORDPAPER_NATIVE_UI === '1' || APP_MODE)) {
+    callback(new Error('找不到 WordPaper App，请从应用程序重新打开。'));
+    return;
+  }
+  const args = app ? ['-a', app, 'wordpaper://open?path=' + encodeURIComponent(destination)]
+    : [(localWebOrigin(CFG.webOrigin) || `http://localhost:${CFG.port}`) + destination];
+  // Pin the receiving bundle: LaunchServices may know several old build copies.
+  // Registered App navigation must never silently fall back to a browser.
+  execFile('/usr/bin/open', args, error => callback(error, app ? 'app' : 'browser'));
+}
+function nativeLocalRequest(req) {
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
+    && req.headers['x-wordpaper-local'] === '1' && !req.headers.origin && !req.headers.referer;
 }
 
 /* Same one-click-enable + standalone-zip endpoints as server.js, so the desktop
@@ -5472,6 +5501,41 @@ function parseMultipart(buf, boundary) {
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
+
+  // The native launcher registers its actual bundle and selected server port,
+  // including when it reuses an already-running companion. Browser pages must
+  // not be able to retarget the machine's native workspace.
+  if (url === '/desktop/register') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!nativeLocalRequest(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let appPath, webOrigin;
+      try {
+        if (body.length > 16384) throw new Error('registration-too-large');
+        const payload = JSON.parse(body.toString());
+        appPath = validatedAppPath(payload.appPath);
+        const target = new URL(payload.webOrigin);
+        webOrigin = localWebOrigin(payload.webOrigin);
+        if (!appPath || !webOrigin || !target.port || target.pathname !== '/' || target.search || target.hash) throw new Error('invalid-registration');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: 'invalid-registration' }));
+      }
+      const next = { ...CFG, desktopAppPath: appPath, webOrigin };
+      const tmp = CONFIG_PATH + '.register-' + process.pid + '.tmp';
+      try {
+        fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+        fs.renameSync(tmp, CONFIG_PATH);
+        Object.assign(CFG, next);
+      } catch {
+        try { fs.unlinkSync(tmp); } catch {}
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: 'registration-save-failed' }));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({ ok: true, nativeNavigation: 1 }));
+    });
+  }
 
   // OCR endpoint (browser posts an image -> Vision -> text)
   if (url === '/ocr.php') {
@@ -5541,7 +5605,7 @@ const server = http.createServer((req, res) => {
       const beforeKeys = (oldPage && oldPage.words || []).map(petWordKey);
       const changedLibrary = CFG.library !== library;
       CFG.library = library;
-      const webOrigin = localWebOrigin(payload.webOrigin);
+      const webOrigin = nativeAppPath() ? '' : localWebOrigin(payload.webOrigin);
       const changedWebOrigin = Boolean(webOrigin && webOrigin !== CFG.webOrigin);
       if (webOrigin) CFG.webOrigin = webOrigin;
       const requestedUITheme = String(payload.uiTheme || '');
@@ -6383,6 +6447,7 @@ const server = http.createServer((req, res) => {
     if (req.headers['x-wordpaper-local'] !== '1') { res.writeHead(403); return res.end(); }
     let cmd = '';
     try { cmd = new URL(req.url, 'http://localhost').searchParams.get('cmd') || ''; } catch {}
+    if (['workspace-home', 'workspace-memory'].includes(cmd) && !nativeLocalRequest(req)) { res.writeHead(403); return res.end(); }
     return handleMenuCommand(cmd, res);
   }
 
@@ -6414,9 +6479,8 @@ server.listen(CFG.port, '127.0.0.1', () => {
   console.log(`  配置：         ${CONFIG_PATH}`);
   console.log('');
   if (isMac) {
-    // open the site in the default browser (skipped on silent/autostart launches,
-    // Wallpaper-Engine-style: boot → wallpaper appears, no windows pop up)
-    if (process.env.WORDPAPER_TEST_MODE !== '1' && process.env.WORDPAPER_COMPANION_SILENT !== '1') execFile('open', [CFG.webOrigin || `http://localhost:${CFG.port}`], () => {});
+    // Bring back the registered App; source-only runs retain browser access.
+    if (process.env.WORDPAPER_TEST_MODE !== '1' && process.env.WORDPAPER_COMPANION_SILENT !== '1') openWorkspace('/');
     else if (process.env.WORDPAPER_COMPANION_SILENT === '1') console.log('  静默启动（开机自启）：不打开浏览器');
     // push the first wallpaper now, then on the interval
     sweepRasterTemps();

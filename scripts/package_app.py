@@ -236,7 +236,10 @@ fi
 export WORDPAPER_MODE="${WORDPAPER_MODE:-local}"
 export WORDPAPER_DATA_DIR="${WORDPAPER_DATA_DIR:-$HOME/.wordpaper}"
 export WORDPAPER_COMPANION_ENABLED=1
-export WORDPAPER_WEB_ORIGIN="${WORDPAPER_WEB_ORIGIN:-http://localhost:$PORT}"
+export WORDPAPER_WEB_ORIGIN="http://localhost:$PORT"
+if [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ]; then
+  export WORDPAPER_NATIVE_APP_PATH="$(cd "$HERE/../.." && pwd -P)"
+fi
 COMP_PORT="${WORDPAPER_COMPANION_PORT:-8771}"
 # 钉死伴侣端口:server.js 的代理/状态探测和 companion.js 的 bind 都以它为准,
 # 不受 companion-config.json 里旧配置影响——否则 launcher 探的口和伴侣绑的口可能不一致。
@@ -263,6 +266,21 @@ trap 'exit 0' INT TERM
 
 server_up() { wordpaper_up "$PORT"; }
 companion_up() { curl -fsS -m 3 "http://127.0.0.1:$COMP_PORT/status.json" >/dev/null 2>&1; }
+register_native_workspace() {
+  [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ] || return 0
+  /usr/bin/python3 -c 'import json,sys; print(json.dumps({"appPath":sys.argv[1],"webOrigin":sys.argv[2]}))' "$WORDPAPER_NATIVE_APP_PATH" "$WORDPAPER_WEB_ORIGIN" |
+    curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -H 'X-WordPaper-Local: 1' --data-binary @- "http://127.0.0.1:$COMP_PORT/desktop/register" |
+    /usr/bin/python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); sys.exit(0 if d.get("ok") is True and d.get("nativeNavigation") == 1 else 1)
+except Exception: sys.exit(1)'
+}
+require_native_workspace() {
+  if ! register_native_workspace; then
+    wp_alert "桌面入口连接失败。请退出旧版 WordPaper，再重新打开当前 App。"
+    exit 1
+  fi
+}
 
 # Stop only the verified bundle processes bound to this service chain. A Slim
 # app may use cached/system Node, so inspect cwd instead of executable paths.
@@ -289,6 +307,7 @@ fi
 #    没有这一步时,重复双击会让第二个伴侣撞 EADDRINUSE 秒退,
 #    从用户看就是「双击图标毫无反应」。─────────────────────────
 if server_up && companion_up; then
+  require_native_workspace
   if [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ]; then native_ready; else open "http://localhost:$PORT"; fi
   exit 0
 fi
@@ -307,9 +326,8 @@ if ! server_up; then
   wp_alert "$(printf 'WordPaper 主服务启动失败。\n请把日志文件发给开发者:\n%s/server.log' "$LOG_DIR")"
   exit 1
 fi
-native_ready
-
 if [ "${WORDPAPER_SKIP_COMPANION:-0}" = "1" ]; then
+  native_ready
   release_start_lock
   echo "server up at :$PORT (companion skipped)"
   wait "$SERVER_PID"
@@ -343,6 +361,8 @@ if ! kill -0 "$COMP_PID" 2>/dev/null; then
   wp_alert "$(printf '小词灵启动失败。\n请把日志文件发给开发者:\n%s/companion.log' "$LOG_DIR")"
   exit 1
 fi
+require_native_workspace
+native_ready
 release_start_lock
 # ── wait server(核心守护循环)──────────────────────────────────
 # 生命周期以主 server 为准:server 正常退出(应用内更新落旗标 / 菜单栏「退出」/
@@ -405,6 +425,7 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
   • 自动把桌面壁纸换成今天的单词,每 30 分钟换一组。
   • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习;关掉后随时从菜单栏召回。
   • 工作区在独立的 WordPaper 窗口打开，Dock、⌘Q、关闭/重新显示窗口均按 Mac App 使用。
+  • 词卡「记忆本」与菜单「控制面板」会唤回同一个 App 窗口；升级到此版请完整替换应用程序里的 WordPaper。
   • 使用同步账号：填写账号服务器 HTTPS 地址，选择 Google、微信或原账号；在系统浏览器核对连接码并授权后，App 自动打开同步工作区。
   • 没有服务器时可继续使用本机账号；跨电脑同步需要先部署账号服务器。
   • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。

@@ -45,9 +45,13 @@
         backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"WordPaper"; self.window.minSize = NSMakeSize(860, 620);
     self.window.releasedWhenClosed = NO;
-    [self.window setFrameAutosaveName:@"WordPaperWorkspace"];
+    if (![self navigationTestEnabled]) [self.window setFrameAutosaveName:@"WordPaperWorkspace"];
     [self.window center];
     WKWebViewConfiguration *config = [WKWebViewConfiguration new];
+    if ([self navigationTestEnabled]) {
+        config.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
+        [config.userContentController addScriptMessageHandler:self name:@"nativeTest"];
+    }
     [config.userContentController addScriptMessageHandler:self name:@"external"];
     NSString *bridge = @"window.WordPaperDesktop=Object.freeze({openExternal:function(url){window.webkit.messageHandlers.external.postMessage(String(url));}});";
     [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:bridge injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
@@ -102,6 +106,15 @@
 - (BOOL)isWorkspace:(NSURL *)url {
     return self.origin && [url.scheme isEqual:self.origin.scheme] && [url.host isEqual:self.origin.host] && [url.port isEqual:self.origin.port];
 }
+// Loopback aliases identify the same local service, but WebKit cookies and
+// storage still belong to the original origin. Rewrite before loading rather
+// than relaxing isWorkspace, which also protects the privileged JS bridge.
+- (NSURL *)canonicalWorkspaceURL:(NSURL *)url {
+    if (![self isLoopback:self.origin] || ![self isLoopback:url] || ![url.port isEqual:self.origin.port]) return nil;
+    NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:YES];
+    parts.scheme = self.origin.scheme; parts.host = self.origin.host; parts.port = self.origin.port;
+    return parts.URL;
+}
 - (void)loadOrigin:(NSURL *)url {
     self.origin = url;
     NSString *path = self.pendingPath ?: @"/";
@@ -141,21 +154,44 @@
     }
 }
 - (void)openExternal:(NSURL *)url {
-    if ([url.scheme isEqual:@"https"] || [url.scheme isEqual:@"mailto"] || [self isLoopback:url]) [NSWorkspace.sharedWorkspace openURL:url];
+    NSURL *workspace = [self canonicalWorkspaceURL:url];
+    if (workspace) {
+        [self.web loadRequest:[NSURLRequest requestWithURL:workspace]]; [self showWindow:nil]; return;
+    }
+    if ([url.scheme isEqual:@"https"] || [url.scheme isEqual:@"mailto"] || [self isLoopback:url]) {
+        if ([self navigationTestEnabled]) { [self recordNavigationTestEvent:@"external" URL:url]; return; }
+        [NSWorkspace.sharedWorkspace openURL:url];
+    }
 }
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
     if (!message.frameInfo.mainFrame || ![self isWorkspace:message.frameInfo.request.URL] || ![message.body isKindOfClass:NSString.class]) return;
+    if ([message.name isEqual:@"nativeTest"] && [self navigationTestEnabled]) {
+        if ([message.body isEqual:@"hide"]) { [self.window orderOut:nil]; [self recordNavigationTestEvent:@"hidden" URL:self.web.URL]; }
+        return;
+    }
     [self openExternal:[NSURL URLWithString:message.body]];
 }
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decision {
     NSURL *url = action.request.URL;
+    NSURL *workspace = [self canonicalWorkspaceURL:url];
+    if (workspace && ![self isWorkspace:url]) {
+        NSMutableURLRequest *request = [action.request mutableCopy]; request.URL = workspace;
+        decision(WKNavigationActionPolicyCancel);
+        if (action.shouldPerformDownload) {
+            [webView startDownloadUsingRequest:request completionHandler:^(WKDownload *download) { download.delegate = self; }];
+        } else { [webView loadRequest:request]; [self showWindow:nil]; }
+        return;
+    }
     if (action.shouldPerformDownload && ([self isWorkspace:url] || [url.scheme isEqual:@"blob"] || [url.scheme isEqual:@"data"])) { decision(WKNavigationActionPolicyDownload); return; }
     if ([self isWorkspace:url] || [url.scheme isEqual:@"about"]) { decision(WKNavigationActionPolicyAllow); return; }
     [self openExternal:url]; decision(WKNavigationActionPolicyCancel);
 }
 - (WKWebView *)webView:(WKWebView *)webView createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration forNavigationAction:(WKNavigationAction *)action windowFeatures:(WKWindowFeatures *)features {
-    if ([self isWorkspace:action.request.URL]) [webView loadRequest:action.request];
-    else [self openExternal:action.request.URL];
+    NSURL *workspace = [self canonicalWorkspaceURL:action.request.URL];
+    if (workspace) {
+        NSMutableURLRequest *request = [action.request mutableCopy]; request.URL = workspace;
+        [webView loadRequest:request]; [self showWindow:nil];
+    } else [self openExternal:action.request.URL];
     return nil;
 }
 - (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(BOOL))completion {
@@ -179,7 +215,25 @@
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) { completion(result == NSModalResponseOK ? panel.URL : nil); }];
 }
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { [webView reload]; }
+// Only the isolated navigation test enables this recorder. External dispatch
+// is captured before NSWorkspace so regression tests never open a browser.
+- (BOOL)navigationTestEnabled {
+    NSDictionary *env = NSProcessInfo.processInfo.environment;
+    return [env[@"NODE_ENV"] isEqual:@"test"] && [env[@"WORDPAPER_NATIVE_NAVIGATION_REPORT"] length] > 0;
+}
+- (void)recordNavigationTestEvent:(NSString *)event URL:(NSURL *)url {
+    if (![self navigationTestEnabled]) return;
+    NSString *report = NSProcessInfo.processInfo.environment[@"WORDPAPER_NATIVE_NAVIGATION_REPORT"];
+    NSDictionary *state = @{@"event": event, @"url": url.absoluteString ?: @"", @"workspaceURL": self.web.URL.absoluteString ?: @"",
+        @"visible": @(self.window.visible), @"windowNumber": @(self.window.windowNumber), @"pid": @(getpid())};
+    NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:state options:0 error:nil] mutableCopy];
+    [line appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+    if (![NSFileManager.defaultManager fileExistsAtPath:report]) [NSFileManager.defaultManager createFileAtPath:report contents:nil attributes:nil];
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingAtPath:report];
+    [file seekToEndOfFile]; [file writeData:line]; [file closeFile];
+}
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    if ([self isWorkspace:webView.URL]) [self recordNavigationTestEvent:@"loaded" URL:webView.URL];
     NSDictionary *env = NSProcessInfo.processInfo.environment;
     NSString *report = env[@"WORDPAPER_NATIVE_TEST_REPORT"];
     if (![env[@"NODE_ENV"] isEqual:@"test"] || !report || ![self isWorkspace:webView.URL]) return;

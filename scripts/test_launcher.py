@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Isolated real launcher: repeat opens, saved port, and update restart chain."""
+"""Isolated launcher: native registration/readiness, reuse, and update restart."""
+import http.server
 import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -39,14 +42,24 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-launcher-test-') as folder:
     res.mkdir(parents=True); macos.mkdir()
     for name in package.PAYLOAD_FILES: shutil.copy2(ROOT / name, res / name)
     for name in package.PAYLOAD_DIRS: shutil.copytree(ROOT / name, res / name)
-    launcher = macos / 'launcher.sh'
-    launcher.write_text(package.LAUNCHER); launcher.chmod(0o755)
+    # Registration validates the bundle executable, but this test only runs
+    # launcher.sh; the fixture must never start a Cocoa window.
+    (macos / 'WordPaper').write_text('#!/bin/sh\nexit 0\n')
+    (macos / 'WordPaper').chmod(0o755)
     state = temp / 'state'; state.mkdir()
     logs = temp / 'logs'; logs.mkdir()
     scratch = temp / 'tmp'; scratch.mkdir()
     fakebin = temp / 'bin'; fakebin.mkdir()
     (fakebin / 'open').write_text('#!/bin/sh\necho "$@" >> "$WORDPAPER_LOG_DIR/open.log"\n')
     (fakebin / 'open').chmod(0o755)
+    fake_dialog = fakebin / 'osascript'
+    fake_dialog.write_text('#!/bin/sh\nprintf "%s\\n" "$WP_MSG" >> "$WORDPAPER_LOG_DIR/dialog.log"\n')
+    fake_dialog.chmod(0o755)
+    launcher = macos / 'launcher.sh'
+    # wp_alert uses an absolute osascript path, so PATH alone cannot isolate it.
+    # Replace only the dialog executable in this temporary launcher copy.
+    launcher.write_text(package.LAUNCHER.replace('/usr/bin/osascript', shlex.quote(str(fake_dialog))))
+    launcher.chmod(0o755)
     port, comp = free_port(), free_port()
     (state / 'port.json').write_text(json.dumps({'port': port}))
     config = temp / 'config.json'
@@ -65,11 +78,13 @@ require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js')).applyUpdate
   fs.writeFileSync(path.join(process.env.WORDPAPER_DATA_DIR,'update-pending.json'),'{}');
 };
 ''')
+    ready = temp / 'native-ready.json'
     env = {**os.environ, 'PATH': str(fakebin) + os.pathsep + os.environ['PATH'],
            'WORDPAPER_DATA_DIR': str(state), 'WORDPAPER_LOG_DIR': str(logs),
            'WORDPAPER_COMPANION_DATA_DIR': str(temp / 'companion'), 'WORDPAPER_CONFIG_PATH': str(config),
            'WORDPAPER_COMPANION_PORT': str(comp), 'WORDPAPER_COMPANION_AUTOSTART': '0',
            'WORDPAPER_COMPANION_SILENT': '1', 'WORDPAPER_TEST_MODE': '1', 'NODE_ENV': 'test',
+           'WORDPAPER_NATIVE_UI': '1', 'WORDPAPER_NATIVE_READY_FILE': str(ready),
            'TMPDIR': str(scratch), 'NODE_OPTIONS': '--require=' + str(preload), 'WP_LAUNCH_TEST_ROOT': str(res)}
     for key in ['PORT', 'WORDPAPER_WEB_ORIGIN', 'WORDPAPER_SELFTEST', 'WORDPAPER_SKIP_COMPANION', 'WORDPAPER_FORCE_DOWNLOAD']:
         env.pop(key, None)
@@ -80,24 +95,122 @@ require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js')).applyUpdate
     try:
         wait_for(lambda: health()['ok'])
         wait_for(lambda: not (state / 'startup.lock').exists())
+        assert proc.poll() is None, 'Launcher exited before registration completed'
+        assert json.loads(ready.read_text()) == {'url': f'http://localhost:{port}', 'owned': True}
+        registered = json.loads(config.read_text())
+        assert registered['desktopAppPath'] == str(app.resolve()), registered
+        assert registered['webOrigin'] == f'http://localhost:{port}', registered
+        assert not (logs / 'open.log').exists(), 'Native startup opened a browser'
+        print('PASS fresh native launcher registers the exact App and origin before readiness', flush=True)
         before = subprocess.check_output(['lsof', '-nP', f'-tiTCP:{port}', '-sTCP:LISTEN'], text=True).strip()
+        companion_base = f'http://127.0.0.1:{comp}'
+        def companion_status():
+            request = urllib.request.Request(companion_base + '/menu-status.json', headers={'X-WordPaper-Local': '1'})
+            return json.load(opener.open(request, timeout=2))
+        companion_before = companion_status()['ownerPid']
+        # Simulate a companion previously claimed by a different App/origin.
+        # Reopening must update the existing process, not rely on its startup env.
+        other_app = temp / 'Previous WordPaper.app'
+        other_macos = other_app / 'Contents/MacOS'; other_macos.mkdir(parents=True)
+        other_resources = other_app / 'Contents/Resources'; other_resources.mkdir()
+        shutil.copy2(macos / 'WordPaper', other_macos / 'WordPaper')
+        (other_resources / 'server.js').write_text('// registration fixture\n')
+        request = urllib.request.Request(companion_base + '/desktop/register',
+            data=json.dumps({'appPath': str(other_app), 'webOrigin': 'http://localhost:18126'}).encode(),
+            headers={'Content-Type': 'application/json', 'X-WordPaper-Local': '1'})
+        assert json.load(opener.open(request, timeout=2))['nativeNavigation'] == 1
+        assert companion_status()['web'] == 'http://localhost:18126'
+        ready.unlink()
         marker = state / 'update-pending.json'; marker.write_text('preserve-on-reopen')
         reopen = subprocess.run(['/bin/bash', str(launcher)], env=env, capture_output=True, timeout=15)
         assert reopen.returncode == 0, reopen.stderr
         assert proc.poll() is None
         assert json.loads((state / 'port.json').read_text())['port'] == port
         assert subprocess.check_output(['lsof', '-nP', f'-tiTCP:{port}', '-sTCP:LISTEN'], text=True).strip() == before
+        assert companion_status()['ownerPid'] == companion_before
+        assert json.loads(ready.read_text()) == {'url': f'http://localhost:{port}', 'owned': False}
+        registered = json.loads(config.read_text())
+        assert registered['desktopAppPath'] == str(app.resolve()), registered
+        assert registered['webOrigin'] == f'http://localhost:{port}', registered
+        assert not (logs / 'open.log').exists(), 'Native reopen opened a browser'
         assert marker.read_text() == 'preserve-on-reopen'
         marker.unlink()
-        print('PASS repeat open reuses saved server and preserves pending update flag', flush=True)
+        print('PASS native reopen re-registers App/origin on existing processes and preserves pending update flag', flush=True)
+        ready.unlink()
         request = urllib.request.Request(base + '/api/update/apply-local', data=b'{}', headers={'X-WordPaper-Local': '1'})
         assert json.load(opener.open(request, timeout=3))['started']
         wait_for(lambda: health()['version'] == '99.0.0', timeout=35)
+        wait_for(lambda: ready.exists() and not (state / 'startup.lock').exists())
         assert 'update applied: restarting service chain' in (logs / 'server.log').read_text()
         assert proc.poll() is None
+        assert json.loads(ready.read_text()) == {'url': f'http://localhost:{port}', 'owned': True}
+        assert json.loads(config.read_text())['desktopAppPath'] == str(app.resolve())
         print('PASS update restarts complete launcher/server/companion chain on same port', flush=True)
     finally:
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGTERM)
             try: proc.wait(timeout=8)
             except subprocess.TimeoutExpired: os.killpg(proc.pid, signal.SIGKILL); proc.wait()
+
+    # Use HTTP fixtures for malformed/old companion registration responses.
+    # The launcher executes its actual reuse branch without spawning any service.
+    for label, registration_body, registration_status, accepted in [
+        ('missing capability', b'{"ok":true}', 200, False),
+        ('unsupported capability', b'{"ok":true,"nativeNavigation":0}', 200, False),
+        ('failed registration', b'{"ok":false,"nativeNavigation":1}', 200, False),
+        ('non-JSON success status', b'not json', 200, False),
+        ('old companion without registration endpoint', b'not found', 404, False),
+        ('confirmed native capability', b'{"ok":true,"nativeNavigation":1}', 200, True),
+    ]:
+        case = temp / label.replace(' ', '-'); case.mkdir()
+        case_logs = case / 'logs'; case_logs.mkdir()
+        case_ready = case / 'ready.json'
+        observed = []
+        class Fixture(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args): pass
+            def send_payload(self, code, payload):
+                self.send_response(code)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            def do_GET(self):
+                if self.path == '/healthz':
+                    self.send_payload(200, json.dumps({'ok': True, 'mode': 'local',
+                        'version': (res / 'VERSION').read_text().strip()}, separators=(',', ':')).encode())
+                elif self.path == '/status.json': self.send_payload(200, b'{"mac":true}')
+                else: self.send_payload(404, b'{}')
+            def do_POST(self):
+                if self.path != '/desktop/register':
+                    return self.send_payload(404, b'{}')
+                observed.append({'body': json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0)))),
+                    'local': self.headers.get('X-WordPaper-Local'), 'origin': self.headers.get('Origin'),
+                    'earlyReady': case_ready.exists()})
+                self.send_payload(registration_status, registration_body)
+        fixtures = [http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture) for _ in range(2)]
+        for fixture in fixtures:
+            threading.Thread(target=fixture.serve_forever, daemon=True).start()
+        fixture_port, fixture_companion = [fixture.server_address[1] for fixture in fixtures]
+        case_env = {**env, 'PORT': str(fixture_port), 'WORDPAPER_COMPANION_PORT': str(fixture_companion),
+            'WORDPAPER_DATA_DIR': str(case / 'state'), 'WORDPAPER_LOG_DIR': str(case_logs),
+            'WORDPAPER_NATIVE_READY_FILE': str(case_ready)}
+        try:
+            result = subprocess.run(['/bin/bash', str(launcher)], env=case_env, capture_output=True, timeout=15)
+            assert len(observed) == 1, (label, observed, result.stderr)
+            assert observed[0] == {'body': {'appPath': str(app.resolve()), 'webOrigin': f'http://localhost:{fixture_port}'},
+                'local': '1', 'origin': None, 'earlyReady': False}, (label, observed)
+            if accepted:
+                assert result.returncode == 0, (label, result.stderr)
+                assert json.loads(case_ready.read_text()) == {'url': f'http://localhost:{fixture_port}', 'owned': False}
+            else:
+                assert result.returncode != 0, (label, result.stderr)
+                assert not case_ready.exists(), label + ' incorrectly published native readiness'
+                assert '桌面入口连接失败' in (case_logs / 'dialog.log').read_text()
+            assert not (case_logs / 'open.log').exists(), label + ' unexpectedly opened browser'
+            assert not (case_logs / 'server.log').exists(), label + ' unexpectedly spawned service'
+            assert not (case_logs / 'companion.log').exists(), label + ' unexpectedly spawned companion'
+            assert not (case / 'state/startup.lock').exists(), label + ' leaked startup lock'
+            print('PASS native readiness protocol: ' + label, flush=True)
+        finally:
+            for fixture in fixtures:
+                fixture.shutdown(); fixture.server_close()
