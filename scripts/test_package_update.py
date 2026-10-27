@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
     oldres = installed / 'Resources'; oldres.mkdir(parents=True)
     (installed / 'MacOS').mkdir()
     (installed / 'MacOS/launcher.sh').write_text('#!/bin/bash\necho old\n')
+    (installed / 'MacOS/WordPaper').write_text('old native binary')
+    (installed / 'MacOS/WordPaper').chmod(0o755)
     (installed / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleVersion': '0.0.1'}))
     (oldres / 'VERSION').write_text('0.0.1')
     (oldres / 'server.js').write_text('old server')
@@ -50,12 +52,22 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
     (state / 'user-data.txt').write_text('keep user data')
     runner = temp / 'apply.cjs'
     runner.write_text('''
-const fs=require('fs'),{EventEmitter}=require('events');
+const fs=require('fs'),{EventEmitter}=require('events'),{Readable}=require('stream'),crypto=require('crypto');
 const u=require(process.env.WP_PACKAGE_ROOT+'/lib/updater.js');
 u.__setRunningFrom(process.env.WP_PACKAGE_DEST);
 u.__setHttpsGet((url, cb)=>{
   const req=new EventEmitter(); let stream; req.destroy=()=>stream?.destroy();
-  process.nextTick(()=>{stream=fs.createReadStream(process.env.WP_PACKAGE_DMG);stream.statusCode=200;stream.headers={'content-length':fs.statSync(process.env.WP_PACKAGE_DMG).size};cb(stream);});return req;
+  process.nextTick(()=>{
+    const size=fs.statSync(process.env.WP_PACKAGE_DMG).size;
+    if(url.startsWith('https://api.github.com/')) {
+      const tag='companion-v'+process.env.WP_PACKAGE_VERSION;
+      const body=JSON.stringify({tag_name:tag,draft:false,prerelease:false,assets:[{name:u.assetForArch(),state:'uploaded',size,
+        digest:'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(process.env.WP_PACKAGE_DMG)).digest('hex'),
+        browser_download_url:'https://github.com/shangchaovo/wordpaper/releases/download/'+tag+'/'+u.assetForArch()}]});
+      stream=Readable.from([body]);stream.headers={'content-length':Buffer.byteLength(body)};
+    } else {stream=fs.createReadStream(process.env.WP_PACKAGE_DMG);stream.headers={'content-length':size};}
+    stream.statusCode=200;cb(stream);
+  });return req;
 });
 u.applyUpdate('0.0.1',process.env.WP_PACKAGE_VERSION,()=>{}).then(()=>console.log('PASS real hdiutil + rsync install')).catch(e=>{console.error(e);process.exitCode=1;});
 ''')
@@ -63,10 +75,14 @@ u.applyUpdate('0.0.1',process.env.WP_PACKAGE_VERSION,()=>{}).then(()=>console.lo
            'WP_PACKAGE_DEST': str(oldres), 'WP_PACKAGE_DMG': str(dmg), 'WP_PACKAGE_VERSION': package.VERSION}
     print(run(['node', runner], env=env).strip(), flush=True)
     assert (installed / 'MacOS/launcher.sh').read_text() == package.LAUNCHER
+    assert (installed / 'MacOS/WordPaper').read_bytes() == (source / 'Contents/MacOS/WordPaper').read_bytes()
+    assert (installed / 'MacOS/WordPaper').stat().st_mode & 0o111
     assert plistlib.loads((installed / 'Info.plist').read_bytes())['CFBundleVersion'] == package.VERSION
     assert json.loads((oldres / 'RELEASE_SHA256.json').read_text()) == manifest
     assert (state / 'user-data.txt').read_text() == 'keep user data'
-    assert json.loads((state / 'update-pending.json').read_text())['to'] == package.VERSION
+    flag = json.loads((state / 'update-pending.json').read_text())
+    assert flag['to'] == package.VERSION and flag['nativeReplaced'] is True
+    assert flag['appPath'] == str(installed.parent.resolve())
     for name, digest in manifest['files'].items():
         assert hashlib.sha256((oldres / name).read_bytes()).hexdigest() == digest
     with socket.socket() as sock:

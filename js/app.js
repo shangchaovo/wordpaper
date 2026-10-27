@@ -2996,14 +2996,15 @@
           if (complete(st.current)) return;
           if (st.applying) {
             const stage = st.progress && st.progress.stage || '';
-            const label = stage === 'verify' ? '校验完整性…' : stage === 'mount' ? '挂载安装包…'
-              : stage === 'install' ? '替换应用文件…' : stage === 'restart' ? '即将重启…'
+            const label = stage === 'verify' ? '校验完整性…' : stage === 'mount' ? '正在准备安装…'
+              : stage === 'install' ? '正在安装…' : stage === 'restart' ? '正在重新打开 WordPaper…'
               : Math.round(((st.progress && st.progress.fraction) || 0) * 100) + '%';
             status.textContent = '更新到 v' + (st.target || target) + ': ' + label;
           } else if (st.error) {
             clearInterval(updatePolling); updatePolling = null;
-            status.textContent = '更新失败,请稍后重试或到 GitHub Releases 手动下载';
-            render('重试', false);
+            check.available = false;
+            status.textContent = '更新未完成，重试时会重新检查版本';
+            render('重新检查并重试', false);
             toast('更新失败: ' + st.error);
           } else if (ticks > 360) {   // 6 分钟墙钟:下载停滞/总超时应已被 server 端杀掉;这里是 UI 兜底
             clearInterval(updatePolling); updatePolling = null;

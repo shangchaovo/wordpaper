@@ -36,10 +36,11 @@ for (const d of ['lib', 'css', 'js', 'data', 'assets']) fs.mkdirSync(path.join(m
 fs.writeFileSync(path.join(mountRes, 'lib', 'updater.js'), '// new');
 fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// new');
 
-const bundleFiles = { 'MacOS/launcher.sh': '#!/bin/bash\necho new', 'Info.plist': 'new plist' };
+const bundleFiles = { 'MacOS/launcher.sh': '#!/bin/bash\necho new', 'MacOS/WordPaper': 'new native application', 'Info.plist': 'new plist' };
 for (const [rel, body] of Object.entries(bundleFiles)) {
   const target = path.join(mountRes, '..', rel);
   fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, body);
+  if (rel.startsWith('MacOS/')) fs.chmodSync(target, 0o755);
 }
 fs.writeFileSync(path.join(mountRes, 'assets', 'favicon-32.png'), 'new favicon');
 // Manifest: per-file digests of the NEW payload (as package_app.py generates).
@@ -112,6 +113,7 @@ u.__setExecFile((cmd, args, opts, cb) => {
     cb(null, '', '');
   } else if (cmd.endsWith('hdiutil')) {
     if (args[0] === 'attach') {
+      if (!args.includes('-noautoopen') || !args.includes('-nobrowse')) return cb(new Error('update mount must not open Finder'));
       const mountPoint = args[args.indexOf('-mountpoint') + 1];
       realFs.cpSync(path.join(tmp, 'dmgMount', 'WordPaper.app'), path.join(String(mountPoint), 'WordPaper.app'), { recursive: true });
       cb(null, '', '');
@@ -121,12 +123,12 @@ u.__setExecFile((cmd, args, opts, cb) => {
 
 // Stub the DMG download: bypass https entirely via __setHttpsGet.
 u.__setHttpsGet((url, cb) => {
-  const fakeRes = Object.assign(new (require('events').EventEmitter)(), {
-    statusCode: 200, headers: { 'content-length': '8' },
-    pipe(dest) { dest.write(Buffer.alloc(2048, 0x41)); process.nextTick(() => dest.end()); return dest; },
-    resume() { return this; },
-    on(ev, fn) { if (ev === 'data') process.nextTick(() => fn(Buffer.alloc(2048, 0x41))); return this; },
-  });
+  const dmg = Buffer.alloc(2048, 0x41);
+  const data = url.startsWith('https://api.github.com/') ? Buffer.from(JSON.stringify({ tag_name: 'companion-v2.3.0', draft: false, prerelease: false,
+    assets: [{ name: u.assetForArch(), state: 'uploaded', size: dmg.length, digest: 'sha256:' + crypto.createHash('sha256').update(dmg).digest('hex'),
+      browser_download_url: `https://github.com/shangchaovo/wordpaper/releases/download/companion-v2.3.0/${u.assetForArch()}` }] })) : dmg;
+  const fakeRes = require('stream').Readable.from([data]);
+  fakeRes.statusCode = 200; fakeRes.headers = { 'content-length': String(data.length) };
   process.nextTick(() => cb(fakeRes));
   return { on: () => {}, destroy: () => {}, setTimeout() {} };
 });
@@ -143,14 +145,15 @@ const destPath = path.join(tmp, 'fake.dmg');
     const flagPath = path.join(process.env.WORDPAPER_DATA_DIR, 'update-pending.json');
     let flag = null;
     try { flag = JSON.parse(fs.readFileSync(flagPath, 'utf8')); } catch {}
-    check('重启旗标已写入(from/to 正确)', flag && flag.from === '2.2.3' && flag.to === '2.3.0');
+    check('重启旗标要求启动新原生程序', flag && flag.from === '2.2.3' && flag.to === '2.3.0' && flag.nativeReplaced === true && flag.appPath === fs.realpathSync(appPath));
     fs.rmSync(flagPath);
     // manifest 写入新包(应为 rsync 过来的新包版 manifest)
     let newManifest = null;
     try { newManifest = JSON.parse(fs.readFileSync(path.join(resPath, 'RELEASE_SHA256.json'), 'utf8')); } catch {}
     check('RELEASE_SHA256.json 同步成功', newManifest && newManifest.version === '2.3.0' && JSON.stringify(newManifest.files) === JSON.stringify(manifest.files));
     check('网页图标随更新安装', fs.readFileSync(path.join(resPath, 'assets/favicon-32.png'), 'utf8') === 'new favicon');
-    check('启动器与 Info.plist 随更新安装', Object.entries(bundleFiles).every(([rel, body]) => fs.readFileSync(path.join(resPath, '..', rel), 'utf8') === body));
+    check('原生程序、启动器与 Info.plist 随更新安装', Object.entries(bundleFiles).every(([rel, body]) => fs.readFileSync(path.join(resPath, '..', rel), 'utf8') === body));
+    check('原生程序保留执行权限', (fs.statSync(path.join(resPath, '..', 'MacOS/WordPaper')).mode & 0o777) === 0o755);
     fs.writeFileSync(path.join(resPath, 'VERSION'), '2.2.3');
     fs.writeFileSync(path.join(resPath, 'server.js'), 'old server');
     fs.writeFileSync(path.join(resPath, 'js', 'app.js'), 'old client');
@@ -163,12 +166,15 @@ const destPath = path.join(tmp, 'fake.dmg');
     fs.writeFileSync(path.join(resPath, '..', 'MacOS/launcher.sh'), 'old launcher');
     fs.chmodSync(path.join(resPath, '..', 'MacOS/launcher.sh'), 0o755);
     fs.writeFileSync(path.join(resPath, '..', 'Info.plist'), 'old plist');
+    fs.writeFileSync(path.join(resPath, '..', 'MacOS/WordPaper'), 'old native');
+    fs.chmodSync(path.join(resPath, '..', 'MacOS/WordPaper'), 0o755);
     fs.writeFileSync(path.join(resPath, 'RELEASE_SHA256.json'), JSON.stringify(runningManifest));
     failRestartFlag = true;
     let flagFailed = false;
     try { await u.applyUpdate('2.2.3', '2.3.0', () => {}); } catch (e) { flagFailed = /simulated flag write failure/.test(e.message); }
     failRestartFlag = false;
     check('最后写旗标失败也回滚启动器与元数据', flagFailed && fs.readFileSync(path.join(resPath, '..', 'MacOS/launcher.sh'), 'utf8') === 'old launcher' && fs.readFileSync(path.join(resPath, '..', 'Info.plist'), 'utf8') === 'old plist' && JSON.parse(fs.readFileSync(path.join(resPath, 'RELEASE_SHA256.json'), 'utf8')).version === '2.2.3');
+    check('最后写旗标失败也回滚原生可执行程序', fs.readFileSync(path.join(resPath, '..', 'MacOS/WordPaper'), 'utf8') === 'old native' && (fs.statSync(path.join(resPath, '..', 'MacOS/WordPaper')).mode & 0o777) === 0o755);
     check('回滚保留启动器执行权限且清理不完整旗标', (fs.statSync(path.join(resPath, '..', 'MacOS/launcher.sh')).mode & 0o777) === 0o755 && !fs.existsSync(flagPath) && !fs.existsSync(flagPath + '.next'));
     // 版本棘轮:目标不比当前新时必须拒绝
     let rejected = false;

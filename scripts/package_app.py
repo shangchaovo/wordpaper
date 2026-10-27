@@ -15,9 +15,8 @@ device grant connects the App to the shared account server.
 
 DMG window is dressed like a real installer: assets/dmg-background.png baked
 background (arrow + Gatekeeper hint), icons pinned to fixed positions, custom
-volume icon. Done via the classic UDRW → attach rw → Finder AppleScript layout
-→ detach → convert UDZO pipeline (a Finder window briefly opens on the build
-machine during packaging — that's the layout step, not an error).
+volume icon. dmgbuild writes the Finder layout metadata directly without
+opening Finder windows or sending Finder AppleEvents during packaging.
 
 Prereqs:
   - assets/icon.icns            (python3 scripts/make_icon.py)
@@ -76,13 +75,18 @@ LAUNCHER = r'''#!/bin/bash
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RES="$(cd "$HERE/../Resources" && pwd)"
+wp_alert() {  # 纯提示弹窗(消息经环境变量传入,避免引号地狱)
+  WP_MSG="$1" /usr/bin/osascript -e 'display dialog (system attribute "WP_MSG") buttons {"好"} default button 1 with title "WordPaper 每日壁纸" with icon note' >/dev/null 2>&1 || true
+}
+wp_confirm() { # 取消/继续:选「继续」返回 0
+  WP_MSG="$1" /usr/bin/osascript -e 'display dialog (system attribute "WP_MSG") buttons {"取消","继续"} default button 2 with title "WordPaper 每日壁纸" with icon note' >/dev/null 2>&1
+}
 # App Translocation 检测:直接从挂载的 DMG 里双击运行时,macOS 会把 App 拷到只读
 # 的随机临时目录运行 —— 应用内更新(rsync 替换 Resources)在那没有写权限,必然失败。
 # 明确提示用户先拖进「应用程序」再运行,比静默半残体验好得多。
 case "$HERE" in
   *AppTranslocation/*)
     wp_alert "$(printf '这个 WordPaper 是直接从安装盘(DMG)里打开的。\n\n请先把左侧的 WordPaper 拖到右边的「应用程序」文件夹,\n然后从「应用程序」里打开 —— 之后应用内一键更新才能正常工作。')"
-    open -R "$(dirname "$(dirname "$(dirname "$HERE")")")" 2>/dev/null || true
     exit 1
     ;;
 esac
@@ -99,13 +103,6 @@ mkdir -p "$LOG_DIR"
 SELFTEST="${WORDPAPER_SELFTEST:-0}"
 
 ok_sqlite() { "$1" -e "require('node:sqlite')" >/dev/null 2>&1; }
-
-wp_alert() {  # 纯提示弹窗(消息经环境变量传入,避免引号地狱)
-  WP_MSG="$1" /usr/bin/osascript -e 'display dialog (system attribute "WP_MSG") buttons {"好"} default button 1 with title "WordPaper 每日壁纸" with icon note' >/dev/null 2>&1 || true
-}
-wp_confirm() { # 取消/继续:选「继续」返回 0
-  WP_MSG="$1" /usr/bin/osascript -e 'display dialog (system attribute "WP_MSG") buttons {"取消","继续"} default button 2 with title "WordPaper 每日壁纸" with icon note' >/dev/null 2>&1
-}
 
 # ── 运行时解析:包内 → 缓存 → 系统 → 下载 ──────────────────────
 NODE=""
@@ -389,6 +386,14 @@ fi
 # 服务链退出后:若是应用内更新的预期退出(UPDATE_FLAG 在),exec 重入本脚本,
 # 重新走一遍完整启动流程(含版本闸门 + 端口清理 + 小词灵复活)。
 if restart_requested; then
+  # Cocoa must leave its old executable image before LaunchServices starts the
+  # replacement. Keep the success marker until the new App starts its service.
+  if [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ] && /usr/bin/python3 -c 'import json,sys
+try: sys.exit(0 if json.load(open(sys.argv[1])).get("nativeReplaced") is True else 1)
+except Exception: sys.exit(1)' "$UPDATE_FLAG"; then
+    echo "update applied: restarting native App" >>"$LOG_DIR/server.log"
+    exit 75
+  fi
   clear_restart_flag
   echo "update applied: restarting service chain" >>"$LOG_DIR/server.log"
   for _ in $(seq 1 20); do server_up || break; sleep 0.25; done
@@ -426,6 +431,7 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
   • 屏幕角落有常驻的「小词灵」窗,点词卡就是学习;关掉后随时从菜单栏召回。
   • 工作区在独立的 WordPaper 窗口打开，Dock、⌘Q、关闭/重新显示窗口均按 Mac App 使用。
   • 词卡「记忆本」与菜单「控制面板」会唤回同一个 App 窗口；升级到此版请完整替换应用程序里的 WordPaper。
+  • 完整安装此版后，应用内更新会同时更新主窗口程序，并在成功后自动重新打开 App；更新失败会保留当前服务。
   • 使用同步账号：填写账号服务器 HTTPS 地址，选择 Google、微信或原账号；在系统浏览器核对连接码并授权后，App 自动打开同步工作区。
   • 没有服务器时可继续使用本机账号；跨电脑同步需要先部署账号服务器。
   • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。
@@ -522,7 +528,7 @@ def build_app(dest, bundled_arch):
     # 校验各文件完整落地。逐文件记录「刚拷进本 bundle 的那一份」的摘要。
     import hashlib, json as _json
     manifest = {"version": VERSION, "files": {}, "bundleFiles": {}}
-    for rel in ("MacOS/launcher.sh", "Info.plist"):
+    for rel in ("MacOS/launcher.sh", "MacOS/WordPaper", "Info.plist"):
         with open(os.path.join(dest, "Contents", rel), "rb") as f:
             manifest["bundleFiles"][rel] = hashlib.sha256(f.read()).hexdigest()
     for name in PAYLOAD_FILES:
@@ -619,6 +625,28 @@ def ensure_dmgbuild():
                      "scripts/.venv-build/bin/pip install dmgbuild")
 
 
+def write_release_checksums(artifact_names, dist_dir=DIST):
+    """Write the checksums for exactly this build's completed DMG artifacts."""
+    import hashlib
+    lines = []
+    for name in artifact_names:
+        digest = hashlib.sha256()
+        with open(os.path.join(dist_dir, name), "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        lines.append(f"{digest.hexdigest()}  {name}\n")
+    target = os.path.join(dist_dir, "SHA256SUMS.txt")
+    pending = target + ".tmp"
+    try:
+        with open(pending, "w", encoding="utf-8") as output:
+            output.writelines(lines)
+        os.replace(pending, target)
+    finally:
+        if os.path.exists(pending):
+            os.remove(pending)
+    return target
+
+
 def main():
     ensure_dmgbuild()
     if not os.path.exists(ICON):
@@ -647,9 +675,11 @@ def main():
         results.append((dmg_name, mb))
         log(f"  ✓ {dmg_name}  {mb:.1f} MB")
 
-    log(f"\n完成。gh release upload companion-v{VERSION} scripts/dist/*.dmg 即上传到对应 Release:")
+    write_release_checksums([name for name, _ in results])
+    log(f"\n完成。gh release upload companion-v{VERSION} scripts/dist/*.dmg scripts/dist/SHA256SUMS.txt 即上传到对应 Release:")
     for name, mb in results:
         log(f"  {name}  {mb:.1f} MB")
+    log("  SHA256SUMS.txt")
 
 
 if __name__ == "__main__":

@@ -12,15 +12,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-update-lifecycle-'));
   const preload = path.join(tmp, 'preload.cjs');
   fs.writeFileSync(preload, `
-    const { EventEmitter } = require('events');
-    require('https').get = (url, opts, cb) => {
-      if (typeof opts === 'function') cb = opts;
-      const req = new EventEmitter(); req.destroy = () => {};
-      process.nextTick(() => {
-        const res = new EventEmitter(); res.statusCode = 200; res.resume = () => {};
-        cb(res); res.emit('data', '99.0.0'); res.emit('end');
-      }); return req;
-    };
+    require(${JSON.stringify(path.join(root, 'lib/updater.js'))}).latestRelease = async () => ({ version: '99.0.0' });
     let calls = 0;
     require(${JSON.stringify(path.join(root, 'lib/updater.js'))}).applyUpdate = async () => {
       if (++calls <= 2) throw new Error('simulated install failure');

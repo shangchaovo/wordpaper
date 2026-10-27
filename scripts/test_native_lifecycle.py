@@ -13,8 +13,7 @@ for name in ['lib', 'js', 'css', 'data', 'assets']:
 preload = T / 'preload.cjs'
 preload.write_text('''
 const os=require('os');os.homedir=()=>process.env.WP_AUDIT_HOME;
-const {EventEmitter}=require('events');
-require('https').get=(url,opts,cb)=>{if(typeof opts==='function')cb=opts;const req=new EventEmitter();req.destroy=()=>{};process.nextTick(()=>{const res=new EventEmitter();res.statusCode=200;res.resume=()=>{};cb(res);res.emit('data',require('fs').readFileSync(process.env.WP_NATIVE_VERSION,'utf8'));res.emit('end');});return req;};
+require(require('path').join(require('path').dirname(process.env.WP_NATIVE_VERSION),'lib/updater.js')).latestRelease=async()=>({version:require('fs').readFileSync(process.env.WP_NATIVE_VERSION,'utf8').trim()});
 ''')
 def port():
     with socket.socket() as s: s.bind(('127.0.0.1',0)); return s.getsockname()[1]

@@ -90,45 +90,19 @@ const handleDeviceAuth = require('./lib/device-auth').createDeviceAuth({
   isLoopbackRequest, mode: MODE, sessionDays: SESSION_DAYS, parseCookies,
 });
 
-// ── 新版本提示(仅独立版/本地模式):仓库根的 VERSION 是唯一版本源,
-//    与 GitHub main 的 VERSION 比较,有新版本时在 /api/session 里带给页面。 ──
+// Only advertise published releases with an uploaded installer. main/VERSION
+// may move ahead while packages are still being built or uploaded.
 const BUNDLED_VERSION = (() => { try { return fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch { return ''; } })();
 let latestVersion = '';
 let updateApplying = false;   // 应用内更新进行中(CSRF 保护后的互斥)
 let lastRefreshProbe = 0;     // 上次手动 refresh 的时间戳(30s 限速)
 let updateProgress = null;   // {fraction, stage} — 前端经 /api/update/status 轮询
 let updateError = '';
-let updateRequest = null;   // 进行中的版本检查请求;shutdown 时取消,避免卡住退出
 function versionNewer(candidate, current) {
   const a = String(candidate).split('.').map(n => parseInt(n, 10) || 0);
   const b = String(current).split('.').map(n => parseInt(n, 10) || 0);
   for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
   return false;
-}
-// 版本源按可达性排序:直连 raw 在多数网络上可用;失败时退到 ghproxy(国内可达)与
-// fastly.jsdelivr(CN 加速)。任一成功即停止。
-const VERSION_SOURCES = [
-  'https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION',
-  'https://ghproxy.net/https://raw.githubusercontent.com/shangchaovo/wordpaper/main/VERSION',
-  'https://fastly.jsdelivr.net/gh/shangchaovo/wordpaper@main/VERSION',
-];
-function checkForUpdateOnce(url) {
-  return new Promise(resolve => {
-    const req = https.get(url, { timeout: 8000 }, res => {
-      if (res.statusCode !== 200) { res.resume(); resolve(false); return; }
-      let body = '';
-      res.on('data', c => { body += c; });
-      res.on('end', () => {
-        const v = body.trim();
-        if (/^\d+\.\d+\.\d+$/.test(v)) { latestVersion = v; resolve(true); }
-        else resolve(false);
-      });
-    });
-    updateRequest = req;
-    req.on('close', () => { if (updateRequest === req) updateRequest = null; });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
-  });
 }
 // 并发竞态保护:一次只有一个探索在跑
 let updateChecking = false;
@@ -138,11 +112,15 @@ async function checkForUpdate() {
   if (updateChecking) return updateCheckPromise;
   updateChecking = true;
   updateCheckPromise = (async () => {
-    for (const url of VERSION_SOURCES) {
-      if (await checkForUpdateOnce(url)) { updateChecking = false; return true; }
+    try {
+      const release = await updater.latestRelease();
+      latestVersion = release.version;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      updateChecking = false;
     }
-    updateChecking = false;
-    return false;
   })();
   return updateCheckPromise;
 }
@@ -170,6 +148,8 @@ function beginUpdate(target) {
     updateApplying = false;
     updateProgress = null;
     updateError = String(error.message || error);
+    if (error.code === 'RELEASE_CHANGED') latestVersion = '';
+    lastRefreshProbe = 0; // An explicit retry must be able to refresh stale metadata.
     console.error('[update] apply failed:', updateError);
   });
 }
@@ -1743,7 +1723,6 @@ function hardExit(code) {
 function shutdown() {
   if (closing) return;
   closing = true;
-  if (updateRequest) updateRequest.destroy();
   server.close(() => {
     storage.close();
     hardExit(0);

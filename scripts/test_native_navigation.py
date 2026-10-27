@@ -42,6 +42,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             script = f'''setTimeout(() => location.assign({json.dumps(GOOGLE)}), 250);
 setTimeout(() => {{ let a=document.createElement('a'); a.href={json.dumps(WECHAT)}; a.target='_blank'; document.body.append(a); a.click(); }}, 500);
 setTimeout(() => window.WordPaperDesktop.openExternal({json.dumps(self.server.external_loopback)}), 750);'''
+        elif parsed.path == '/file-input':
+            script = '''let input=document.createElement('input'); input.type='file'; input.multiple=true;
+input.onchange=()=>location.assign('/file-result?names='+encodeURIComponent(Array.from(input.files).map(f=>f.name).join(',')));
+document.body.append(input);'''
         else:
             script = ''
         payload = ('<!doctype html><meta charset="utf-8"><title>WordPaper navigation test</title>'
@@ -192,6 +196,33 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-native-navigation-') as direc
                     except subprocess.TimeoutExpired:
                         copy_proc.kill(); copy_proc.wait()
                 copy_log.close()
+        chosen = folder / 'selected-photo.png'; chosen.write_bytes(b'isolated selected file')
+        second = folder / 'selected-words.csv'; second.write_text('word,meaning\nhello,你好\n')
+        for paths in ([], [str(chosen), str(second)]):
+            name = 'selected' if paths else 'cancelled'
+            panel_report = folder / f'file-panel-{name}.jsonl'
+            panel_env = {**env, 'WORDPAPER_NATIVE_NAVIGATION_REPORT': str(panel_report),
+                'WORDPAPER_NATIVE_TEST_URL': origin,
+                'WORDPAPER_NATIVE_TEST_OPEN_PANEL_FILES': json.dumps(paths)}
+            with (folder / f'file-panel-{name}.log').open('wb') as output:
+                panel_proc = subprocess.Popen([str(macos / 'WordPaper')], env=panel_env, stdout=output, stderr=output)
+                try:
+                    wait_for(panel_report, panel_proc, lambda items: any(e['event'] == 'loaded' for e in items))
+                    subprocess.run(['/usr/bin/open', '-a', str(app), 'wordpaper://open?path=%2Ffile-input'], check=True, timeout=10)
+                    values = wait_for(panel_report, panel_proc, lambda items: any(e['event'] == 'file-panel-' + name for e in items))
+                    if paths:
+                        values = wait_for(panel_report, panel_proc, lambda items: any(e['event'] == 'loaded' and '/file-result?' in e['url'] for e in items))
+                        loaded = next(e['url'] for e in values if e['event'] == 'loaded' and '/file-result?' in e['url'])
+                        assert urllib.parse.parse_qs(urllib.parse.urlsplit(loaded).query)['names'] == ['selected-photo.png,selected-words.csv'], values
+                    else:
+                        time.sleep(.2)
+                        assert not any('/file-result?' in e['url'] for e in events_at(panel_report))
+                    print('PASS native file input: ' + name + (' files reach WebKit FileList' if paths else ' leaves the page unchanged'))
+                finally:
+                    if panel_proc.poll() is None:
+                        panel_proc.terminate()
+                        try: panel_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired: panel_proc.kill(); panel_proc.wait()
         assert not (folder / 'logs').exists(), 'Test unexpectedly started a service or companion'
     finally:
         server.shutdown(); server.server_close()

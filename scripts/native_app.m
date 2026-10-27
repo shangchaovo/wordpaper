@@ -83,6 +83,14 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             WordPaperApp *app = weakSelf;
             if (app.terminating) return;
+            // Exit 75 is emitted only after a verified native-binary update.
+            // The helper waits for this process to exit before opening the
+            // exact installed bundle, so LaunchServices cannot reuse old code.
+            if (task.terminationStatus == 75) {
+                if ([app scheduleUpdatedAppRelaunch]) [NSApp terminate:nil];
+                else [app showStartupError];
+                return;
+            }
             if (app.ownsService) [NSApp terminate:nil];
             else if (!app.origin && task.terminationStatus != 0) [app showStartupError];
         });
@@ -99,6 +107,22 @@
         app.ownsService = [ready[@"owned"] boolValue];
         [timer invalidate]; [app loadOrigin:url];
     }];
+}
+- (BOOL)scheduleUpdatedAppRelaunch {
+    NSString *bundle = NSBundle.mainBundle.bundleURL.URLByResolvingSymlinksInPath.path;
+    NSString *opener = @"/usr/bin/open";
+    NSDictionary *env = NSProcessInfo.processInfo.environment;
+    // Isolated tests capture the final open arguments without touching any
+    // installed App. Ordinary launches always use LaunchServices via open.
+    if ([env[@"NODE_ENV"] isEqual:@"test"] && [env[@"WORDPAPER_NATIVE_TEST_RELAUNCHER"] length]) opener = env[@"WORDPAPER_NATIVE_TEST_RELAUNCHER"];
+    NSTask *helper = [NSTask new];
+    helper.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+    helper.arguments = @[@"-c", @"for i in {1..100}; do if ! kill -0 \"$1\" 2>/dev/null; then exec \"$3\" -n -a \"$2\"; fi; sleep 0.1; done; exit 1",
+        @"wordpaper-relaunch", [NSString stringWithFormat:@"%d", getpid()], bundle, opener];
+    helper.standardInput = NSFileHandle.fileHandleWithNullDevice;
+    helper.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+    helper.standardError = NSFileHandle.fileHandleWithNullDevice;
+    return [helper launchAndReturnError:nil];
 }
 - (BOOL)isLoopback:(NSURL *)url {
     return [url.scheme isEqual:@"http"] && [@[@"localhost", @"127.0.0.1", @"::1"] containsObject:url.host] && url.port != nil && !url.user && !url.password;
@@ -194,6 +218,26 @@
     } else [self openExternal:action.request.URL];
     return nil;
 }
+- (void)webView:(WKWebView *)webView runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(NSArray<NSURL *> *))completion {
+    if (!frame.mainFrame || ![self isWorkspace:frame.request.URL]) { completion(nil); return; }
+    NSString *testFiles = NSProcessInfo.processInfo.environment[@"WORDPAPER_NATIVE_TEST_OPEN_PANEL_FILES"];
+    if ([self navigationTestEnabled] && testFiles) {
+        NSArray *paths = [NSJSONSerialization JSONObjectWithData:[testFiles dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        NSMutableArray<NSURL *> *files = [NSMutableArray new];
+        if ([paths isKindOfClass:NSArray.class]) for (NSString *path in paths) {
+            if ([path isKindOfClass:NSString.class] && path.isAbsolutePath) [files addObject:[NSURL fileURLWithPath:path]];
+        }
+        [self recordNavigationTestEvent:files.count ? @"file-panel-selected" : @"file-panel-cancelled" URL:frame.request.URL];
+        completion(files.count ? files : nil); return;
+    }
+    NSOpenPanel *panel = NSOpenPanel.openPanel;
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = parameters.allowsDirectories;
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
+        completion(result == NSModalResponseOK ? panel.URLs : nil);
+    }];
+}
 - (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(BOOL))completion {
     NSAlert *alert = [NSAlert new]; alert.messageText = @"WordPaper"; alert.informativeText = message;
     [alert addButtonWithTitle:@"确认"]; [alert addButtonWithTitle:@"取消"];
@@ -235,6 +279,9 @@
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     if ([self isWorkspace:webView.URL]) [self recordNavigationTestEvent:@"loaded" URL:webView.URL];
     NSDictionary *env = NSProcessInfo.processInfo.environment;
+    if ([self navigationTestEnabled] && env[@"WORDPAPER_NATIVE_TEST_OPEN_PANEL_FILES"] && [webView.URL.path isEqual:@"/file-input"]) {
+        [webView evaluateJavaScript:@"document.querySelector('input[type=file]').click()" completionHandler:nil];
+    }
     NSString *report = env[@"WORDPAPER_NATIVE_TEST_REPORT"];
     if (![env[@"NODE_ENV"] isEqual:@"test"] || !report || ![self isWorkspace:webView.URL]) return;
     [webView evaluateJavaScript:@"({title:document.title,bridge:!!window.WordPaperDesktop,cloudLogin:!!document.querySelector('#desktop-sync'),native:true})" completionHandler:^(id result, NSError *error) {

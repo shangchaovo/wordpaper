@@ -3828,11 +3828,11 @@ function serverWebPort() {
   try { return Number(new URL(CFG.webOrigin).port) || 8770; } catch { return 8770; }
 }
 /* Shared server state keeps menu updates in sync with browser installs. */
-function fetchServerJson(endpoint, cb) {
+function fetchServerJson(endpoint, cb, timeout = 15000) {
   let settled = false;
   const done = (error, value) => { if (!settled) { settled = true; cb(error, value); } };
   const req = http.get(`${serverBase()}${endpoint}`, {
-    timeout: 15000, headers: { 'X-WordPaper-Local': '1' },
+    timeout, headers: { 'X-WordPaper-Local': '1' },
   }, res => {
     let body = '';
     res.on('data', c => { body += c; });
@@ -3847,7 +3847,9 @@ function fetchServerJson(endpoint, cb) {
   req.on('error', done);
   req.on('timeout', () => req.destroy(new Error('超时')));
 }
-function fetchServerUpdate(cb) { fetchServerJson('/api/update/check?refresh=1', cb); }
+// Release discovery may fall back from a rate-limited API to official asset
+// checks. Do not time out the local menu request before that bounded work ends.
+function fetchServerUpdate(cb) { fetchServerJson('/api/update/check?refresh=1', cb, 90000); }
 let menuUpdatePending = false;
 let menuStatusPending = false;
 function syncMenuUpdate() {

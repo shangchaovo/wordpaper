@@ -66,18 +66,17 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-launcher-test-') as folder:
     config.write_text(json.dumps({'autoSetWallpaper': False, 'petEnabled': False, 'hotkeyEnabled': False}))
     preload = temp / 'preload.cjs'
     preload.write_text('''
-const {EventEmitter}=require('events');
-require('https').get=(url,opts,cb)=>{
-  if(typeof opts==='function') cb=opts;
-  const req=new EventEmitter(); req.destroy=()=>{};
-  process.nextTick(()=>{const res=new EventEmitter();res.statusCode=200;res.resume=()=>{};cb(res);res.emit('data','99.0.0');res.emit('end');});return req;
-};
 const fs=require('fs'),path=require('path');
-require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js')).applyUpdate=async()=>{
-  fs.writeFileSync(path.join(process.env.WP_LAUNCH_TEST_ROOT,'VERSION'),'99.0.0');
-  fs.writeFileSync(path.join(process.env.WORDPAPER_DATA_DIR,'update-pending.json'),'{}');
+const updater=require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js'));
+updater.latestRelease=async()=>({version:'99.0.0'});
+updater.applyUpdate=async(current,target)=>{
+  const control=JSON.parse(fs.readFileSync(process.env.WP_LAUNCH_UPDATE_CONTROL,'utf8'));
+  if(control.fail) throw new Error('simulated install failure');
+  fs.writeFileSync(path.join(process.env.WP_LAUNCH_TEST_ROOT,'VERSION'),target);
+  fs.writeFileSync(path.join(process.env.WORDPAPER_DATA_DIR,'update-pending.json'),JSON.stringify({nativeReplaced:control.nativeReplaced===true}));
 };
 ''')
+    control = temp / 'update-control.json'; control.write_text('{}')
     ready = temp / 'native-ready.json'
     env = {**os.environ, 'PATH': str(fakebin) + os.pathsep + os.environ['PATH'],
            'WORDPAPER_DATA_DIR': str(state), 'WORDPAPER_LOG_DIR': str(logs),
@@ -85,6 +84,7 @@ require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js')).applyUpdate
            'WORDPAPER_COMPANION_PORT': str(comp), 'WORDPAPER_COMPANION_AUTOSTART': '0',
            'WORDPAPER_COMPANION_SILENT': '1', 'WORDPAPER_TEST_MODE': '1', 'NODE_ENV': 'test',
            'WORDPAPER_NATIVE_UI': '1', 'WORDPAPER_NATIVE_READY_FILE': str(ready),
+           'WP_LAUNCH_UPDATE_CONTROL': str(control),
            'TMPDIR': str(scratch), 'NODE_OPTIONS': '--require=' + str(preload), 'WP_LAUNCH_TEST_ROOT': str(res)}
     for key in ['PORT', 'WORDPAPER_WEB_ORIGIN', 'WORDPAPER_SELFTEST', 'WORDPAPER_SKIP_COMPANION', 'WORDPAPER_FORCE_DOWNLOAD']:
         env.pop(key, None)
@@ -151,6 +151,54 @@ require(path.join(process.env.WP_LAUNCH_TEST_ROOT,'lib/updater.js')).applyUpdate
             os.killpg(proc.pid, signal.SIGTERM)
             try: proc.wait(timeout=8)
             except subprocess.TimeoutExpired: os.killpg(proc.pid, signal.SIGKILL); proc.wait()
+
+    # A failed install keeps the service alive; only a successful native-binary
+    # update exits with the Cocoa relaunch protocol and preserves its marker.
+    (res / 'VERSION').write_text(package.VERSION)
+    ready.unlink(missing_ok=True)
+    control.write_text(json.dumps({'fail': True}))
+    def previous_service_stopped():
+        with socket.socket() as probe:
+            probe.settimeout(.2)
+            return probe.connect_ex(('127.0.0.1', port)) != 0
+    wait_for(previous_service_stopped)
+    proc = subprocess.Popen(['/bin/bash', str(launcher)], env={**env, 'PORT': str(port)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        wait_for(lambda: ready.exists() and not (state / 'startup.lock').exists())
+        request = urllib.request.Request(base + '/api/update/apply-local', data=b'{}', headers={'X-WordPaper-Local': '1'})
+        assert json.load(opener.open(request, timeout=3))['started']
+        def update_status():
+            request = urllib.request.Request(base + '/api/update/status-local', headers={'X-WordPaper-Local': '1'})
+            return json.load(opener.open(request, timeout=2))
+        wait_for(lambda: 'simulated install failure' in update_status().get('error', ''))
+        assert proc.poll() is None and health()['ok']
+        assert not (state / 'update-pending.json').exists()
+        print('PASS failed update leaves native launcher/services running without a restart marker', flush=True)
+        control.write_text(json.dumps({'nativeReplaced': True}))
+        assert json.load(opener.open(request, timeout=3))['started']
+        assert proc.wait(timeout=35) == 75, 'Native replacement must request a full App restart'
+        assert json.loads((state / 'update-pending.json').read_text())['nativeReplaced'] is True
+        assert 'update applied: restarting native App' in (logs / 'server.log').read_text()
+        assert not (state / 'startup.lock').exists()
+        assert not (logs / 'open.log').exists(), 'Launcher must let Cocoa relaunch the App'
+        print('PASS successful native update exits with relaunch code 75 and preserves its marker', flush=True)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try: proc.wait(timeout=8)
+            except subprocess.TimeoutExpired: os.killpg(proc.pid, signal.SIGKILL); proc.wait()
+
+    translocated = temp / 'AppTranslocation/fixture/d/WordPaper.app/Contents'
+    (translocated / 'MacOS').mkdir(parents=True)
+    (translocated / 'Resources').mkdir()
+    translocated_launcher = translocated / 'MacOS/launcher.sh'
+    translocated_launcher.write_text(launcher.read_text())
+    result = subprocess.run(['/bin/bash', str(translocated_launcher)], env=env, capture_output=True, timeout=10)
+    assert result.returncode != 0
+    assert b'command not found' not in result.stderr
+    assert '请先把左侧的 WordPaper 拖到右边' in (logs / 'dialog.log').read_text()
+    assert not (logs / 'open.log').exists(), 'Translocation error unexpectedly opened Finder'
+    print('PASS DMG translocation shows its instruction without opening a random Finder folder', flush=True)
 
     # Use HTTP fixtures for malformed/old companion registration responses.
     # The launcher executes its actual reuse branch without spawning any service.

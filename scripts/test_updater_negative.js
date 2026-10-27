@@ -34,6 +34,10 @@ fs.writeFileSync(path.join(mountRes, 'js', 'app.js'), '// CLEAN');
 
 const digest = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const manifest = { version: '2.2.3', files: {} };
+const nativePath = path.join(mountRes, '..', 'MacOS/WordPaper');
+fs.mkdirSync(path.dirname(nativePath), { recursive: true });
+fs.writeFileSync(nativePath, 'native clean'); fs.chmodSync(nativePath, 0o755);
+manifest.bundleFiles = { 'MacOS/WordPaper': digest(nativePath) };
 for (const rel of ['server.js', 'companion.js', 'package.json', 'index.html', 'login.html', 'connect.html', 'lib/updater.js', 'js/app.js']) {
   manifest.files[rel] = digest(path.join(mountRes, rel));   // digest the CLEAN payload
 }
@@ -74,12 +78,11 @@ u.__setExecFile((cmd, args, opts, cb) => {
   } else cb(new Error('unexpected ' + cmd), '', '');
 });
 u.__setHttpsGet((url, cb) => {
-  const fakeRes = Object.assign(new (require('events').EventEmitter)(), {
-    statusCode: 200, headers: { 'content-length': '4096' },
-    pipe(dest) { dest.write(Buffer.alloc(4096, 0x41)); process.nextTick(() => dest.end()); return dest; },
-    resume() { return this; },
-    on(ev, fn) { if (ev === 'data') process.nextTick(() => fn(Buffer.alloc(4096, 0x41))); return this; },
-  });
+  const data = url.startsWith('https://api.github.com/') ? Buffer.from(JSON.stringify({ tag_name: 'companion-v2.3.0', draft: false, prerelease: false,
+    assets: [{ name: u.assetForArch(), state: 'uploaded', size: 4096,
+      browser_download_url: `https://github.com/shangchaovo/wordpaper/releases/download/companion-v2.3.0/${u.assetForArch()}` }] })) : Buffer.alloc(4096, 0x41);
+  const fakeRes = require('stream').Readable.from([data]);
+  fakeRes.statusCode = 200; fakeRes.headers = { 'content-length': String(data.length) };
   process.nextTick(() => cb(fakeRes));
   return { on: () => {}, destroy: () => {}, setTimeout() {} };
 });
@@ -87,16 +90,19 @@ u.__setHttpsGet((url, cb) => {
 (async () => {
   let failed = 0;
   const check = (name, cond) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + name); if (!cond) failed++; };
-  try {
-    await u.applyUpdate('2.2.3', '2.3.0', () => {});
-    check('损坏的安装包被拒绝', false);
-    process.exit(1);
-  } catch (e) {
-    check('损坏的安装包被拒绝', /校验失败|app\.js/.test(e.message));
+  for (const [name, mutate, pattern] of [
+    ['损坏的网页文件被拒绝', () => {}, /校验失败.*app\.js/],
+    ['损坏的原生可执行程序被拒绝', () => { fs.writeFileSync(path.join(mountRes, 'js/app.js'), '// CLEAN'); fs.writeFileSync(nativePath, 'native corrupt'); }, /校验失败.*MacOS\/WordPaper/],
+    ['无执行权限的原生程序被拒绝', () => { fs.writeFileSync(nativePath, 'native clean'); fs.chmodSync(nativePath, 0o644); }, /可执行权限.*MacOS\/WordPaper/],
+  ]) {
+    mutate();
+    let error;
+    try { await u.applyUpdate('2.2.3', '2.3.0', () => {}); } catch (e) { error = e; }
+    check(name, error && pattern.test(error.message));
     // verify the RUNNING resources were NOT touched (abort must happen before rsync)
     check('运行中 Resources 未被触碰', fs.readFileSync(path.join(resPath, 'VERSION'), 'utf8').trim() === '2.2.3');
     const flagPath = path.join(process.env.WORDPAPER_DATA_DIR, 'update-pending.json');
     check('失败时不写重启旗标', !fs.existsSync(flagPath));
-    process.exit(failed ? 1 : 0);
   }
+  process.exit(failed ? 1 : 0);
 })();
