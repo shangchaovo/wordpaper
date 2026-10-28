@@ -23,19 +23,25 @@
   };
 
   const LIBRARIES = [
-    { id: 'jlpt_n5', icon: 'torii', name: '日语 JLPT N5', desc: '入门核心词', file: 'words_jlpt_n5.json', source: 'JLPT N5 分级 · 开放词表整理' },
-    { id: 'jlpt_n4', icon: 'sakura', name: '日语 JLPT N4', desc: '初级进阶词', file: 'words_jlpt_n4.json', source: 'JLPT N4 分级 · 开放词表整理' },
-    { id: 'chuzhong', icon: 'backpack', name: '初中', desc: '中考核心词', file: 'words_chuzhong.json', source: 'ECDICT 中考核心' },
-    { id: 'gaozhong', icon: 'cap', name: '高中', desc: '高考核心词', file: 'words_gaozhong.json', source: 'ECDICT 高考核心' },
-    { id: 'cet4', icon: 'doc', name: '四级', desc: 'CET4 核心词', file: 'words_cet4.json' },
-    { id: 'cet6', icon: 'medal', name: '六级', desc: 'CET6 核心词', file: 'words_cet6.json' },
-    { id: 'kaoyan', icon: 'flag', name: '考研', desc: '考研核心词', file: 'words_kaoyan.json' },
-    { id: 'ielts', icon: 'globe', name: '雅思', desc: 'IELTS 核心词', file: 'words_ielts.json' },
-    { id: 'toefl', icon: 'plane', name: '托福', desc: 'TOEFL 核心词', file: 'words_toefl.json' },
-    { id: 'gre', icon: 'bulb', name: 'GRE', desc: 'GRE 核心词', file: 'words_gre.json' },
-    { id: 'french', icon: 'eiffel', name: '法语', desc: '高频核心词', file: 'words_french.json', source: 'CFDICT 中法词典 · OpenSubtitles 词频' },
-    { id: 'spanish', icon: 'fan', name: '西班牙语', desc: '高频核心词', file: 'words_spanish.json', source: 'X2CNDICT 西汉词典 · OpenSubtitles 词频' },
-    { id: 'custom', icon: 'folder', name: '我的词库', desc: '自己导入的词', file: null },
+    { id: 'jlpt_n5', group: 'japanese', cover: 'jade', edition: 'N5', shortName: 'JLPT N5', icon: 'torii', name: '日语 JLPT N5', desc: '入门核心词', file: 'words_jlpt_n5.json', source: 'JLPT N5 分级 · 开放词表整理' },
+    { id: 'jlpt_n4', group: 'japanese', cover: 'jade', edition: 'N4', shortName: 'JLPT N4', icon: 'sakura', name: '日语 JLPT N4', desc: '初级进阶词', file: 'words_jlpt_n4.json', source: 'JLPT N4 分级 · 开放词表整理' },
+    { id: 'chuzhong', group: 'english', cover: 'slate', edition: 'JUNIOR', icon: 'backpack', name: '初中', desc: '中考核心词', file: 'words_chuzhong.json', source: 'ECDICT 中考核心' },
+    { id: 'gaozhong', group: 'english', cover: 'slate', edition: 'SENIOR', icon: 'cap', name: '高中', desc: '高考核心词', file: 'words_gaozhong.json', source: 'ECDICT 高考核心' },
+    { id: 'cet4', group: 'english', cover: 'slate', edition: 'CET 4', icon: 'doc', name: '四级', desc: 'CET4 核心词', file: 'words_cet4.json' },
+    { id: 'cet6', group: 'english', cover: 'slate', edition: 'CET 6', icon: 'medal', name: '六级', desc: 'CET6 核心词', file: 'words_cet6.json' },
+    { id: 'kaoyan', group: 'english', cover: 'slate', edition: 'GRAD', icon: 'flag', name: '考研', desc: '考研核心词', file: 'words_kaoyan.json' },
+    { id: 'ielts', group: 'english', cover: 'ochre', edition: 'IELTS', icon: 'globe', name: '雅思', desc: 'IELTS 核心词', file: 'words_ielts.json' },
+    { id: 'toefl', group: 'english', cover: 'ochre', edition: 'TOEFL', icon: 'plane', name: '托福', desc: 'TOEFL 核心词', file: 'words_toefl.json' },
+    { id: 'gre', group: 'english', cover: 'ochre', edition: 'GRE', icon: 'bulb', name: 'GRE', desc: 'GRE 核心词', file: 'words_gre.json' },
+    { id: 'french', group: 'languages', cover: 'plum', edition: 'FR', icon: 'eiffel', name: '法语', desc: '高频核心词', file: 'words_french.json', source: 'CFDICT 中法词典 · OpenSubtitles 词频' },
+    { id: 'spanish', group: 'languages', cover: 'plum', edition: 'ES', icon: 'fan', name: '西班牙语', desc: '高频核心词', file: 'words_spanish.json', source: 'X2CNDICT 西汉词典 · OpenSubtitles 词频' },
+    { id: 'custom', group: 'custom', cover: 'neutral', edition: 'MY', icon: 'folder', name: '我的词库', desc: '自己导入的词', file: null },
+  ];
+  const LIBRARY_GROUPS = [
+    { id: 'japanese', name: '日语', detail: 'JLPT 分级' },
+    { id: 'english', name: '英语', detail: '升学与留学' },
+    { id: 'languages', name: '更多语言', detail: '高频词汇' },
+    { id: 'custom', name: '我的词库' },
   ];
 
   const BG_PATTERNS = [
@@ -1103,52 +1109,87 @@
 
   /* ---------- library cards ---------- */
   let justPickedLib = null;
+  function libraryCountText(lib) {
+    const count = lib.id === 'custom' ? window.Store.getCustomWords().length : libCounts[lib.id];
+    return typeof count === 'number' ? count.toLocaleString() + ' 词' : (count === '?' ? '词数暂不可用' : '加载中…');
+  }
+
+  // The same cover identifies a book in the catalog, selection and word browser.
+  function libraryCoverHTML(lib) {
+    return `<span class="lib-cover" data-cover="${lib.cover}" aria-hidden="true">
+      <svg class="ic"><use href="#i-${lib.icon}"/></svg><span class="lib-edition">${lib.edition}</span>
+      <span class="lib-check"><svg class="ic"><use href="#i-check"/></svg></span>
+    </span>`;
+  }
+
   function renderLibraryCards() {
     const box = $('#library-cards');
+    const focusedLibrary = box.contains(document.activeElement) ? document.activeElement.dataset.library : null;
     box.innerHTML = '';
     const selected = LIBRARIES.find(lib => lib.id === settings.library) || LIBRARIES[0];
     const selectedLabel = $('#selected-library-label');
-    if (selectedLabel && selected) selectedLabel.textContent = '已选：' + selected.name;
-    // 词书搜索:按名称/描述/来源模糊过滤(中/英/拼音首字母皆可)。
+    if (selectedLabel && selected) selectedLabel.textContent = selected.name;
+    $('#selected-library-cover').innerHTML = libraryCoverHTML(selected);
+    $('#selected-library-count').textContent = libraryCountText(selected);
+    $('#btn-browse-selected-library').setAttribute('aria-label', '浏览并初筛：' + selected.name);
+    // Search across titles, descriptions, source names and book editions.
     const query = ($('#library-filter') && $('#library-filter').value || '').trim().toLowerCase();
     const visible = LIBRARIES.filter(lib => {
       if (!query) return true;
-      const hay = `${lib.name} ${lib.desc} ${lib.source || ''} ${lib.id}`.toLowerCase();
+      const group = LIBRARY_GROUPS.find(item => item.id === lib.group);
+      const hay = `${lib.name} ${lib.desc} ${lib.source || ''} ${lib.id} ${lib.edition} ${group.name} ${group.detail || ''}`.toLowerCase();
       return query.split(/\s+/).every(term => hay.includes(term));
     });
     if (!visible.length) {
       box.innerHTML = '<div class="lib-empty">没有匹配「' + escapeHTML(query) + '」的词书；试试别的关键词。</div>';
       return;
     }
-    visible.forEach(lib => {
-      const card = document.createElement('button');
-      card.type = 'button';
-      card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '') + (lib.id === justPickedLib ? ' just-picked' : '');
-      const count = lib.id === 'custom' ? window.Store.getCustomWords().length : (libCounts[lib.id] || '…');
-      const countTxt = (typeof count === 'number') ? count.toLocaleString() : count;
-      card.title = `${lib.name} · ${lib.desc} · ${countTxt} 词`;
-      card.innerHTML = `<span class="lib-icon"><svg class="ic" aria-hidden="true"><use href="#i-${lib.icon}"/></svg></span>
-        <span class="lib-body"><b>${lib.name}</b><i><em class="lib-count">${countTxt}词</em>${lib.desc}</i></span>`;
-      card.addEventListener('click', () => {
-        if (settings.library !== lib.id) { justPickedLib = lib.id; requestPreviewSwap(); }
-        settings.library = lib.id;
-        renderLibraryCards();
-        justPickedLib = null;
-        syncDependentUI();
-        commit();
-        syncCompanionLearningContext();
-        toast('已选中「' + lib.name + '」；可点击“浏览并初筛”查看全部词条');
+    LIBRARY_GROUPS.forEach(group => {
+      const books = visible.filter(lib => lib.group === group.id);
+      if (!books.length) return;
+      const section = document.createElement('div');
+      section.className = 'lib-group';
+      section.dataset.group = group.id;
+      section.setAttribute('role', 'group');
+      section.setAttribute('aria-label', group.name);
+      if (group.detail) section.innerHTML = `<div class="lib-group-heading" aria-hidden="true"><b>${group.name}</b><span>${group.detail}</span></div>`;
+      const grid = document.createElement('div');
+      grid.className = 'lib-group-grid';
+      books.forEach(lib => {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '') + (lib.id === justPickedLib ? ' just-picked' : '');
+        card.dataset.library = lib.id;
+        card.setAttribute('aria-pressed', String(lib.id === settings.library));
+        const countTxt = libraryCountText(lib);
+        card.setAttribute('aria-label', `${lib.name}，${lib.desc}，${countTxt}`);
+        card.title = `${lib.name} · ${lib.desc} · ${countTxt}`;
+        card.innerHTML = `${libraryCoverHTML(lib)}
+          <span class="lib-body"><b>${lib.shortName || lib.name}</b><span class="lib-desc">${lib.desc}</span><span class="lib-count">${countTxt}</span></span>`;
+        card.addEventListener('click', () => {
+          if (settings.library !== lib.id) { justPickedLib = lib.id; requestPreviewSwap(); }
+          settings.library = lib.id;
+          renderLibraryCards();
+          justPickedLib = null;
+          syncDependentUI();
+          commit();
+          syncCompanionLearningContext();
+          toast('已选中「' + lib.name + '」；可点击“浏览词条”查看并初筛');
+        });
+        grid.appendChild(card);
       });
-      box.appendChild(card);
+      section.appendChild(grid);
+      box.appendChild(section);
     });
+    if (focusedLibrary) box.querySelector(`[data-library="${focusedLibrary}"]`)?.focus({ preventScroll: true });
   }
 
   function loadLibraryCounts() {
     LIBRARIES.filter(l => l.file).forEach(lib => {
       fetch('data/' + lib.file).then(r => r.json()).then(a => {
         libCounts[lib.id] = a.length;
-        if (settings.library === lib.id || true) renderLibraryCards();
-      }).catch(() => { libCounts[lib.id] = '?'; });
+        renderLibraryCards();
+      }).catch(() => { libCounts[lib.id] = '?'; renderLibraryCards(); });
     });
   }
 
@@ -1158,6 +1199,7 @@
     if (!modal) return;
     activeLibraryBrowser = lib;
     activeLibraryWords = [];
+    $('#library-modal-cover').innerHTML = libraryCoverHTML(lib);
     $('#library-modal-title').textContent = lib.name + ' · 全部词条';
     $('#library-modal-source').textContent = lib.source || lib.desc;
     $('#library-search').value = '';

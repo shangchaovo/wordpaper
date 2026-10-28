@@ -177,7 +177,8 @@ def main():
             page.click("#btn-paste-import")
             page.wait_for_timeout(400)
             check("粘贴导入切到我的词库", page.locator("#library-cards .lib-card").last.evaluate("e=>e.classList.contains('on')"))
-            check("我的词库卡片有计数", "2词" in page.inner_text("#library-cards"))
+            custom_count = page.inner_text('#library-cards [data-library="custom"] .lib-count')
+            check("我的词库卡片有计数", "".join(custom_count.split()) == "2词")
 
             # screenshot import affordance present (inside modal)
             check("截图导入入口", page.locator("#file-screenshot").count() == 1)

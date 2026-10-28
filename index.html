@@ -24,11 +24,12 @@ try {
 <link rel="stylesheet" href="css/ui-themes.css?v=20261023d">
 <link rel="stylesheet" href="css/motion.css?v=20261023e">
 <link rel="stylesheet" href="css/liquid-glass.css?v=2026102702">
+<link rel="stylesheet" href="css/library.css?v=20261028a">
 </head>
 <body>
 
 <!-- 全局 SVG 图标集：线性 24×24 描边图标，stroke=currentColor 自动跟随界面主题着色；
-     词库卡片与模块标题统一引用（.lib-icon / .h-emoji 内的 <svg class="ic"><use href="#i-…">）。 -->
+     词书封面与模块标题统一引用（.lib-cover / .h-emoji 内的 <svg class="ic"><use href="#i-…">）。 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
   <!-- 词库 -->
   <symbol id="i-torii" viewBox="0 0 24 24"><path d="M3.5 7.4 Q12 4.6 20.5 7.4"/><path d="M5.9 11.2 h12.2"/><path d="M12 6.1 V11.2"/><path d="M8.2 11.2 V19.6 M15.8 11.2 V19.6"/></symbol>
@@ -48,6 +49,7 @@ try {
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.4 C10.2 4.9 7.2 4.5 4.2 5.1 V18.2 C7.2 17.6 10.2 18 12 19.5 C13.8 18 16.8 17.6 19.8 18.2 V5.1 C16.8 4.5 13.8 4.9 12 6.4 Z"/><path d="M12 6.4 V19.5"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 4.2 a5.4 5.4 0 0 1 5.4 5.4 V14 l1.5 2.5 a.85 .85 0 0 1 -.75 1.3 H5.85 a.85 .85 0 0 1 -.75 -1.3 L6.6 14 V9.6 A5.4 5.4 0 0 1 12 4.2 Z"/><path d="M10.1 20.4 a1.9 1.9 0 0 0 3.8 0"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.6"/><path d="M15.6 15.6 L20.6 20.6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 l4.5 4.5 L19 7"/></symbol>
   <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6.5 4.2 h11 a.9 .9 0 0 1 .9 .9 V20.3 L12 16.8 L5.6 20.3 V5.1 a.9 .9 0 0 1 .9 -.9 Z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="22.6 4 22.6 10 16.6 10"/><polyline points="1.4 20 1.4 14 7.4 14"/><path d="M3.9 9 a9 9 0 0 1 14.7 -3.3 L22.6 10 M1.4 14 l4.5 4.3 A9 9 0 0 0 20.1 15"/></symbol>
@@ -119,16 +121,21 @@ try {
       <section id="module-library" class="card module-card">
         <div class="card-head">
           <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-book"/></svg></span>选一个词库</h2>
-          <button id="btn-open-import" class="btn small soft" type="button">⇧ 导入</button>
+          <button id="btn-open-import" class="btn small soft" type="button"><svg class="ic" aria-hidden="true"><use href="#i-import"/></svg>导入</button>
         </div>
         <div class="lib-search">
-          <input id="library-filter" type="search" placeholder="搜索词书：如 雅思 / 四级 / GRE / 日语…" autocomplete="off" aria-label="搜索词书">
+          <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="library-filter" type="search" placeholder="搜索词书、语言或考试" autocomplete="off" aria-label="搜索词书">
+        </div>
+        <div class="selected-library-action" aria-live="polite">
+          <div id="selected-library-cover"></div>
+          <div class="selected-library-copy">
+            <span class="selected-library-eyebrow">当前词书 <span id="selected-library-count"></span></span>
+            <strong id="selected-library-label">当前词书</strong>
+          </div>
+          <button id="btn-browse-selected-library" class="btn soft small" type="button">浏览词条 <span aria-hidden="true">→</span></button>
         </div>
         <div id="library-cards" class="lib-cards"></div>
-        <div class="selected-library-action" aria-live="polite">
-          <span id="selected-library-label">当前词书</span>
-          <button id="btn-browse-selected-library" class="btn soft small" type="button">浏览并初筛 →</button>
-        </div>
         <label class="row">
           <span>选词方式</span>
           <select id="sel-order">
@@ -582,7 +589,7 @@ try {
 <div id="library-modal" class="modal-overlay library-modal" hidden>
   <div class="modal-card library-card" role="dialog" aria-modal="true" aria-labelledby="library-modal-title">
     <div class="modal-head">
-      <div><h2 id="library-modal-title">词书浏览</h2><p id="library-modal-source" class="hint"></p></div>
+      <div class="library-identity"><div id="library-modal-cover"></div><div><h2 id="library-modal-title">词书浏览</h2><p id="library-modal-source" class="hint"></p></div></div>
       <button id="btn-close-library" class="modal-close" type="button" title="关闭" aria-label="关闭词书窗口">✕</button>
     </div>
     <div class="library-screening-bar">
@@ -608,7 +615,7 @@ try {
 <script src="js/review.js?v=20260812a"></script>
 <script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20261027-v260"></script>
+<script src="js/app.js?v=20261028-library"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

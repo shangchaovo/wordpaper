@@ -1,0 +1,132 @@
+/* A shared book identity for the catalog, current selection and word browser.
+ * Scoped here so older theme materials cannot turn book covers into buttons. */
+#module-library {
+  --library-accent: #17503f;
+  --library-selection: color-mix(in srgb, var(--library-accent) 8%, var(--paper, #fffdf8));
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) #module-library {
+  --library-accent: var(--accent-2);
+}
+#module-library #btn-open-import { display: inline-flex; align-items: center; gap: 5px; }
+#module-library #btn-open-import .ic { width: 13px; height: 13px; }
+#module-library .lib-search { position: relative; margin-bottom: 10px; }
+#module-library .lib-search > .ic {
+  position: absolute; left: 11px; top: 50%; width: 14px; height: 14px;
+  transform: translateY(-50%); color: var(--sub); pointer-events: none;
+}
+#module-library .lib-search input {
+  min-height: 36px; padding: 8px 10px 8px 33px; border-radius: 9px;
+  border-color: var(--line-strong); font: 400 12px/1.4 var(--font);
+}
+#module-library .lib-search input:focus {
+  border-color: var(--library-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--library-accent) 15%, transparent);
+}
+
+/* Keep the active book and its next action near the search field. */
+#module-library .selected-library-action {
+  display: flex; gap: 9px; margin: 0 0 14px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--library-selection); box-shadow: none;
+}
+#selected-library-cover { flex: 0 0 auto; }
+#module-library .selected-library-copy { flex: 1; min-width: 0; }
+#module-library .selected-library-action span {
+  overflow: visible; text-overflow: clip; font-family: var(--font); letter-spacing: 0;
+}
+#module-library .selected-library-eyebrow {
+  display: flex; flex-wrap: wrap; gap: 2px 6px; margin-bottom: 3px;
+  color: var(--sub); font-size: 10px; font-weight: 400; line-height: 1.4;
+}
+#module-library #selected-library-count { color: var(--sub); font-size: inherit; font-weight: 400; }
+#module-library #selected-library-label { display: block; color: var(--ink); font-size: 13px; font-weight: 650; line-height: 1.45; }
+#module-library #btn-browse-selected-library {
+  padding: 7px 9px; min-height: 32px; border-color: transparent; border-radius: 7px;
+  color: var(--library-accent); background: transparent; box-shadow: none;
+  font-size: 11px; white-space: nowrap;
+}
+#module-library #btn-browse-selected-library:hover { background: color-mix(in srgb, var(--library-accent) 9%, transparent); }
+#module-library #btn-browse-selected-library span { color: inherit; font-size: 13px; }
+
+/* Group headings provide context; titles and word counts each get their own line. */
+#module-library .lib-cards { display: flex; flex-direction: column; gap: 11px; margin: 0 0 14px; }
+#module-library .lib-group-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 1px 7px; }
+#module-library .lib-group-heading b { color: var(--ink); font-size: 11px; font-weight: 600; line-height: 1.4; }
+#module-library .lib-group-heading > span { color: var(--sub); font-size: 10px; }
+#module-library .lib-group-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+#module-library .lib-group[data-group="custom"] .lib-group-grid { grid-template-columns: minmax(0, 1fr); }
+#module-library .lib-card {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 7px 8px;
+  min-width: 0; min-height: 70px; padding: 8px; border: 1px solid var(--line);
+  border-radius: 9px; color: var(--ink); background: color-mix(in srgb, var(--paper, #fffdf8) 60%, transparent);
+  box-shadow: none; text-align: left;
+  transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+#module-library .lib-card::before { content: none; }
+#module-library .lib-card:hover { border-color: var(--line-strong); background: var(--paper, #fffdf8); box-shadow: none; transform: translateY(-1px); }
+#module-library .lib-card:active { transform: translateY(0); }
+#module-library .lib-card.on {
+  border-color: var(--library-accent); background: var(--library-selection);
+  box-shadow: inset 0 0 0 .5px var(--library-accent);
+}
+#module-library .lib-card:focus-visible { outline: 2px solid var(--library-accent); outline-offset: 3px; }
+#module-library .lib-body { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; line-height: 1.3; }
+#module-library .lib-body b {
+  color: var(--ink); font-size: 12px; font-weight: 650; line-height: 1.4;
+  white-space: normal; overflow: visible; text-overflow: clip;
+}
+#module-library .lib-body .lib-count {
+  align-self: auto; margin: 0; padding: 0; color: var(--sub); background: none; box-shadow: none;
+  font: 400 10px/1.4 var(--font); font-variant-numeric: tabular-nums; white-space: normal;
+}
+#module-library .lib-body .lib-count::after { content: none; }
+#module-library .lib-desc { color: var(--sub); font-size: 10px; line-height: 1.4; }
+#module-library .lib-card[data-library="custom"] { min-height: 62px; border-style: dashed; }
+#module-library .lib-card[data-library="custom"] .lib-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 9px; }
+#module-library .lib-card[data-library="custom"] .lib-desc { grid-column: 1; }
+#module-library .lib-card[data-library="custom"] .lib-count { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+#module-library .lib-card[data-library="custom"].on { border-style: solid; }
+#module-library .lib-empty { padding: 20px 12px; color: var(--sub); background: transparent; border-color: var(--line-strong); line-height: 1.7; }
+
+/* Cloth-colored covers with a spine and edition label, drawn without image assets. */
+.lib-cover {
+  --cover-paper: #38516c; --cover-ink: #edf2f8;
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  flex: 0 0 auto; width: 32px; height: 42px; padding-left: 3px;
+  border: 1px solid #ffffff24; border-radius: 2px 5px 5px 2px;
+  color: var(--cover-ink); background: var(--cover-paper);
+  box-shadow: inset 3px 0 0 #00000021, inset 4px 0 0 #ffffff16, 1px 2px 3px #00000018;
+}
+.lib-cover[data-cover="jade"] { --cover-paper: #285d50; --cover-ink: #e0f0e8; }
+.lib-cover[data-cover="ochre"] { --cover-paper: #735a36; --cover-ink: #fff0d3; }
+.lib-cover[data-cover="plum"] { --cover-paper: #66516c; --cover-ink: #f4eaf5; }
+.lib-cover[data-cover="neutral"] { --cover-paper: #515b60; --cover-ink: #eff2f3; }
+.lib-cover > .ic { width: 17px; height: 17px; stroke-width: 1.6; color: var(--cover-ink); }
+#module-library .lib-cover .lib-edition, .lib-cover .lib-edition {
+  color: var(--cover-ink); font: 600 6px/1.2 var(--font-mono, monospace); letter-spacing: .04em; white-space: nowrap;
+}
+#module-library .lib-cover .lib-check, .lib-cover .lib-check {
+  display: none; position: absolute; top: -5px; right: -5px; width: 14px; height: 14px;
+  border-radius: 50%; color: #fff; background: var(--library-accent); box-shadow: 0 0 0 2px var(--paper, #fffdf8);
+}
+#module-library .lib-card.on .lib-check { display: grid; place-items: center; }
+.lib-cover .lib-check .ic { width: 10px; height: 10px; stroke-width: 2.8; }
+.library-identity { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.library-identity .lib-cover { width: 42px; height: 54px; }
+.library-identity .lib-cover > .ic { width: 22px; height: 22px; }
+.library-identity .lib-cover .lib-edition { font-size: 8px; }
+.library-identity .hint { overflow-wrap: anywhere; }
+
+@media (max-width: 380px) {
+  #module-library .lib-card { padding: 8px; column-gap: 7px; }
+  #module-library .selected-library-action { gap: 7px; padding: 9px; }
+  #module-library #btn-browse-selected-library { padding: 7px 5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #module-library .lib-card { animation: none; transition: none; }
+  #module-library .lib-card:hover { transform: none; }
+}
+@media (prefers-contrast: more) {
+  #module-library .lib-card { border-color: var(--ink); }
+  #module-library .lib-card.on { outline: 2px solid var(--library-accent); outline-offset: -2px; }
+}
