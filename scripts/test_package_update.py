@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
         copy_app(args.baseline_dmg, installed.parent, temp / 'baseline-mount')
         current = (oldres / 'VERSION').read_text().strip()
         updater_root = oldres
-        assert not (oldres / 'assets/pet-voices.html').exists(), 'Baseline must predate the new menu page'
+        assert tuple(map(int, current.split('.'))) < tuple(map(int, package.VERSION.split('.'))), 'Baseline must be older than the candidate'
         print('PASS using released updater from v' + current, flush=True)
     else:
         oldres.mkdir(parents=True); (installed / 'MacOS').mkdir()
@@ -126,7 +126,8 @@ u.applyUpdate(process.env.WP_PACKAGE_CURRENT,process.env.WP_PACKAGE_VERSION,()=>
         assert health['version'] == package.VERSION
         with opener.open(f'http://127.0.0.1:{port}/assets/favicon-32.png') as response:
             assert response.status == 200 and response.read() == (ROOT / 'assets/favicon-32.png').read_bytes()
-        for route, file in [('pet-voices.html', 'assets/pet-voices.html'), ('css/pet-voices.css', 'css/pet-voices.css'), ('js/pet-voices.js', 'js/pet-voices.js')]:
+        for route, file in [('pet-voices.html', 'assets/pet-voices.html'), ('css/pet-voices.css', 'css/pet-voices.css'), ('js/pet-voices.js', 'js/pet-voices.js'),
+                            ('css/library.css', 'css/library.css'), ('js/learning-activity.js', 'js/learning-activity.js'), ('js/srs-policy.js', 'js/srs-policy.js')]:
             with opener.open(f'http://127.0.0.1:{port}/' + route) as response:
                 assert response.status == 200 and response.read() == (res / file).read_bytes()
         print('PASS installed server, favicon, launcher, Info.plist, manifest and user-data preservation', flush=True)

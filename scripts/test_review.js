@@ -11,6 +11,7 @@ let persisted = {};
 const clone = value => JSON.parse(JSON.stringify(value));
 class TestDate extends Date { static now() { return clock; } }
 const window = {
+  SrsPolicy: require('../js/srs-policy'),
   Store: {
     getReview: () => clone(persisted),
     saveReview: value => { persisted = clone(value); },

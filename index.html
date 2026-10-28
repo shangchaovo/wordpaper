@@ -20,15 +20,16 @@ try {
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
 </script>
-<link rel="stylesheet" href="css/styles.css?v=20261027a">
+<link rel="stylesheet" href="css/styles.css?v=20261029-overdue">
 <link rel="stylesheet" href="css/ui-themes.css?v=20261023d">
 <link rel="stylesheet" href="css/motion.css?v=20261023e">
 <link rel="stylesheet" href="css/liquid-glass.css?v=2026102702">
+<link rel="stylesheet" href="css/library.css?v=20261028a">
 </head>
 <body>
 
 <!-- 全局 SVG 图标集：线性 24×24 描边图标，stroke=currentColor 自动跟随界面主题着色；
-     词库卡片与模块标题统一引用（.lib-icon / .h-emoji 内的 <svg class="ic"><use href="#i-…">）。 -->
+     词书封面与模块标题统一引用（.lib-cover / .h-emoji 内的 <svg class="ic"><use href="#i-…">）。 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
   <!-- 词库 -->
   <symbol id="i-torii" viewBox="0 0 24 24"><path d="M3.5 7.4 Q12 4.6 20.5 7.4"/><path d="M5.9 11.2 h12.2"/><path d="M12 6.1 V11.2"/><path d="M8.2 11.2 V19.6 M15.8 11.2 V19.6"/></symbol>
@@ -48,6 +49,7 @@ try {
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.4 C10.2 4.9 7.2 4.5 4.2 5.1 V18.2 C7.2 17.6 10.2 18 12 19.5 C13.8 18 16.8 17.6 19.8 18.2 V5.1 C16.8 4.5 13.8 4.9 12 6.4 Z"/><path d="M12 6.4 V19.5"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 4.2 a5.4 5.4 0 0 1 5.4 5.4 V14 l1.5 2.5 a.85 .85 0 0 1 -.75 1.3 H5.85 a.85 .85 0 0 1 -.75 -1.3 L6.6 14 V9.6 A5.4 5.4 0 0 1 12 4.2 Z"/><path d="M10.1 20.4 a1.9 1.9 0 0 0 3.8 0"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.6"/><path d="M15.6 15.6 L20.6 20.6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 l4.5 4.5 L19 7"/></symbol>
   <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6.5 4.2 h11 a.9 .9 0 0 1 .9 .9 V20.3 L12 16.8 L5.6 20.3 V5.1 a.9 .9 0 0 1 .9 -.9 Z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="22.6 4 22.6 10 16.6 10"/><polyline points="1.4 20 1.4 14 7.4 14"/><path d="M3.9 9 a9 9 0 0 1 14.7 -3.3 L22.6 10 M1.4 14 l4.5 4.3 A9 9 0 0 0 20.1 15"/></symbol>
@@ -119,16 +121,21 @@ try {
       <section id="module-library" class="card module-card">
         <div class="card-head">
           <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-book"/></svg></span>选一个词库</h2>
-          <button id="btn-open-import" class="btn small soft" type="button">⇧ 导入</button>
+          <button id="btn-open-import" class="btn small soft" type="button"><svg class="ic" aria-hidden="true"><use href="#i-import"/></svg>导入</button>
         </div>
         <div class="lib-search">
-          <input id="library-filter" type="search" placeholder="搜索词书：如 雅思 / 四级 / GRE / 日语…" autocomplete="off" aria-label="搜索词书">
+          <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="library-filter" type="search" placeholder="搜索词书、语言或考试" autocomplete="off" aria-label="搜索词书">
+        </div>
+        <div class="selected-library-action" aria-live="polite">
+          <div id="selected-library-cover"></div>
+          <div class="selected-library-copy">
+            <span class="selected-library-eyebrow">当前词书 <span id="selected-library-count"></span></span>
+            <strong id="selected-library-label">当前词书</strong>
+          </div>
+          <button id="btn-browse-selected-library" class="btn soft small" type="button">浏览词条 <span aria-hidden="true">→</span></button>
         </div>
         <div id="library-cards" class="lib-cards"></div>
-        <div class="selected-library-action" aria-live="polite">
-          <span id="selected-library-label">当前词书</span>
-          <button id="btn-browse-selected-library" class="btn soft small" type="button">浏览并初筛 →</button>
-        </div>
         <label class="row">
           <span>选词方式</span>
           <select id="sel-order">
@@ -174,6 +181,8 @@ try {
         <p class="hint">在桌面小词灵点词卡完成首轮；该词会立即移出并自动补入新词，也可以前后翻页。到期后在记忆本完成后续轮次。</p>
         <div id="srs-status" class="srs-status">已记 0 词 · 待复习 0 词</div>
         <div id="srs-records" class="srs-records" aria-live="polite"></div>
+        <div id="srs-overdue" class="srs-overdue" aria-live="polite" hidden></div>
+        <details class="srs-policy-help"><summary>逾期怎样处理</summary><p class="hint">到期后还有随本轮间隔变化的宽限期，临近结束会再次提醒。超过宽限期降一轮，同一次漏复习只降一次，仍可立即复习；第 1 轮不再降低。旧的逾期词从本版起同样处理，已完成的学习次数保留。</p><p class="hint">宽限期按记忆衰减模型估算，是本应用的排期规则，并非对你是否遗忘的测量。关闭复习提醒不会暂停逾期计时。</p><div id="srs-grace-table" class="hint"></div></details>
         <button id="btn-open-memory" class="btn primary srs-learn" type="button">打开艾宾浩斯记忆本 →</button>
         <div id="srs-countdown" class="srs-countdown" hidden>
           <span class="srs-cd-icon"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg></span>
@@ -183,30 +192,38 @@ try {
 
       <section id="module-plan" class="card module-card">
         <div class="card-head">
-          <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-flag"/></svg></span>学习规划</h2>
+          <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-flag"/></svg></span>今日学习目标</h2>
         </div>
-        <p class="hint">定一个目标（每天几个词），配合打卡和词典通关。数据存你自己的账号里，随时可调。</p>
+        <p class="hint">每一遍练习都有进度。今天看练了多少次，长期记忆交给复习周期。</p>
+        <div class="plan-metrics" aria-label="今天的学习次数" aria-live="polite">
+          <div class="plan-metric selected"><span>学习合计</span><b id="plan-count-total">0</b><small>次学习</small></div>
+          <div class="plan-metric"><span>单词背诵</span><b id="plan-count-recite">0</b><small>次练习</small></div>
+          <div class="plan-metric"><span>造句练习</span><b id="plan-count-sentence">0</b><small>次输出</small></div>
+        </div>
         <div class="plan-grid">
-          <label class="row"><span>每天目标(词)</span><input id="inp-plan-daily" type="number" min="1" max="200" value="10"></label>
+          <label class="row"><span>达标看什么</span><select id="sel-plan-metric"><option value="total">学习总次数（背诵 + 造句）</option><option value="recite">单词背诵次数</option><option value="sentence">造句次数</option></select></label>
+          <label class="row"><span>每天目标（次）</span><input id="inp-plan-daily" type="number" min="1" max="1000" step="1" value="10"></label>
+          <p id="plan-rule" class="hint plan-rule"></p>
           <div class="plan-row">
             <span class="plan-label">今日进度</span>
-            <div class="plan-bar"><div id="plan-bar-fill"></div></div>
-            <b id="plan-progress-text">0/10</b>
+            <div class="plan-bar" role="progressbar" aria-label="今日学习目标完成量" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0"><div id="plan-bar-fill"></div></div>
+            <b id="plan-progress-text">0/10 次</b>
           </div>
           <div class="plan-row plan-streak">
             <span class="plan-label">连续打卡</span>
-            <span id="plan-streak">🔥 0 天</span>
+            <span id="plan-streak">0 天</span>
           </div>
         </div>
-        <div class="plan-dict">
-          <div class="plan-dict-head"><span>词典通关</span><span id="plan-dict-progress" class="plan-dict-progress">0%</span></div>
-          <div class="plan-bar slim"><div id="plan-dict-fill"></div></div>
-          <div id="plan-dict-eta" class="hint plan-eta">按当前速度，通关还需 -- 天</div>
-        </div>
         <div id="plan-checkin-btnrow">
-          <button id="btn-plan-checkin" class="btn primary small" type="button">今日已学够，打卡 ✓</button>
+          <button id="btn-plan-checkin" class="btn primary small" type="button" disabled>还差 10 次学习</button>
         </div>
+        <p id="plan-checkin-note" class="hint" hidden></p>
         <div id="plan-history" class="plan-history"></div>
+        <details id="plan-records" class="plan-records">
+          <summary>当天单词与下次复习 <span id="plan-record-count"></span></summary>
+          <label class="row"><span>学习日期</span><input id="plan-record-date" type="date"></label>
+          <div id="plan-word-records" class="plan-word-records" aria-live="polite"></div>
+        </details>
       </section>
 
       <details id="module-automation" class="card module-card">
@@ -470,6 +487,7 @@ try {
       <button id="btn-close-memory" class="modal-close" type="button" title="关闭" aria-label="关闭记忆本">✕</button>
     </div>
     <div id="memory-summary" class="memory-summary"></div>
+    <p class="hint">到期后请在宽限期内完成复习。超时只降低一轮，次数与学习记录保留；词卡会标出降级倒计时和下一次复习的具体时间。</p>
     <div class="memory-export">
       <span class="memory-export-hint">数据是你的，随时可以带走：</span>
       <a class="chip" href="api/export/progress?format=csv" download>导出表格 CSV</a>
@@ -479,6 +497,11 @@ try {
         <input id="file-import-progress" type="file" accept=".json,application/json" hidden>
       </label>
       <span id="memory-import-status" class="memory-import-status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="memory-search">
+      <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="memory-search-input" type="search" placeholder="搜索单词或释义" aria-label="搜索记忆本单词或释义">
+      <button id="memory-search-clear" type="button" hidden aria-label="清空搜索">清空</button>
     </div>
     <div id="memory-notebook-list" class="memory-notebook-list" aria-live="polite"></div>
     <button id="btn-enable-srs-notice" class="chip srs-notice" type="button">开启系统复习提醒</button>
@@ -582,7 +605,7 @@ try {
 <div id="library-modal" class="modal-overlay library-modal" hidden>
   <div class="modal-card library-card" role="dialog" aria-modal="true" aria-labelledby="library-modal-title">
     <div class="modal-head">
-      <div><h2 id="library-modal-title">词书浏览</h2><p id="library-modal-source" class="hint"></p></div>
+      <div class="library-identity"><div id="library-modal-cover"></div><div><h2 id="library-modal-title">词书浏览</h2><p id="library-modal-source" class="hint"></p></div></div>
       <button id="btn-close-library" class="modal-close" type="button" title="关闭" aria-label="关闭词书窗口">✕</button>
     </div>
     <div class="library-screening-bar">
@@ -600,15 +623,17 @@ try {
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 <!-- ?v= busts browser cache — bump after any js/ change -->
-<script src="js/store.js?v=2026102702"></script>
+<script src="js/srs-policy.js?v=20261029a"></script>
+<script src="js/learning-activity.js?v=20261029a"></script>
+<script src="js/store.js?v=20261028-activity"></script>
 <script src="js/words.js?v=20260810j"></script>
 <script src="js/importer.js?v=20260810f"></script>
 <script src="js/ocr.js?v=20260810f"></script>
 <script src="js/reminders.js?v=20260810f"></script>
-<script src="js/review.js?v=20260812a"></script>
+<script src="js/review.js?v=20261029-policy"></script>
 <script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20261027-v260"></script>
+<script src="js/app.js?v=20261029-policy"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

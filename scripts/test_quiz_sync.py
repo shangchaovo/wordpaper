@@ -109,10 +109,14 @@ def main():
                     assert remote['reviewCount'] == 1, (answer, remote)
                     assert remote['stage'] == (1 if answer['correct'] else 0)
                     assert remote['petQuiz']['count'] == 1
+                    activity = context.request.get(base + '/api/state').json()['state']['learningActivity']
+                    assert sum(len(events) for events in activity['days'].values()) == 1
                     for _ in range(2):
                         page.evaluate('async () => { for (const sync of window.__quizTimers) await sync(); }')
                     cached = page.evaluate("Store.getReview().ielts.words['commute|通勤']")
                     assert cached == remote, (cached, remote)
+                    assert page.locator('#plan-count-total').inner_text() == '1', 'native and browser replay must count one practice'
+                    assert page.locator('#plan-count-recite').inner_text() == '1'
                     # A subsequent edit must use the new server revision, avoiding 409.
                     assert page.evaluate("async () => { const all=Store.getReview(); all.ielts.cursor=7; Store.saveReview(all); return await Store.flush(); }")
                     final = context.request.get(base + '/api/state').json()['state']['review']['ielts']

@@ -35,6 +35,10 @@ jobs:
           for f in js/*.js; do node --check "$f"; done
       - name: Test suite
         run: npm test
+      - name: Learning and review browser regressions
+        run: |
+          npm run test:review-policy
+          npm run test:learning
 
   python-scripts:
     runs-on: ubuntu-latest

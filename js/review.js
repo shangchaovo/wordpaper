@@ -1,10 +1,10 @@
 /* review.js — 单词级艾宾浩斯记忆记录。
  * 每个被点击「记住」的单词都有独立阶段、下次到期时间与学习事件；
- * 20分钟 / 1小时 / 9小时 / 1天 / 2天 / 3天 / 6天 / 15天后再出现。 */
+ * 20分钟 / 1小时 / 9小时 / 1天 / 2天 / 3天 / 6天 / 12天后再出现。 */
 (function () {
   'use strict';
 
-  var INTERVALS_MIN = [20, 60, 540, 1440, 2880, 4320, 8640, 17280];
+  var INTERVALS_MIN = window.SrsPolicy.INTERVALS_MIN;
   function nowMs() { return Date.now(); }
   function wordKey(w) { return (w && w.word ? String(w.word) : '') + '|' + (w && w.meaning ? String(w.meaning) : ''); }
   function groupKeyFor(words) { return (words || []).map(wordKey).sort().join(';;'); }
@@ -56,6 +56,7 @@
     var action = 'seen';
     if (!item) {
       item = L.words[key] = { word: word, learnedAt: t, stage: 0, due: t + INTERVALS_MIN[0] * 60000, learnedCount: 1, reviewCount: 0, successCount: 0, failCount: 0, events: [{ at: t, type: 'learn' }] };
+      window.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
       action = 'learn';
     } else {
       // 快照补偿、断线重放与重复请求都必须真正幂等，不增长计数或事件历史。
@@ -75,13 +76,14 @@
    *  - fuzzy(模糊):         停在**当前档**再练一次(不从零重来,也不前进)
    *  - forgot(不会):        回到第一档
    * 第二参数兼容旧的布尔写法(true/false)。
-   * opts.reason 只用于事件记录,方便以后统计。 */
+   * opts.activityId 将作答与每日次数关联，撤销时扣回同一次练习。 */
   function reviewWord(lib, word, remembered, opts) {
     var grade = remembered;
     if (typeof remembered === 'boolean') grade = remembered ? 'remembered' : 'forgot';
     if (grade == null) grade = 'remembered';
     var L = getLib(lib), key = wordKey(word), t = nowMs(), item = L.words[key];
     if (!item) return { action: 'missing', item: null };
+    window.SrsPolicy.applyItem(item, t);
     if (item.stage >= INTERVALS_MIN.length) return { action: 'mastered', item: item };
     if (!item.due || item.due > t) return { action: 'early', item: item };
     if (grade !== 'remembered' && grade !== 'fuzzy' && grade !== 'forgot') grade = 'remembered';
@@ -93,30 +95,30 @@
       // 模糊:不前进也不归零,保持当前档,缩短一点再来一次(档位间隔的一半,最少 20 分钟)
       var stageNow = Math.max(0, Math.min(INTERVALS_MIN.length - 1, Number(item.stage) || 0));
       var wait = Math.max(INTERVALS_MIN[0], Math.round(INTERVALS_MIN[stageNow] / 2));
-      item.due = t + wait * 60000;
+      window.SrsPolicy.scheduled(item, t, wait);
       item.fuzzyCount = (item.fuzzyCount || 0) + 1;
       item.events.push({ at: t, type: 'fuzzy' }); item.events = item.events.slice(-64);
       item.lastSeenAt = t;
-      item.lastUndo = { snapshot: snapshot, action: 'fuzzy', at: t };
+      item.lastUndo = { snapshot: snapshot, activityId: opts && opts.activityId, action: 'fuzzy', at: t };
       saveLib(lib, L);
       return { action: 'fuzzy', item: item };
     }
     if (grade === 'remembered') {
       item.stage = Math.min((Number(item.stage) || 0) + 1, INTERVALS_MIN.length);
       item.successCount = (item.successCount || 0) + 1;
-      item.due = item.stage < INTERVALS_MIN.length ? t + INTERVALS_MIN[item.stage] * 60000 : null;
+      window.SrsPolicy.scheduled(item, t, item.stage < INTERVALS_MIN.length ? INTERVALS_MIN[item.stage] : null);
       item.events.push({ at: t, type: item.due ? 'review-pass' : 'mastered' }); item.events = item.events.slice(-64);
       item.lastSeenAt = t;
-      item.lastUndo = { snapshot: snapshot, action: item.due ? 'review' : 'mastered', at: t };
+      item.lastUndo = { snapshot: snapshot, activityId: opts && opts.activityId, action: item.due ? 'review' : 'mastered', at: t };
       saveLib(lib, L);
       return { action: item.due ? 'review' : 'mastered', item: item };
     }
     item.stage = 0;
     item.failCount = (item.failCount || 0) + 1;
-    item.due = t + INTERVALS_MIN[0] * 60000;
+    window.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
     item.events.push({ at: t, type: 'forgot' }); item.events = item.events.slice(-64);
     item.lastSeenAt = t;
-    item.lastUndo = { snapshot: snapshot, action: 'forgot', at: t };
+    item.lastUndo = { snapshot: snapshot, activityId: opts && opts.activityId, action: 'forgot', at: t };
     saveLib(lib, L);
     return { action: 'forgot', item: item };
   }

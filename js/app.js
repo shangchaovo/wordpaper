@@ -23,19 +23,25 @@
   };
 
   const LIBRARIES = [
-    { id: 'jlpt_n5', icon: 'torii', name: '日语 JLPT N5', desc: '入门核心词', file: 'words_jlpt_n5.json', source: 'JLPT N5 分级 · 开放词表整理' },
-    { id: 'jlpt_n4', icon: 'sakura', name: '日语 JLPT N4', desc: '初级进阶词', file: 'words_jlpt_n4.json', source: 'JLPT N4 分级 · 开放词表整理' },
-    { id: 'chuzhong', icon: 'backpack', name: '初中', desc: '中考核心词', file: 'words_chuzhong.json', source: 'ECDICT 中考核心' },
-    { id: 'gaozhong', icon: 'cap', name: '高中', desc: '高考核心词', file: 'words_gaozhong.json', source: 'ECDICT 高考核心' },
-    { id: 'cet4', icon: 'doc', name: '四级', desc: 'CET4 核心词', file: 'words_cet4.json' },
-    { id: 'cet6', icon: 'medal', name: '六级', desc: 'CET6 核心词', file: 'words_cet6.json' },
-    { id: 'kaoyan', icon: 'flag', name: '考研', desc: '考研核心词', file: 'words_kaoyan.json' },
-    { id: 'ielts', icon: 'globe', name: '雅思', desc: 'IELTS 核心词', file: 'words_ielts.json' },
-    { id: 'toefl', icon: 'plane', name: '托福', desc: 'TOEFL 核心词', file: 'words_toefl.json' },
-    { id: 'gre', icon: 'bulb', name: 'GRE', desc: 'GRE 核心词', file: 'words_gre.json' },
-    { id: 'french', icon: 'eiffel', name: '法语', desc: '高频核心词', file: 'words_french.json', source: 'CFDICT 中法词典 · OpenSubtitles 词频' },
-    { id: 'spanish', icon: 'fan', name: '西班牙语', desc: '高频核心词', file: 'words_spanish.json', source: 'X2CNDICT 西汉词典 · OpenSubtitles 词频' },
-    { id: 'custom', icon: 'folder', name: '我的词库', desc: '自己导入的词', file: null },
+    { id: 'jlpt_n5', group: 'japanese', cover: 'jade', edition: 'N5', shortName: 'JLPT N5', icon: 'torii', name: '日语 JLPT N5', desc: '入门核心词', file: 'words_jlpt_n5.json', source: 'JLPT N5 分级 · 开放词表整理' },
+    { id: 'jlpt_n4', group: 'japanese', cover: 'jade', edition: 'N4', shortName: 'JLPT N4', icon: 'sakura', name: '日语 JLPT N4', desc: '初级进阶词', file: 'words_jlpt_n4.json', source: 'JLPT N4 分级 · 开放词表整理' },
+    { id: 'chuzhong', group: 'english', cover: 'slate', edition: 'JUNIOR', icon: 'backpack', name: '初中', desc: '中考核心词', file: 'words_chuzhong.json', source: 'ECDICT 中考核心' },
+    { id: 'gaozhong', group: 'english', cover: 'slate', edition: 'SENIOR', icon: 'cap', name: '高中', desc: '高考核心词', file: 'words_gaozhong.json', source: 'ECDICT 高考核心' },
+    { id: 'cet4', group: 'english', cover: 'slate', edition: 'CET 4', icon: 'doc', name: '四级', desc: 'CET4 核心词', file: 'words_cet4.json' },
+    { id: 'cet6', group: 'english', cover: 'slate', edition: 'CET 6', icon: 'medal', name: '六级', desc: 'CET6 核心词', file: 'words_cet6.json' },
+    { id: 'kaoyan', group: 'english', cover: 'slate', edition: 'GRAD', icon: 'flag', name: '考研', desc: '考研核心词', file: 'words_kaoyan.json' },
+    { id: 'ielts', group: 'english', cover: 'ochre', edition: 'IELTS', icon: 'globe', name: '雅思', desc: 'IELTS 核心词', file: 'words_ielts.json' },
+    { id: 'toefl', group: 'english', cover: 'ochre', edition: 'TOEFL', icon: 'plane', name: '托福', desc: 'TOEFL 核心词', file: 'words_toefl.json' },
+    { id: 'gre', group: 'english', cover: 'ochre', edition: 'GRE', icon: 'bulb', name: 'GRE', desc: 'GRE 核心词', file: 'words_gre.json' },
+    { id: 'french', group: 'languages', cover: 'plum', edition: 'FR', icon: 'eiffel', name: '法语', desc: '高频核心词', file: 'words_french.json', source: 'CFDICT 中法词典 · OpenSubtitles 词频' },
+    { id: 'spanish', group: 'languages', cover: 'plum', edition: 'ES', icon: 'fan', name: '西班牙语', desc: '高频核心词', file: 'words_spanish.json', source: 'X2CNDICT 西汉词典 · OpenSubtitles 词频' },
+    { id: 'custom', group: 'custom', cover: 'neutral', edition: 'MY', icon: 'folder', name: '我的词库', desc: '自己导入的词', file: null },
+  ];
+  const LIBRARY_GROUPS = [
+    { id: 'japanese', name: '日语', detail: 'JLPT 分级' },
+    { id: 'english', name: '英语', detail: '升学与留学' },
+    { id: 'languages', name: '更多语言', detail: '高频词汇' },
+    { id: 'custom', name: '我的词库' },
   ];
 
   const BG_PATTERNS = [
@@ -1103,52 +1109,87 @@
 
   /* ---------- library cards ---------- */
   let justPickedLib = null;
+  function libraryCountText(lib) {
+    const count = lib.id === 'custom' ? window.Store.getCustomWords().length : libCounts[lib.id];
+    return typeof count === 'number' ? count.toLocaleString() + ' 词' : (count === '?' ? '词数暂不可用' : '加载中…');
+  }
+
+  // The same cover identifies a book in the catalog, selection and word browser.
+  function libraryCoverHTML(lib) {
+    return `<span class="lib-cover" data-cover="${lib.cover}" aria-hidden="true">
+      <svg class="ic"><use href="#i-${lib.icon}"/></svg><span class="lib-edition">${lib.edition}</span>
+      <span class="lib-check"><svg class="ic"><use href="#i-check"/></svg></span>
+    </span>`;
+  }
+
   function renderLibraryCards() {
     const box = $('#library-cards');
+    const focusedLibrary = box.contains(document.activeElement) ? document.activeElement.dataset.library : null;
     box.innerHTML = '';
     const selected = LIBRARIES.find(lib => lib.id === settings.library) || LIBRARIES[0];
     const selectedLabel = $('#selected-library-label');
-    if (selectedLabel && selected) selectedLabel.textContent = '已选：' + selected.name;
-    // 词书搜索:按名称/描述/来源模糊过滤(中/英/拼音首字母皆可)。
+    if (selectedLabel && selected) selectedLabel.textContent = selected.name;
+    $('#selected-library-cover').innerHTML = libraryCoverHTML(selected);
+    $('#selected-library-count').textContent = libraryCountText(selected);
+    $('#btn-browse-selected-library').setAttribute('aria-label', '浏览并初筛：' + selected.name);
+    // Search across titles, descriptions, source names and book editions.
     const query = ($('#library-filter') && $('#library-filter').value || '').trim().toLowerCase();
     const visible = LIBRARIES.filter(lib => {
       if (!query) return true;
-      const hay = `${lib.name} ${lib.desc} ${lib.source || ''} ${lib.id}`.toLowerCase();
+      const group = LIBRARY_GROUPS.find(item => item.id === lib.group);
+      const hay = `${lib.name} ${lib.desc} ${lib.source || ''} ${lib.id} ${lib.edition} ${group.name} ${group.detail || ''}`.toLowerCase();
       return query.split(/\s+/).every(term => hay.includes(term));
     });
     if (!visible.length) {
       box.innerHTML = '<div class="lib-empty">没有匹配「' + escapeHTML(query) + '」的词书；试试别的关键词。</div>';
       return;
     }
-    visible.forEach(lib => {
-      const card = document.createElement('button');
-      card.type = 'button';
-      card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '') + (lib.id === justPickedLib ? ' just-picked' : '');
-      const count = lib.id === 'custom' ? window.Store.getCustomWords().length : (libCounts[lib.id] || '…');
-      const countTxt = (typeof count === 'number') ? count.toLocaleString() : count;
-      card.title = `${lib.name} · ${lib.desc} · ${countTxt} 词`;
-      card.innerHTML = `<span class="lib-icon"><svg class="ic" aria-hidden="true"><use href="#i-${lib.icon}"/></svg></span>
-        <span class="lib-body"><b>${lib.name}</b><i><em class="lib-count">${countTxt}词</em>${lib.desc}</i></span>`;
-      card.addEventListener('click', () => {
-        if (settings.library !== lib.id) { justPickedLib = lib.id; requestPreviewSwap(); }
-        settings.library = lib.id;
-        renderLibraryCards();
-        justPickedLib = null;
-        syncDependentUI();
-        commit();
-        syncCompanionLearningContext();
-        toast('已选中「' + lib.name + '」；可点击“浏览并初筛”查看全部词条');
+    LIBRARY_GROUPS.forEach(group => {
+      const books = visible.filter(lib => lib.group === group.id);
+      if (!books.length) return;
+      const section = document.createElement('div');
+      section.className = 'lib-group';
+      section.dataset.group = group.id;
+      section.setAttribute('role', 'group');
+      section.setAttribute('aria-label', group.name);
+      if (group.detail) section.innerHTML = `<div class="lib-group-heading" aria-hidden="true"><b>${group.name}</b><span>${group.detail}</span></div>`;
+      const grid = document.createElement('div');
+      grid.className = 'lib-group-grid';
+      books.forEach(lib => {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'lib-card' + (lib.id === settings.library ? ' on' : '') + (lib.id === justPickedLib ? ' just-picked' : '');
+        card.dataset.library = lib.id;
+        card.setAttribute('aria-pressed', String(lib.id === settings.library));
+        const countTxt = libraryCountText(lib);
+        card.setAttribute('aria-label', `${lib.name}，${lib.desc}，${countTxt}`);
+        card.title = `${lib.name} · ${lib.desc} · ${countTxt}`;
+        card.innerHTML = `${libraryCoverHTML(lib)}
+          <span class="lib-body"><b>${lib.shortName || lib.name}</b><span class="lib-desc">${lib.desc}</span><span class="lib-count">${countTxt}</span></span>`;
+        card.addEventListener('click', () => {
+          if (settings.library !== lib.id) { justPickedLib = lib.id; requestPreviewSwap(); }
+          settings.library = lib.id;
+          renderLibraryCards();
+          justPickedLib = null;
+          syncDependentUI();
+          commit();
+          syncCompanionLearningContext();
+          toast('已选中「' + lib.name + '」；可点击“浏览词条”查看并初筛');
+        });
+        grid.appendChild(card);
       });
-      box.appendChild(card);
+      section.appendChild(grid);
+      box.appendChild(section);
     });
+    if (focusedLibrary) box.querySelector(`[data-library="${focusedLibrary}"]`)?.focus({ preventScroll: true });
   }
 
   function loadLibraryCounts() {
     LIBRARIES.filter(l => l.file).forEach(lib => {
       fetch('data/' + lib.file).then(r => r.json()).then(a => {
         libCounts[lib.id] = a.length;
-        if (settings.library === lib.id || true) renderLibraryCards();
-      }).catch(() => { libCounts[lib.id] = '?'; });
+        renderLibraryCards();
+      }).catch(() => { libCounts[lib.id] = '?'; renderLibraryCards(); });
     });
   }
 
@@ -1158,6 +1199,7 @@
     if (!modal) return;
     activeLibraryBrowser = lib;
     activeLibraryWords = [];
+    $('#library-modal-cover').innerHTML = libraryCoverHTML(lib);
     $('#library-modal-title').textContent = lib.name + ' · 全部词条';
     $('#library-modal-source').textContent = lib.source || lib.desc;
     $('#library-search').value = '';
@@ -1969,6 +2011,81 @@
     return rh ? `${d} 天 ${rh} 小时后` : `${d} 天后`;
   }
 
+  function reviewTime(at) {
+    return new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  function overdueText(item) {
+    const info = window.SrsPolicy.status(item);
+    if (!info || (!info.handled && !info.warning)) return '';
+    if (info.handled) return info.demoted
+      ? `逾期已从第 ${info.fromStage + 1} 轮降至第 ${info.toStage + 1} 轮 · 现在可复习`
+      : '首轮已超出宽限期 · 保持第 1 轮，请尽快复习';
+    if (!info.fromStage) return `首轮逾期 · 宽限期还剩 ${SrsPolicy.duration(info.remaining)}，不会再降级`;
+    return `还剩 ${SrsPolicy.duration(info.remaining)}降至第 ${info.toStage + 1} 轮（${reviewTime(info.deadline)}）`;
+  }
+  const reviewNoticesSeen = new Set();
+  function renderOverdueStatus() {
+    const box = $('#srs-overdue'); if (!box) return;
+    const rows = [], now = Date.now();
+    for (const [library, bucket] of Object.entries(Store.getReview())) {
+      for (const [key, item] of Object.entries(bucket?.words || {})) {
+        const info = SrsPolicy.status(item, now);
+        if (!info || (!info.warning && !info.handled)) continue;
+        rows.push({ library, key, item, info });
+      }
+    }
+    rows.sort((a, b) => Number(a.info.handled) - Number(b.info.handled) || a.info.deadline - b.info.deadline);
+    box.hidden = !rows.length; box.innerHTML = '';
+    if (rows.length) {
+      const title = document.createElement('div'); title.className = 'srs-overdue-title';
+      title.textContent = `逾期提醒 · ${rows.length} 个词`; box.appendChild(title);
+      rows.slice(0, 3).forEach(({ library, item }) => {
+        const button = document.createElement('button'); button.type = 'button';
+        const label = document.createElement('b'); label.textContent = item.word?.word || '单词';
+        const note = document.createElement('span'); note.textContent = overdueText(item);
+        button.append(label, note); button.addEventListener('click', () => {
+          if (settings.library !== library) { settings.library = library; renderLibraryCards(); syncDependentUI(); commit(); }
+          $('#memory-search-input').value = item.word.word;
+          $('#memory-search-clear').hidden = false; openMemoryNotebook();
+        }); box.appendChild(button);
+      });
+    }
+    const fresh = rows.filter(({ library, key, info }) => {
+      const phase = info.handled ? 'handled' : info.urgent ? 'urgent' : 'due';
+      const id = JSON.stringify([Store.currentUser()?.id || 'local', library, key, info.due, phase]);
+      if (reviewNoticesSeen.has(id)) return false;
+      reviewNoticesSeen.add(id); return true;
+    });
+    if (settings.srsEnabled && fresh.length) {
+      const first = fresh[0];
+      const message = `${first.item.word.word}：${overdueText(first.item)}${fresh.length > 1 ? `；另有 ${fresh.length - 1} 个词需要复习` : ''}`;
+      toast(message);
+      if (!companionUp && 'Notification' in window && Notification.permission === 'granted') new Notification('WordPaper · 逾期复习提醒', { body: message });
+    }
+  }
+  let overdueSyncing = false;
+  async function syncOverdueReviews() {
+    if (overdueSyncing) return;
+    const all = JSON.parse(JSON.stringify(Store.getReview()));
+    if (!SrsPolicy.apply(all).length) return;
+    overdueSyncing = true;
+    try {
+      if (Store.currentUser()) { if (!await Store.refreshKey('review')) return; }
+      else Store.saveReview(all);
+      updateSrsUI();
+      if (!$('#memory-modal').hidden) renderMemoryNotebook();
+    } finally { overdueSyncing = false; }
+  }
+  function updateNotebookTimes() {
+    document.querySelectorAll('.memory-entry[data-review-key]').forEach(card => {
+      const item = Store.getReview()[settings.library]?.words?.[card.dataset.reviewKey];
+      if (!item) return;
+      const schedule = card.querySelector('.memory-schedule'), overdue = card.querySelector('.memory-overdue');
+      if (schedule) schedule.textContent = item.due ? `下次复习：${reviewTime(item.due)}${item.due <= Date.now() ? ' · 现在可复习' : ''}` : '全部周期完成 · 暂无后续排期';
+      if (overdue) { overdue.textContent = overdueText(item); overdue.hidden = !overdue.textContent; }
+    });
+  }
+
   function updateSrsUI() {
     const card = $('.srs-card'); if (!card || !window.Review) return;
     const enabled = !!settings.srsEnabled;
@@ -1981,6 +2098,8 @@
     renderSrsRecords(enabled);
     const cd = $('#srs-countdown');
     const petBadge = $('#pet-memory-badge');
+    renderPlanModule();
+    renderOverdueStatus(); updateNotebookTimes();
     if (!enabled) { cd.hidden = true; if (petBadge) petBadge.hidden = true; return 0; }
     const due = window.Review.dueWords(settings.library);
     if (petBadge) {
@@ -1988,7 +2107,6 @@
       petBadge.hidden = !due.length;
       petBadge.setAttribute('aria-label', `${due.length} 个词到期`);
     }
-    renderPlanModule();
     const previousDue = srsDueKeysByLibrary[settings.library] || new Set();
     const currentDue = new Set(due.map(item => window.Review.wordKey(item.word)));
     const newlyDue = due.filter(item => !previousDue.has(window.Review.wordKey(item.word))).length;
@@ -1997,7 +2115,7 @@
     if (due.length) {
       cd.hidden = false; cd.classList.add('due');
       $('#srs-cd-time').textContent = `${due.length} 个词到点，打开记忆本复习`;
-      if (newlyDue) notifySrsDue(newlyDue);
+
     } else {
       if (soonest) {
         cd.hidden = false; cd.classList.remove('due');
@@ -2045,142 +2163,124 @@
     window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     openMemoryNotebook();
   }
-  /* ── 学习规划:每日目标 / 打卡 / 词典通关预测 ──────────────────
-   * 存 dailyPlan namespace:{ dailyGoal, learnedByDay:{'2026-10-26':5,...}, checkins:{'2026-10-26':1}, goal }
-   *  - learnedByDay 只统计「新学的词」(learn 事件),复习不计入;
-   *  - 打卡 = 当天 learnedByDay >= dailyGoal 时点「打卡」(或自动判定)。
-   *  - 词典通关 = 当前词库总词数 vs 已学词数,按最近 7 天日均速度预测剩余天数。 */
-  const PLAN_LIB_LABELS = {};
-  function todayKey() {
-    const d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-  function readPlan() {
-    return window.Store.read('dailyPlan', { dailyGoal: 10, learnedByDay: {}, checkins: {} });
-  }
+  /* 每日目标衡量练习投入；SRS 只负责安排长期复习。 */
+  const PLAN_METRICS = { total: '学习总次数', recite: '单词背诵次数', sentence: '造句次数' };
+  function todayKey() { return window.LearningActivity.dayKey(); }
+  function readPlan() { return window.LearningActivity.plan(window.Store.read('dailyPlan', {})); }
   function writePlan(plan) { window.Store.write('dailyPlan', plan); }
-
-  /* 新学的词 +1(learn 事件才走这里;快照回放可能带旧事件,靠 eventId 去重)。 */
-  const dailyLearnSeen = new Set();
-  function countDailyLearn(event) {
-    if (!event || event.action !== 'learn') return;
-    const eid = String(event.id || '') + '|' + (event.word && event.word.word) + '|' + String(event.at || '');
-    if (dailyLearnSeen.has(eid)) return;
-    dailyLearnSeen.add(eid);
+  function planCounts(day) {
+    return window.LearningActivity.totals(window.Store.read('learningActivity', {}), day, readPlan().learnedByDay[day]);
+  }
+  function recordDailyActivity(event, stream) {
     const plan = readPlan();
-    const day = todayKey();
-    plan.learnedByDay[day] = (Number(plan.learnedByDay[day]) || 0) + 1;
-    // 保留最近 90 天,防止无限膨胀
-    const days = Object.keys(plan.learnedByDay).sort();
-    while (days.length > 90) { delete plan.learnedByDay[days.shift()]; }
-    writePlan(plan);
-    renderPlanModule();
+    // Old first-pass totals have already been credited. Snapshot replay must
+    // not credit them again; new companions stamp their durable activity ID.
+    if (event.action === 'learn' && !event.activityId && Number(event.at) <= plan.activityStartedAt) return;
+    const previous = window.Store.read('learningActivity', {});
+    const next = window.LearningActivity.record(previous, event, stream);
+    if (JSON.stringify(previous) !== JSON.stringify(next)) window.Store.write('learningActivity', next);
+    if (event.canceled) {
+      const day = window.LearningActivity.dayKey(event.at), receipt = plan.checkins[day];
+      if (receipt?.metric && planCounts(day)[receipt.metric] < receipt.target) {
+        delete plan.checkins[day]; writePlan(plan);
+      }
+    }
   }
 
   function renderPlanModule() {
-    const dailyInput = $('#inp-plan-daily');
-    const fill = $('#plan-bar-fill');
-    const progressText = $('#plan-progress-text');
-    const streakEl = $('#plan-streak');
-    const dictFill = $('#plan-dict-fill');
-    const dictProgress = $('#plan-dict-progress');
-    const dictEta = $('#plan-dict-eta');
-    const history = $('#plan-history');
-    if (!dailyInput || !window.Review || !window.Store) return;
+    const dailyInput = $('#inp-plan-daily'), metricInput = $('#sel-plan-metric');
+    if (!dailyInput || !metricInput || !window.Store) return;
     if (!dailyInput.dataset.bound) {
       dailyInput.dataset.bound = '1';
-      dailyInput.addEventListener('change', () => {
+      const saveGoal = () => {
         const plan = readPlan();
-        plan.dailyGoal = Math.max(1, Math.min(200, Number(dailyInput.value) || 10));
-        dailyInput.value = plan.dailyGoal;
-        writePlan(plan);
-        renderPlanModule();
-        toast('目标已设为每天 ' + plan.dailyGoal + ' 个词');
+        plan.dailyGoal = window.LearningActivity.plan({ dailyGoal: dailyInput.value }).dailyGoal;
+        plan.metric = metricInput.value;
+        writePlan(plan); renderPlanModule();
+        toast(`每天${PLAN_METRICS[plan.metric]}目标：${plan.dailyGoal} 次`);
+      };
+      dailyInput.addEventListener('change', saveGoal);
+      metricInput.addEventListener('change', saveGoal);
+      $('#btn-plan-checkin').addEventListener('click', () => {
+        const plan = readPlan(), day = todayKey(), count = planCounts(day)[plan.metric];
+        if (plan.checkins[day] || count < plan.dailyGoal) return;
+        plan.checkins[day] = { metric: plan.metric, target: plan.dailyGoal, count };
+        writePlan(plan); renderPlanModule(); $('#plan-records').open = true; celebratePlanHit();
       });
-      const checkin = $('#btn-plan-checkin');
-      if (checkin) {
-        checkin.addEventListener('click', () => {
-          const plan = readPlan();
-          const day = todayKey();
-          if (plan.checkins[day]) { toast('今天已经打过了 ✓'); return; }
-          const learned = Number(plan.learnedByDay[day]) || 0;
-          if (learned < plan.dailyGoal) { toast(`今天还差 ${plan.dailyGoal - learned} 个词,继续加油`); return; }
-          plan.checkins[day] = 1;
-          writePlan(plan);
-          renderPlanModule();
-          celebratePlanHit();
-        });
-      }
     }
-    const plan = readPlan();
-    if (Number(dailyInput.value) !== plan.dailyGoal) dailyInput.value = plan.dailyGoal;
-    const day = todayKey();
-    const learned = Number(plan.learnedByDay[day]) || 0;
-    const pct = Math.min(100, Math.round((learned / plan.dailyGoal) * 100));
-    if (fill) {
-      fill.style.width = pct + '%';
-      fill.classList.toggle('done', learned >= plan.dailyGoal);
+    const plan = readPlan(), day = todayKey(), counts = planCounts(day);
+    dailyInput.value = plan.dailyGoal;
+    metricInput.value = plan.metric;
+    for (const metric of Object.keys(PLAN_METRICS)) {
+      $('#plan-count-' + metric).textContent = counts[metric];
+      $('#plan-count-' + metric).closest('.plan-metric').classList.toggle('selected', metric === plan.metric);
     }
-    if (progressText) progressText.textContent = `${learned}/${plan.dailyGoal}`;
-    // 连续打卡:从今天(或昨天)往前数连续有 checkin 的天数
+    const count = counts[plan.metric], reached = count >= plan.dailyGoal;
+    const pct = Math.min(100, Math.round(count / plan.dailyGoal * 100));
+    const fill = $('#plan-bar-fill');
+    fill.style.width = pct + '%'; fill.classList.toggle('done', reached);
+    const bar = fill.parentElement;
+    bar.setAttribute('aria-valuenow', Math.min(count, plan.dailyGoal));
+    bar.setAttribute('aria-valuemax', plan.dailyGoal);
+    bar.setAttribute('aria-valuetext', `${PLAN_METRICS[plan.metric]} ${count} / ${plan.dailyGoal} 次`);
+    $('#plan-progress-text').textContent = `${count}/${plan.dailyGoal} 次`;
+    $('#plan-rule').textContent = plan.metric === 'total'
+      ? '背诵 1 次 + 造句 1 次 = 2 次学习。各词库合计，同一个词反复练习也计入。'
+      : plan.metric === 'recite'
+        ? '首轮学习、桌面抽查、记忆本复习，每作答一次计一次；答错、模糊也计入。'
+        : '每完成一次造句批改计一次，不要求满分；修改后再次完成批改也计入。';
     let streak = 0;
     const cursor = new Date();
-    if (!plan.checkins[todayKey()]) cursor.setDate(cursor.getDate() - 1);   // 今天还没打也从昨天起算
-    for (;;) {
-      const k = cursor.getFullYear() + '-' + String(cursor.getMonth() + 1).padStart(2, '0') + '-' + String(cursor.getDate()).padStart(2, '0');
-      if (plan.checkins[k]) { streak++; cursor.setDate(cursor.getDate() - 1); }
-      else break;
+    if (!plan.checkins[day]) cursor.setDate(cursor.getDate() - 1);
+    while (plan.checkins[window.LearningActivity.dayKey(cursor)]) { streak++; cursor.setDate(cursor.getDate() - 1); }
+    $('#plan-streak').textContent = `${streak} 天`;
+    const checkin = $('#btn-plan-checkin'), done = Boolean(plan.checkins[day]);
+    checkin.disabled = done || !reached;
+    checkin.textContent = done ? '今日已打卡 ✓' : reached ? '今日目标达成，打卡 ✓' : `还差 ${plan.dailyGoal - count} 次${plan.metric === 'sentence' ? '造句' : plan.metric === 'recite' ? '背诵' : '学习'}`;
+    const receipt = plan.checkins[day], note = $('#plan-checkin-note');
+    note.hidden = !receipt?.metric || (receipt.metric === plan.metric && receipt.target === plan.dailyGoal);
+    note.textContent = note.hidden ? '' : `今天已按「${PLAN_METRICS[receipt.metric]} ${receipt.target} 次」打卡，调整目标后可继续练习。`;
+    const history = $('#plan-history');
+    history.innerHTML = '';
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const k = window.LearningActivity.dayKey(d), daily = planCounts(k);
+      const cell = document.createElement('span');
+      cell.className = 'ph-day' + (plan.checkins[k] ? ' hit' : '') + (i === 0 ? ' today' : '');
+      cell.title = k + (plan.checkins[k] ? ' · 已打卡' : '') + ` · 背诵 ${daily.recite} 次 · 造句 ${daily.sentence} 次`;
+      cell.setAttribute('aria-label', cell.title); cell.textContent = d.getDate();
+      history.appendChild(cell);
     }
-    if (streakEl) streakEl.textContent = `🔥 ${streak} 天`;
-    const checkin = $('#btn-plan-checkin');
-    if (checkin) {
-      const done = Boolean(plan.checkins[day]);
-      checkin.disabled = done;
-      checkin.textContent = done ? '今日已打卡 ✓' : (learned >= plan.dailyGoal ? '今日已学够，打卡 ✓' : `还差 ${plan.dailyGoal - learned} 个词`);
-    }
-    // 词典通关:当前词库
-    const lib = LIBRARIES.find(l => l.id === settings.library);
-    const total = (lib && libCounts[lib.id]) || 0;
-    const learnedAll = window.Review.allWords(settings.library).length;
-    const dictPct = total ? Math.min(100, Math.round((learnedAll / total) * 100)) : 0;
-    if (dictFill) {
-      dictFill.style.width = dictPct + '%';
-      dictFill.classList.toggle('done', dictPct >= 100);
-    }
-    if (dictProgress) dictProgress.textContent = dictPct + '%';
-    if (dictEta) {
-      if (!total) dictEta.textContent = '按当前速度，通关还需 -- 天';
-      else if (dictPct >= 100) dictEta.textContent = '🎉 这个词库已经通关了！';
-      else {
-        // 最近 7 天日均(不含今天,今天还没结束)
-        const speeds = [];
-        for (let i = 1; i <= 7; i++) {
-          const d = new Date(); d.setDate(d.getDate() - i);
-          const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-          speeds.push(Number(plan.learnedByDay[k]) || 0);
-        }
-        const avg = speeds.reduce((a, b) => a + b, 0) / 7;
-        const remain = total - learnedAll;
-        const perDay = Math.max(1, plan.dailyGoal);
-        const days = Math.ceil(remain / (avg > 0 ? Math.max(avg, 1) : perDay));
-        dictEta.textContent = avg > 0
-          ? `按最近 7 天速度(日均 ${avg.toFixed(1)} 词)，通关这个词库还需约 ${days} 天`
-          : `还没开始学 —— 按每天 ${plan.dailyGoal} 词算，约 ${days} 天通关`;
-      }
-    }
-    // 近 14 天打卡格子
-    if (history) {
-      history.innerHTML = '';
-      for (let i = 13; i >= 0; i--) {
-        const d = new Date(); d.setDate(d.getDate() - i);
-        const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-        const cell = document.createElement('span');
-        cell.className = 'ph-day' + (plan.checkins[k] ? ' hit' : '') + (i === 0 ? ' today' : '');
-        cell.title = k + (plan.checkins[k] ? ' · 已打卡' : '') + ` · 学了 ${Number(plan.learnedByDay[k]) || 0} 词`;
-        cell.textContent = d.getDate();
-        history.appendChild(cell);
-      }
-    }
+    renderDailyWordRecords();
+  }
+  function renderDailyWordRecords() {
+    const input = $('#plan-record-date'), box = $('#plan-word-records');
+    if (!input || !box) return;
+    const today = todayKey();
+    if (!input.value || (input.dataset.followToday === '1' && input.value !== today)) { input.value = today; input.dataset.followToday = '1'; }
+    input.max = today;
+    if (!input.dataset.bound) { input.dataset.bound = '1'; input.addEventListener('change', () => { input.dataset.followToday = input.value === todayKey() ? '1' : '0'; renderDailyWordRecords(); }); }
+    const rows = LearningActivity.wordsForDay(Store.read('learningActivity', {}), input.value);
+    $('#plan-record-count').textContent = `${rows.length} 词`;
+    box.innerHTML = '';
+    if (!rows.length) { box.textContent = '这一天还没有逐词记录。本版起每次学习会自动保存单词与排期，旧版合计仍保留。'; return; }
+    const review = Store.getReview();
+    rows.forEach(row => {
+      const div = document.createElement('div'); div.className = 'plan-word-record';
+      const word = document.createElement('b'); word.textContent = row.word.word;
+      const counts = document.createElement('span');
+      const lib = LIBRARIES.find(lib => lib.id === row.library);
+      counts.textContent = `${lib?.name || row.library} · 背诵 ${row.recite} 次 · 造句 ${row.sentence} 次`;
+      const time = document.createElement('small'); time.textContent = `最后练习：${reviewTime(row.lastAt)}`;
+      const item = review[row.library]?.words?.[Review.wordKey(row.word)];
+      const next = document.createElement('span');
+      const due = item ? item.due : row.nextDue;
+      next.textContent = due ? `下次复习：${reviewTime(due)}${due <= Date.now() ? ' · 现在可复习' : ''}`
+        : due === null ? '全部周期完成 · 暂无后续排期' : '尚无复习排期（仅造句不会推进复习周期）';
+      div.append(word, counts, time, next);
+      if (item && overdueText(item)) { const note = document.createElement('small'); note.textContent = overdueText(item); div.appendChild(note); }
+      box.appendChild(div);
+    });
   }
 
   /* 达标庆祝:派大星开心跳 + 撒花特效 + 音效(经伴侣)。 */
@@ -2288,6 +2388,7 @@
     const buildCard = (item, masteredFlag) => {
       const dueNow = isDue(item);
       const card = document.createElement('article');
+      card.dataset.reviewKey = window.Review.wordKey(item.word);
       card.className = 'memory-entry' + (dueNow && !masteredFlag ? ' due' : '') + (masteredFlag ? ' mastered' : '');
       const meta = masteredFlag
         ? `已经记住 · 复习了 ${item.reviewCount || 0} 次`
@@ -2309,6 +2410,11 @@
         actions.querySelector('.remembered').addEventListener('click', () => answerNotebookWord(item, card, 'remembered'));
         card.appendChild(actions);
       }
+      const schedule = document.createElement('span'); schedule.className = 'memory-schedule';
+      schedule.textContent = item.due ? `下次复习：${reviewTime(item.due)}${item.due <= now ? ' · 现在可复习' : ''}` : '全部周期完成 · 暂无后续排期';
+      const overdue = document.createElement('span'); overdue.className = 'memory-overdue';
+      overdue.textContent = overdueText(item); overdue.hidden = !overdue.textContent;
+      card.append(schedule, overdue);
       return card;
     };
     const addSection = (title, hint, items, masteredFlag, emptyNote) => {
@@ -2336,10 +2442,18 @@
     addSection('📌 还在记', '到点的排在最前面，答「背过了」进入下一轮；跑满 8 轮就毕业', sortedActive, false, '没有还在记的词 —— 全都记住了 🎉');
     addSection('✅ 已经记住', '跑满全部 8 轮复习，以后不用再管', sortedMastered, true, '还没有已经记住的词 —— 跑满 8 轮复习的词会自动进到这里。');
   }
-  function answerNotebookWord(item, card, grade) {
+  async function answerNotebookWord(item, card, grade) {
     card.querySelectorAll('.memory-answer').forEach(button => { button.disabled = true; });
-    const result = window.Review.reviewWord(settings.library, item.word, grade);
+    if (window.Store.currentUser() && (!await window.Store.flush() || !await window.Store.refreshKey('review'))) {
+      card.querySelectorAll('.memory-answer').forEach(button => { button.disabled = false; });
+      toast('复习记录正在同步，请稍后再作答'); return;
+    }
+    // getRandomValues also works on the supported plain-HTTP LAN origin.
+    const activityId = 'notebook:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+    const result = window.Review.reviewWord(settings.library, item.word, grade, { activityId });
     if (!result || result.action === 'missing' || result.action === 'early') { toast('这张词卡还没到复习时间'); renderMemoryNotebook(); return; }
+    if (result.item?.lastUndo?.activityId === activityId) recordDailyActivity({ action: 'review', activityId, at: result.item.lastUndo.at,
+      library: settings.library, word: item.word, nextDue: result.item.due });
     const meaning = card.querySelector('.memory-meaning');
     if (meaning) { meaning.classList.remove('locked'); meaning.textContent = (item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || ''); }
     card.classList.remove('due'); card.classList.add('answered', result.action === 'remembered' || result.action === 'mastered' ? 'remembered' : (result.action === 'fuzzy' ? 'fuzzy' : 'forgotten'));
@@ -2368,9 +2482,16 @@
     updateSrsUI();
     // 作答后的中文一直保留，直到用户关闭或重新打开记忆本；不再定时遮回去。
   }
-  function undoNotebookWord(item, card) {
+  async function undoNotebookWord(item, card) {
+    const button = card.querySelector('.memory-undo'); if (button) button.disabled = true;
+    if (window.Store.currentUser() && (!await window.Store.flush() || !await window.Store.refreshKey('review'))) {
+      if (button) button.disabled = false;
+      toast('复习记录正在同步，请稍后再撤销'); return;
+    }
+    const previous = window.Review.getWord(settings.library, item.word)?.lastUndo;
     const result = window.Review.undoReview(settings.library, item.word);
-    if (!result || result.action !== 'undo') { toast('没有可撤销的操作'); return; }
+    if (!result || result.action !== 'undo') { toast('该词排期已更新，没有可撤销的操作'); renderMemoryNotebook(); updateSrsUI(); return; }
+    if (previous?.activityId) recordDailyActivity({ action: 'review', activityId: previous.activityId, at: previous.at, canceled: true });
     toast(`${item.word.word}：已撤销，恢复到作答前`);
     renderMemoryNotebook();
     updateSrsUI();
@@ -2387,22 +2508,16 @@
     toast(permission === 'granted' ? '系统复习提醒已开启 ✓' : '未允许系统提醒，仍会在页面内提醒');
   }
 
-  function notifySrsDue(count) {
-    const message = `有 ${count} 个单词到复习时间了，点击词卡确认本轮记忆。`;
-    toast('复习 · ' + message);
-    if ('Notification' in window && Notification.permission === 'granted') new Notification('WordPaper · 复习提醒', { body: message });
-  }
-
   function startSrsTicker() {
     clearInterval(srsTimer);
-    srsTimer = setInterval(() => {
-      if (!settings.srsEnabled) return;
+    srsTimer = setInterval(async () => {
+      await syncOverdueReviews();
       const newlyDue = updateSrsUI();
       // 每一批新增到期词都重绘一次；不再用同一 tick 内两个必然相等的计数比较。
       // 记忆本开着时跳过重绘(见 syncPetCurrent 的闪屏注),关闭后下一 tick 补上。
       const memoryOpen = $('#memory-modal') && !$('#memory-modal').hidden;
       if (newlyDue > 0 && !memoryOpen) refresh(false);
-    }, 30000);
+    }, 15000);
     setInterval(syncPetMemoryEvents, 15000);
     setInterval(pushPetQuiz, 45000);   // 派大星抽查推送(内部有条件闸,非到期/非派大星空转)
     setTimeout(pushPetQuiz, 4000);     // 页面打开 4s 后先推一次,不用等第一个 45s tick
@@ -2441,7 +2556,7 @@
   }
 
   async function syncPetMemoryEvents() {
-    if (petMemorySyncing || !window.Review || !settings || !settings.srsEnabled) return;
+    if (petMemorySyncing || !window.Review || !settings) return;
     petMemorySyncing = true;
     const storedCursor = window.Store.read('petMemoryCursor', {});
     const cursor = storedCursor && typeof storedCursor === 'object' ? storedCursor : { streamId: '', lastId: Number(storedCursor) || 0 };
@@ -2453,13 +2568,16 @@
       const user = window.Store.currentUser();
       const localAnswers = events.some(event => event.srsApplied && user && Number(event.userId) === user.id);
       if (localAnswers && !await window.Store.refreshKey('review')) return;
+      if (events.length && user && !await window.Store.refreshKey('learningActivity')) return;
       let quizApplied = 0;
       let sentences = 0;
       snapshot.concat(events).forEach(event => {
         if (!event.word || !event.library) return;
         if (event.userId && (!user || Number(event.userId) !== user.id)) return;
+        recordDailyActivity(Object.assign({ action: 'learn' }, event), data.streamId);
         // 造句练习:只统计,不改艾宾浩斯阶段(造句是输出练习,不是回忆测试)。
         if (event.action === 'sentence') { sentences++; return; }
+        if (!settings.srsEnabled) return;
         if (event.action === 'quiz') {
           if (event.srsApplied) { quizApplied++; return; }
           // 派大星抽查作答:与记忆本「记住了/还没记住」同一条艾宾浩斯链。
@@ -2475,8 +2593,11 @@
           return;
         }
         window.Review.rememberWord(event.library, event.word);
-        countDailyLearn(event);               // 纳入每日目标进度(新学的才算)
       });
+      // Keep the SRS cursor while reminders are off, so re-enabling can still
+      // consume pending first-pass records. Activity replay is independently
+      // deduplicated, and does not produce repeated notifications here.
+      if (!settings.srsEnabled) { renderPlanModule(); return; }
       window.Store.write('petMemoryCursor', { streamId: String(data.streamId || ''), lastId: Number(data.lastId) || 0 });
       if (events.length || snapshot.length) {
         updateSrsUI(); if ($('#memory-modal') && !$('#memory-modal').hidden) renderMemoryNotebook();
@@ -3325,6 +3446,9 @@
     const showAccount = bindPersistenceUI();
     bindUpdateUI();
     await window.Store.init();
+    if (!Store.currentUser()) { const review = Store.getReview(); if (SrsPolicy.apply(review).length) Store.saveReview(review); }
+    const plan = readPlan();
+    if (!plan.activityStartedAt) { plan.activityStartedAt = Date.now(); writePlan(plan); }
     showAccount();
     bindAccountUI();
     loadSettings();
@@ -3361,6 +3485,7 @@
     setInterval(syncRemote, 30000);
     window.addEventListener('focus', syncRemote);
     initAdminPanel();   // 管理员才显示;失败静默
+    $('#srs-grace-table').textContent = SrsPolicy.INTERVALS_MIN.map(min => `${SrsPolicy.duration(min * 60000)}一档：宽限 ${SrsPolicy.duration(SrsPolicy.graceMs(min * 60000))}`).join('；');
     startSrsTicker();
     syncPetMemoryEvents();
     syncCompanionLearningContext();

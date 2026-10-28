@@ -22,6 +22,9 @@ const path = require('path');
 const { execFile } = require('child_process');
 const os = require('os');
 const wallpaperFiles = require('./lib/wallpaper_files');
+const learningActivity = require('./js/learning-activity');
+const srsPolicy = require('./js/srs-policy');
+const reviewPolicyStore = require('./lib/review-policy-store');
 
 const ROOT = __dirname;
 const DEFAULT_PORT = 8771;
@@ -313,6 +316,9 @@ function completePetFirstPass(word) {
   page.exhausted = page.words.length === 0 && availablePetWords(library).length === 0;
   state.petMemorySeq = Math.max(0, Number(state.petMemorySeq) || 0) + 1;
   const event = { id: state.petMemorySeq, at: now, library, word, action: 'learn', firstPass: true, page: deck.index + 1, refilled: Boolean(candidate) };
+  persistLearningActivity(event);
+  learnedFor(library)[key].userId = event.userId;
+  learnedFor(library)[key].activityId = event.activityId;
   state.petMemoryEvents.push(event);
   state.petMemoryEvents = state.petMemoryEvents.slice(-160);
   bumpPetWordEpoch();
@@ -324,7 +330,7 @@ function learnedSnapshot() {
   Object.keys(state.petLearnedByLibrary).forEach(library => {
     Object.keys(state.petLearnedByLibrary[library] || {}).forEach(key => {
       const record = state.petLearnedByLibrary[library][key];
-      if (record && record.word) out.push({ library, word: record.word, at: record.at || 0 });
+      if (record && record.word) out.push({ library, word: record.word, at: record.at || 0, userId: record.userId, activityId: record.activityId });
     });
   });
   return out;
@@ -2099,6 +2105,7 @@ function run(argv){
         }
         (d.commands || []).forEach(function(c){
           if (c.cmd === 'bubble') {
+            reloadBubblePng();
             bubble = { lines: c.lines, until: Date.now() + (c.ms || 6500) };
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz') {
@@ -2716,7 +2723,13 @@ function buildStatusBubbleSVG(status, dark) {
 
   if (dueNow.length) {
     rows.push({ type: 'header', text: '❗ 该复习了', color: bad, y: y }); y += 20;
-    dueNow.slice(0, 3).forEach(w => { rows.push({ type: 'word', text: w.word, note: '到点了', color: bad, y: y }); y += 19; });
+    dueNow.slice(0, 3).forEach(w => {
+      if (w.overdueNote) {
+        wrapText(String(w.word), 11, W - 52, 0, 0.62).forEach(text => { rows.push({ type: 'word', text, note: '', color: warn, y }); y += 16; });
+        wrapText(w.overdueNote, 9, W - 52, 0, 0.62).forEach(text => { rows.push({ type: 'note', text, color: sub, y }); y += 14; });
+        y += 5;
+      } else { rows.push({ type: 'word', text: w.word, note: '到点了', color: bad, y: y }); y += 19; }
+    });
     y += 4;
   }
   if (timing.length) {
@@ -2776,6 +2789,8 @@ function buildStatusBubbleSVG(status, dark) {
       const bx = 26*s, bw2 = (W-52)*s, by2 = (r.y+8)*s, bh2 = 4*s;
       parts.push(`<rect x="${bx}" y="${by2}" width="${bw2}" height="${bh2}" rx="${2*s}" fill="${dark ? '#3a2b45' : '#f3e2e6'}"/>`);
       parts.push(`<rect x="${bx}" y="${by2}" width="${Math.max(2, bw2 * r.pct / 100)}" height="${bh2}" rx="${2*s}" fill="${seaGreen}"/>`);
+    } else if (r.type === 'note') {
+      parts.push(`<text x="${26*s}" y="${(r.y+3)*s}" font-family="${fam}" font-size="${9*s}" fill="${r.color}">${esc(r.text)}</text>`);
     } else if (r.type === 'more') {
       parts.push(`<text x="${26*s}" y="${(r.y+4)*s}" font-family="${fam}" font-size="${8.5*s}" fill="${sub}">${esc(r.text)}</text>`);
     } else if (r.type === 'wordlist') {
@@ -4725,7 +4740,7 @@ function askMagpie(prompt, cb) {
  * 与网页 js/review.js 完全相同的间隔与推进规则,直接读写 user_state.review,
  * 不再依赖浏览器轮询。这样派大星自己就能出题、自己推进艾宾浩斯。
  * 账号:单机单账号模式取「最近活跃」的那个 user(通常是本人)。 */
-const SRS_INTERVALS_MIN = [20, 60, 540, 1440, 2880, 4320, 8640, 17280];
+const SRS_INTERVALS_MIN = srsPolicy.INTERVALS_MIN;
 
 function openSrsDb() {
   const dbPath = path.join(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'), 'wordpaper.sqlite');
@@ -4764,27 +4779,57 @@ function syncQuizUser(req) {
     pushPatrickCmd({ cmd: 'quiz-end' });
   } finally { db.close(); }
 }
+// Persist practice independently of SRS and the 160-event UI replay buffer.
+// The account is captured when the action happens, including sentence grading.
+function persistLearningActivity(event) {
+  event.activityId = learningActivity.eventId(event, state.petMemoryStreamId);
+  const db = openSrsDb();
+  if (!db) return;
+  try {
+    event.userId = event.userId || activeUserId(db) || undefined;
+    if (!event.userId) return;
+    db.exec('BEGIN IMMEDIATE');
+    const review = reviewPolicyStore.reconcile(db, event.userId).all;
+    const key = wordKey(event.word);
+    if (event.action === 'learn' && !review[event.library]?.words?.[key]) {
+      const bucket = review[event.library] || (review[event.library] = { words: {} });
+      if (!bucket.words) bucket.words = {};
+      const item = { word: event.word, learnedAt: event.at, lastSeenAt: event.at, stage: 0,
+        learnedCount: 1, reviewCount: 0, successCount: 0, failCount: 0, events: [{ at: event.at, type: 'learn' }] };
+      srsPolicy.scheduled(item, event.at, SRS_INTERVALS_MIN[0]);
+      bucket.words[key] = item;
+      if (!writeReviewState(db, event.userId, review)) throw new Error('first-pass review write failed');
+      event.srsApplied = true;
+    }
+    const item = review[event.library]?.words?.[key];
+    if (item) event.nextDue = item.due;
+    const row = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='learningActivity'").get(event.userId);
+    const value = learningActivity.record(row ? JSON.parse(row.value_json) : null, event);
+    const ok = writeReviewState(db, event.userId, value, 'learningActivity');
+    db.exec(ok ? 'COMMIT' : 'ROLLBACK');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    console.error('[companion] 学习次数保存失败:', error.message);
+  } finally { db.close(); }
+}
 function readReviewState(db, userId) {
   try {
-    const row = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='review'").get(userId);
-    if (!row) return {};
-    const parsed = JSON.parse(row.value_json);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch { return {}; }
+    return reviewPolicyStore.reconcile(db, userId).all;
+  } catch (error) { console.error('[companion] 复习记录读取失败:', error.message); throw error; }
 }
-function writeReviewState(db, userId, all) {
+function writeReviewState(db, userId, all, namespace = 'review') {
   try {
     // Can be called inside answerQuiz's read/modify/write transaction.
     db.exec('SAVEPOINT quiz_review_write');
     const json = JSON.stringify(all);
     const now = Date.now();
-    const existing = db.prepare("SELECT revision FROM user_state WHERE user_id=? AND namespace='review'").get(userId);
+    const existing = db.prepare('SELECT revision FROM user_state WHERE user_id=? AND namespace=?').get(userId, namespace);
     if (existing) {
-      db.prepare("UPDATE user_state SET value_json=?, revision=revision+1, updated_at=? WHERE user_id=? AND namespace='review'")
-        .run(json, now, userId);
+      db.prepare('UPDATE user_state SET value_json=?, revision=revision+1, updated_at=? WHERE user_id=? AND namespace=?')
+        .run(json, now, userId, namespace);
     } else {
       db.prepare("INSERT INTO user_state (user_id, namespace, value_json, revision, updated_at) VALUES (?,?,?,1,?)")
-        .run(userId, 'review', json, now);
+        .run(userId, namespace, json, now);
     }
     // Native quiz answers can happen while the workspace is closed. Record
     // their cloud write in the same transaction so a pull cannot erase them.
@@ -4793,7 +4838,7 @@ function writeReviewState(db, userId, all) {
     if (pairing && Number(pairing.localUserId) === Number(userId)) {
       const queued = db.prepare("SELECT value FROM app_meta WHERE key='upstream_queue'").get();
       const queue = queued ? JSON.parse(queued.value) : {};
-      queue.review = { value: all, baseRevision: queue.review ? queue.review.baseRevision : Number(existing?.revision || 0) };
+      queue[namespace] = { value: all, baseRevision: queue[namespace] ? queue[namespace].baseRevision : Number(existing?.revision || 0) };
       db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('upstream_queue', ?)").run(JSON.stringify(queue));
     }
     db.exec('RELEASE quiz_review_write');
@@ -4846,6 +4891,7 @@ function srsApplyAnswer(db, userId, library, key, correct, word) {
     }
     item.lastSeenAt = now;
   }
+  srsPolicy.scheduled(item, now, item.stage < SRS_INTERVALS_MIN.length ? SRS_INTERVALS_MIN[item.stage] : null);
   item.petQuiz = Object.assign({ count: 0, firstAt: now }, item.petQuiz || {});
   item.petQuiz.count++;
   item.petQuiz.lastAt = now;
@@ -4970,6 +5016,51 @@ function startAutoQuiz() {
   console.log('[companion] 桌面抽查已启动(每 15s 检查到期词)');
 }
 
+// Runs independently of quiz mode and workspace visibility. Notifications are
+// deduplicated per account, word, schedule and warning phase across restarts.
+function reviewMaintenanceTick() {
+  const db = openSrsDb(); if (!db) return;
+  try {
+    const userId = activeUserId(db); if (!userId) return;
+    const all = readReviewState(db, userId), now = Date.now();
+    const current = patrickQuizState;
+    const live = current && all[current.library]?.words?.[current.key];
+    if (live && current.srsUserId === userId && current.stage !== live.stage) { current.stage = live.stage; renderQuizCard(); }
+    const settingsRow = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='settings'").get(userId);
+    if (settingsRow && JSON.parse(settingsRow.value_json)?.srsEnabled === false) return;
+    // An unanswered card must not suppress warnings forever. Avoid disturbing
+    // active composition or the short answer-result dwell, then deliver them.
+    if (sentenceWinChild || now < quizResultUntil || now - sentenceClosedAt < SENTENCE_CLOSE_GRACE_MS) return;
+    const seen = state.reviewNoticeKeys || (state.reviewNoticeKeys = {}), notices = [];
+    for (const [library, bucket] of Object.entries(all)) {
+      for (const [key, item] of Object.entries(bucket?.words || {})) {
+        const info = srsPolicy.status(item, now);
+        if (!info || (!info.handled && !info.warning)) continue;
+        const phase = info.handled ? 'handled' : info.urgent ? 'urgent' : 'due';
+        const id = JSON.stringify([userId, library, key, info.due, phase]);
+        if (seen[id]) continue;
+        const note = info.handled ? (info.demoted ? `已从第 ${info.fromStage + 1} 轮降到第 ${info.toStage + 1} 轮，请复习` : '首轮已超时，请复习')
+          : info.fromStage ? `还有 ${srsPolicy.duration(info.remaining)}降到第 ${info.toStage + 1} 轮` : `首轮已到期，宽限期剩 ${srsPolicy.duration(info.remaining)}`;
+        notices.push({ id, info, word: item.word?.word || '单词', note, text: `${item.word?.word || '单词'}：${note}` });
+      }
+    }
+    if (!notices.length) return;
+    notices.sort((a, b) => Number(a.info.handled) - Number(b.info.handled) || a.info.deadline - b.info.deadline);
+    const body = notices.slice(0, 3).map(n => n.text).join('\n') + (notices.length > 3 ? `\n另有 ${notices.length - 3} 个词待复习` : '');
+    if (patrickVisible) {
+      const status = notices.slice(0, 3).map(n => ({ word: n.word, kind: 'due', overdueNote: n.note }));
+      renderStatusBubble(status, () => pushPatrickCmd({ cmd: 'bubble', lines: notices.slice(0, 3).map(n => ({ text: n.text, size: 11 })), ms: 9000 }));
+    }
+    if (isMac && process.env.WORDPAPER_TEST_MODE !== '1') {
+      execFile('osascript', ['-e', 'on run argv\ndisplay notification (item 1 of argv) with title "WordPaper · 复习提醒"\nend run', body], { timeout: 5000 }, () => {});
+    }
+    notices.forEach(n => { seen[n.id] = now; });
+    Object.keys(seen).forEach(id => { if (seen[id] < now - 90 * 86400000) delete seen[id]; });
+    saveState();
+  } catch (error) { console.error('[companion] 逾期提醒失败:', error.message); }
+  finally { db.close(); }
+}
+
 /* ---------------- 抽查(quiz)核心 ----------------
  * 从网页推来的到期词里选一个,再从同词库抽 3 个干扰项组成 4 选 1。
  * 题目渲染成 CARD_PNG.quiz(按 PID 分离),由派大星窗加载显示(quiz 子窗);
@@ -5000,16 +5091,27 @@ function wordKey(word) { return String((word && word.word) || '') + '|' + String
 /* 悬停状态气泡渲染:buildStatusBubbleSVG → sips → /tmp/dw_status_bubble-<pid>.png。
  * 桌面词变化(bumpPetWordEpoch)与 SRS 写回后都会触发;另有 5 分钟兜底刷新。 */
 let statusBubbleTimer = null;
-function renderStatusBubble() {
+let statusBubbleRenderSeq = 0;
+function renderStatusBubble(statusOverride, onReady) {
   try {
-    const st = currentWordStatus();
+    const seq = ++statusBubbleRenderSeq;
+    const st = statusOverride || currentWordStatus();
     const svg = buildStatusBubbleSVG(st, petSkin(CFG.uiTheme).dark === true);
     const png = path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`);
-    const svgPath = png.replace(/\.png$/, '.svg');
+    const output = png.replace(/\.png$/, `-${seq}.png`);
+    const svgPath = output.replace(/\.png$/, '.svg');
     fs.writeFileSync(svgPath, svg);
-    execFile('sips', ['-s', 'format', 'png', svgPath, '--out', png], { timeout: 20000 }, (err) => {
+    execFile('sips', ['-s', 'format', 'png', svgPath, '--out', output], { timeout: 20000 }, (err) => {
       try { fs.unlinkSync(svgPath); } catch {}
-      if (err) console.error('[companion] 状态气泡渲染失败:', err.message);
+      if (err || seq !== statusBubbleRenderSeq) {
+        try { fs.unlinkSync(output); } catch {}
+        if (err) console.error('[companion] 状态气泡渲染失败:', err.message);
+        return;
+      }
+      try { fs.renameSync(output, png); }
+      catch (error) { console.error('[companion] 状态气泡保存失败:', error.message); return; }
+      if (onReady) onReady();
+      if (statusOverride) setTimeout(() => { if (seq === statusBubbleRenderSeq) renderStatusBubble(); }, 9500).unref();
     });
   } catch (e) { console.error('[companion] 状态气泡异常:', e.message); }
 }
@@ -5179,6 +5281,7 @@ function answerQuiz(picked, res) {
     }
     finally { if (db) db.close(); }
   }
+  persistLearningActivity(event);
   state.petMemoryEvents.push(event);
   state.petMemoryEvents = state.petMemoryEvents.slice(-160);
   saveState();
@@ -5216,7 +5319,7 @@ function answerQuiz(picked, res) {
   // 作答后把这次考的题记下来:造句窗要用它(词 + 释义 + 这次的对错)。
   state.lastQuiz = {
     word: word.word, meaning: word.meaning || '', pos: word.pos || '',
-    phonetic: word.phonetic || '', library: q.library, correct, at: Date.now(),
+    phonetic: word.phonetic || '', library: q.library, correct, at: Date.now(), userId: event.userId,
   };
   saveState();
   pushPatrickCmd({
@@ -6444,11 +6547,13 @@ const server = http.createServer((req, res) => {
         }
         // 记进事件流,网页记忆本能看到「造句」这条练习记录。
         state.petMemorySeq = Math.max(0, Number(state.petMemorySeq) || 0) + 1;
-        state.petMemoryEvents.push({
+        const activityEvent = {
           id: state.petMemorySeq, at: Date.now(), library: lq.library || CFG.library,
           word: { word, meaning: lq.meaning || '' }, action: 'sentence',
-          score, sentence: sentence.slice(0, 200), correct: null, page: 0, refilled: false,
-        });
+          score, sentence: sentence.slice(0, 200), correct: null, page: 0, refilled: false, userId: lq.userId,
+        };
+        persistLearningActivity(activityEvent);
+        state.petMemoryEvents.push(activityEvent);
         state.petMemoryEvents = state.petMemoryEvents.slice(-160);
         saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -6933,6 +7038,8 @@ server.listen(CFG.port, '127.0.0.1', () => {
     }
     // 自主抽查:伴侣自己读 SRS 库出题,不需要浏览器(独立 App 的核心能力)
     if (CFG.quizAutoStart !== false) startAutoQuiz();
+    setTimeout(reviewMaintenanceTick, 1500).unref();
+    setInterval(reviewMaintenanceTick, 15000).unref();
     // global hotkey listener (independent of the pet; survives pet ✕ close)
     startHotkey();
     // menu bar status item:「App 在跑」的可见指示 + 召唤/退出/更新入口。

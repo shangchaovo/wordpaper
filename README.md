@@ -2,6 +2,32 @@
 
 背单词老忘，就把当天要看的词做成壁纸。在电脑桌面抬眼就能扫到，不必专门打开背词 App。
 
+![WordPaper：一抬眼，就能复习。12 本词书、3 类学习指标与 8 轮复习排期。](docs/screenshots/v2.6.4/01-overview.png)
+
+**新版 2.6.4：[下载 Mac App](https://github.com/shangchaovo/wordpaper/releases/tag/companion-v2.6.4) · [完整图文介绍与更新说明](docs/releases/v2.6.4.md)**
+
+| 想做什么 | WordPaper 怎么帮你 |
+| --- | --- |
+| 选一本适合自己的词书 | 12 本内置词书按语言分组，书封对应考试和等级；支持搜索、浏览初筛，也能导入自己的词表。 |
+| 把零碎时间用起来 | 单词和提醒放进桌面壁纸，位置可拖动；小词灵支持首轮学习，派大星可以抽查和朗读。 |
+| 看清今天练了多少 | 背诵、造句分别计数，同词重复练习也计入；三种目标任选，达标打卡，按日期查看逐词记录。 |
+| 不靠记性安排复习 | 每个词显示下次复习时间；到期后有宽限期，超过宽限期只降一轮，已完成的学习次数保留。 |
+
+<details>
+<summary><b>展开看新版界面：词书目录、每日学习、复习排期</b></summary>
+
+![词书目录的浅色与深色主题，分组、词数和当前选择清晰可见](docs/screenshots/v2.6.4/02-library.png)
+
+![每日学习：背诵 24 次加造句 6 次，完成目标后打卡并查看逐词记录](docs/screenshots/v2.6.4/03-daily-learning.png)
+
+![记忆复习：宽限期、逾期状态、作答后更新下一次复习时间](docs/screenshots/v2.6.4/04-review.png)
+
+以上均为真实界面截图，使用独立演示账号与示例学习数据。
+
+</details>
+
+已安装 **2.6.2 / 2.6.3** 的用户可在 App 中点「检查更新」。**2.6.1 及更早版本**请下载完整 DMG，覆盖「应用程序」里的 WordPaper.app；账号与学习数据保留在原数据目录。新逐词明细从本版开始积累，旧版没有记录的复习与造句细节不会被补造。逾期规则也适用于已有积压词，详细说明见 [复习规则](docs/REVIEW-POLICY.md)。
+
 **线上：[wordpaper.pages.dev](https://wordpaper.pages.dev/)**  
 另有一份 GitHub Pages 镜像：[shangchaovo.github.io/wordpaper](https://shangchaovo.github.io/wordpaper/)
 

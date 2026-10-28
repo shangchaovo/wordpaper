@@ -91,6 +91,22 @@ const { normalizeUrl } = require('../lib/upstream');
     assert.deepEqual(read2.state.review, review);
     assert.deepEqual((await api(desk2, '/api/state', undefined, second.local)).state.review, review);
 
+    // Practice events from two desktops merge, including a stale revision,
+    // rather than letting one device erase the other device's daily effort.
+    const activity = require('../js/learning-activity');
+    const nativeActivity = activity.record({}, { action: 'quiz', activityId: 'native-quiz', at: Date.now() });
+    const activityDb = new DatabaseSync(path.join(root, '1', 'wordpaper.sqlite'));
+    assert.equal(writer(activityDb, first.local.user.id, nativeActivity, 'learningActivity'), true);
+    activityDb.close();
+    const secondActivity = activity.record({}, { action: 'sentence', activityId: 'second-sentence', at: Date.now() });
+    await api(desk1, '/api/state', undefined, first.local);
+    const activityWrite = await api(desk2, '/api/state/learningActivity', { value: secondActivity, expectedRevision: 0 }, second.local, 'PUT');
+    assert.equal(activityWrite.response.status, 200);
+    const combinedActivity = activity.merge(nativeActivity, secondActivity);
+    assert.deepEqual(activityWrite.value, combinedActivity);
+    assert.deepEqual((await api(cloud, '/api/state', undefined, first.account)).state.learningActivity, combinedActivity);
+    assert.deepEqual((await api(desk1, '/api/state', undefined, first.local)).state.learningActivity, combinedActivity);
+
     // A late acknowledgement of generation A preserves generation B. The
     // second process may have queued B while A was on the network.
     const localStorage = openStorage(path.join(root, '1'));

@@ -177,7 +177,8 @@ def main():
             page.click("#btn-paste-import")
             page.wait_for_timeout(400)
             check("粘贴导入切到我的词库", page.locator("#library-cards .lib-card").last.evaluate("e=>e.classList.contains('on')"))
-            check("我的词库卡片有计数", "2词" in page.inner_text("#library-cards"))
+            custom_count = page.inner_text('#library-cards [data-library="custom"] .lib-count')
+            check("我的词库卡片有计数", "".join(custom_count.split()) == "2词")
 
             # screenshot import affordance present (inside modal)
             check("截图导入入口", page.locator("#file-screenshot").count() == 1)
@@ -260,6 +261,9 @@ def main():
             page.click("#btn-open-memory")
             check("到期词显示双向作答", page.locator(".memory-answer.forgot").count() >= 1 and page.locator(".memory-answer.remembered").count() >= 1)
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.forgot").click()
+            # Answering now refreshes the authoritative schedule before grading.
+            # Wait for its visible completion instead of reading the old cache.
+            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
             forgot_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("没记住后重置第一周期", forgot_state["stage"] == 0 and forgot_state["failCount"] == 1 and forgot_state["due"] > page.evaluate("Date.now()"))
             check("没记住后展示中文", page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-meaning.locked").count() == 0)
@@ -275,6 +279,7 @@ def main():
 
             page.click("#btn-open-memory")
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.remembered").click()
+            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
             passed_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("记住了推进下一周期", passed_state["stage"] == 1 and passed_state["due"] > page.evaluate("Date.now()"))
             page.click("#btn-close-memory")
@@ -282,6 +287,7 @@ def main():
             force_review_state(len(page.evaluate("Review.INTERVALS_MIN")) - 1)
             page.click("#btn-open-memory")
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.remembered").click()
+            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
             mastered_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("全部周期后才真正巩固", mastered_state["stage"] == len(page.evaluate("Review.INTERVALS_MIN")) and mastered_state["due"] is None)
             page.click("#btn-close-memory")
