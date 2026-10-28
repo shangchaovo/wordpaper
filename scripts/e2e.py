@@ -71,6 +71,9 @@ def main():
                     raise
                 browser = p.chromium.launch(channel="chrome")
             context = browser.new_context(viewport={"width": 1460, "height": 980})
+            # This suite exercises CSV/paste imports, which work without the
+            # optional Excel CDN. A stalled CDN must not block page reloads.
+            context.route('https://cdn.jsdelivr.net/**', lambda route: route.fulfill(status=200, body=''))
             account = context.request.post(base + "/api/auth/register", headers={"Origin": base}, data={
                 "username": "e2e_user_" + str(port), "password": "wordpaper-e2e-password",
             })
