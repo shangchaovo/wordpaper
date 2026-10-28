@@ -4797,7 +4797,9 @@ function patrickIdleContext() {
       const words = review[CFG.library]?.words || {};
       const due = Object.values(words).some(item => Number(item.stage) < SRS_INTERVALS_MIN.length && Number(item.due) > 0 && Number(item.due) <= now);
       const fresh = petFirstPassWords().some(word => !words[wordKey(word)]);
-      value.eligible = CFG.quizAutoStart !== false && featureOn('betaPetQuiz') && Boolean(due || fresh || patrickQuizState);
+      const settingsRow = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='settings'").get(userId);
+      const settings = settingsRow ? JSON.parse(settingsRow.value_json) : {};
+      value.eligible = settings.srsEnabled !== false && CFG.quizAutoStart !== false && featureOn('betaPetQuiz') && Boolean(due || fresh || patrickQuizState);
     }
   } catch (error) { value.eligible = false; }
   finally { if (db) db.close(); }

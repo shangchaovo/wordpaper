@@ -51,6 +51,8 @@ test('context watches actual web learning and keeps accounts isolated',()=>{
   run('CFG.quizAutoStart=false;patrickIdleCache.at=0');assert.equal(run('patrickIdleContext().eligible'),false);
   run('CFG.quizAutoStart=true;CFG.srsUserId=2;patrickIdleCache.at=0');assert.equal(run('patrickIdleContext().studyAt'),0);
   run('notePatrickStudy(500,2)');assert.equal(run('patrickIdleContext().studyAt'),500);
+  db.prepare('INSERT INTO user_state VALUES(?,?,?,?,?)').run(2,'settings',JSON.stringify({srsEnabled:false}),1,1000);
+  run('patrickIdleCache.at=0');assert.equal(run('patrickIdleContext().eligible'),false);
 });
 const native=run('buildPatrickJXA({W:190,H:206,words:[],keys:[],frameNames:PATRICK_FRAME,dark:true})');
 new vm.Script(native);
