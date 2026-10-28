@@ -58,7 +58,10 @@ try {
   const source = fs.readFileSync(path.join(__dirname, '../companion.js'), 'utf8');
   const persist = source.slice(source.indexOf('function persistLearningActivity('), source.indexOf('function readReviewState('));
   const writer = source.slice(source.indexOf('function writeReviewState('), source.indexOf('/* 当前词库里所有到期词'));
-  const context = { learningActivity: activity, state: { petMemoryStreamId: 'native' }, console,
+  const persistenceErrors = [];
+  const context = { learningActivity: activity, state: { petMemoryStreamId: 'native' },
+    console: { ...console, error: (...args) => persistenceErrors.push(args.join(' ')) },
+    notePatrickStudy: () => {}, // The idle-clock integration has its own native/unit suite.
     reviewPolicyStore: require('../lib/review-policy-store'), srsPolicy: require('../js/srs-policy'),
     SRS_INTERVALS_MIN: require('../js/srs-policy').INTERVALS_MIN, wordKey: w => w.word + '|' + w.meaning,
     openSrsDb: () => new DatabaseSync(path.join(dir, 'wordpaper.sqlite')), activeUserId: () => userA.id };
@@ -79,6 +82,7 @@ try {
   storage.settleQueuedState(userA.id, 'learningActivity', pending, { revision: 10, value: pending.value });
   assert.equal(storage.metaGet('upstream_queue'), null, 'acknowledged activity clears its queue');
   assert.equal(storage.getState(userB.id).state.learningActivity, undefined);
+  assert.deepEqual(persistenceErrors, [], 'native persistence must not swallow a missing dependency or write error');
   console.log('PASS daily activity: repeat/incorrect/sentence counts, replay/restart/date boundaries, undo, migration, account isolation, 170 native actions and concurrent cloud merge');
 } finally {
   storage?.close(); fs.rmSync(dir, { recursive: true, force: true });

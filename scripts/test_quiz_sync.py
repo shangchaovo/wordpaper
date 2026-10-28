@@ -4,12 +4,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 from e2e import ROOT, PlaywrightError, free_port, sync_playwright, wait_up
 
 
 def main():
+    # This test drives the companion's real sips-rendered native question.
+    # Cross-platform browser/API coverage lives in test_learning_activity.py.
+    if sys.platform != 'darwin':
+        print('SKIP native quiz writeback: requires the macOS companion rasterizer')
+        return
     port, companion_port = free_port(), free_port()
     base = f'http://127.0.0.1:{port}'
     companion_base = f'http://127.0.0.1:{companion_port}'
