@@ -955,6 +955,7 @@ function exampleForWord(library, word) {
 /* 派大星漫游窗状态(伴侣进程侧):TTS 播放中的高亮、当前悬停词由 JXA 窗口本地
  * 管理;这里只保存 config 与尺寸/位置持久化路径。 */
 const PATRICK_POS_PATH = path.join(RUNTIME_ROOT, 'patrick-position.json');
+const patrickIdle = require('./lib/patrick-idle');
 
 function buildPatrickJXA(opts) {
   const meta = {
@@ -963,6 +964,8 @@ function buildPatrickJXA(opts) {
     frameNames: opts.frameNames,
     sheetPath: PATRICK_SHEET, sheetFlipPath: PATRICK_SHEET_FLIP,
     posFile: PATRICK_POS_PATH, closeFile: PET_CLOSED_PATH,
+    idleFile: path.join(RUNTIME_ROOT, 'patrick-idle.json'),
+    idleMasksPath: path.join(ROOT, 'assets', 'patrick', 'skin-masks.json'),
     words: opts.words,
     statusUrl: 'http://127.0.0.1:' + CFG.port + '/pet-word-status.json',
     statusBubblePng: path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`),
@@ -1036,6 +1039,9 @@ function run(argv){
   function reduceMotion(){
     try { return !!$.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion; } catch (e) { return false; }
   }
+
+  var createIdleClock = ${patrickIdle.createIdleClock.toString()};
+  ${fs.readFileSync(path.join(ROOT, 'lib', 'patrick-idle-native.js'), 'utf8')}
 
   function setFrame(){ win.setFrameDisplay($.NSMakeRect(x, y, W, H), true); }
   setFrame();
@@ -1253,6 +1259,10 @@ function run(argv){
       // 点击开窗时的「蓄力→弹起」:整幅精灵缩放 + 下沉/上浮。
       // 用变换套在 sprite 与特效上(气泡不动,否则文字会跟着抖)。
       var sx = 1, sy = 1, dy = 0;
+      if (typeof idleState !== 'undefined' && idleState.phase === 2 && idleState.eligible && st.mode === 'idle' && !reduceMotion()) {
+        var stomp = Date.now() % 9000;
+        if (stomp < 600) dy = Math.abs(Math.sin(stomp / 600 * Math.PI * 2)) * 5;
+      }
       if (st.clickFx) {
         var cp = (Date.now() - st.clickFx.start) / st.clickFx.dur;
         if (cp >= 1) { st.clickFx = null; }
@@ -1289,7 +1299,11 @@ function run(argv){
         tr.rotateByDegrees(a*(Math.sin(t*3.1)*1.7+Math.sin(t*6.2)*m.level*0.7));
         tr.translateXByYBy(-f.size.width/2,-f.size.height*0.15); tr.concat;
       }
+      if (typeof idleState !== 'undefined' && idleState.phase === 2 && idleState.eligible) {
+        R = $.NSMakeRect(R.origin.x + R.size.width*.04, R.origin.y, R.size.width*.92, R.size.height*.88);
+      }
       drawSprite(st.frame, R);
+      if (typeof drawIdleMood === 'function') drawIdleMood(st.frame, R);
       drawSpeechMouth(st.frame, R);
       drawFx(R);
       if (motion) $.NSGraphicsContext.restoreGraphicsState;
@@ -1500,6 +1514,7 @@ function run(argv){
    * 之前是瞬间切到 jump 帧 + 立刻开窗,两个动作各走各的,显得很突变。 */
   function handleClick(){
     var now = Date.now();
+    if (st.quiz && !quizWin && typeof revealIdleQuiz === 'function') { revealIdleQuiz(now); return; }
     if (st.quiz && quizWin && cardKind === 'quiz' && lastQuizGeom) {
       if (now - lastClickAt < 240) return;
       lastClickAt = now;
@@ -1934,6 +1949,7 @@ function run(argv){
     var qh = lastQuizGeom ? lastQuizGeom.h : M.quizH;
     quizWin = makeCardWin(x, y, M.quizPng, qw, qh);
     cardKind = 'quiz';
+    syncQuizWinPosition();
     var qf = quizWin.frame;
     animateCardIn(Math.round(qf.origin.x), Math.round(qf.origin.y));
     quizMtime = 0;   // 子窗重建后重置 mtime 基线,保证新 PNG 一定会触发一次重绘
@@ -1966,6 +1982,7 @@ function run(argv){
   // ---- 主循环 50ms ----
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(){
     var now = Date.now();
+    tickPatrickIdle(now);
     tickSpeakCard(now);
     tickSpeakMotion(now);
     if (bubble && now > bubble.until) { bubble = null; grip.setNeedsDisplay(true); }
@@ -1984,6 +2001,10 @@ function run(argv){
     if (st.mode === 'drag') {
       if (speakPlayer || speakMouth.open>0) grip.setNeedsDisplay(true);
       return;
+    }
+    if (st.quiz && !quizWin && st.hover) {
+      st.target = null; st.mode = 'hover'; st.frame = FR.wave0;
+      grip.setNeedsDisplay(true); return;
     }
     // 悬停 → 挥手 + 气泡
     if (st.hover && !st.quiz && !speakWin && now > speakPendingUntil && st.mode !== 'drag' && st.mode !== 'jump') {
@@ -2004,7 +2025,7 @@ function run(argv){
       st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = now + 1500; }
       hideQuizCard();
     }
-    if (st.quiz) {
+    if (st.quiz && quizWin) {
       // 有特效时不要覆盖帧(答对=开心脸 / 答错=难过脸);特效结束后才回到思考脸。
       if (!st.fx) st.frame = speakMotion.amount>0.05 ? speakingFrame(now) : now - (st.listenTap || 0) < 650 ? FR.happy0 : FR.think0;
       grip.setNeedsDisplay(true);
@@ -2048,7 +2069,7 @@ function run(argv){
     }
     // idle
     if (now >= st.idleHoldUntil) {
-      if (M.roam && Math.random() < 0.5) {
+      if (M.roam && !reduceMotion() && !idleLocked && !idleSleeping && Math.random() < 0.5) {
         var margin = 24;
         // screen 可能是兜底矩形,无碍;但唤醒后宽高会变,每圈现取
         var ms2 = $.NSScreen.mainScreen;
@@ -2063,7 +2084,7 @@ function run(argv){
           st.walkFromX = x; st.walkFromY = y;
           st.walkStart = now;
           // 90–140 pt/s:走路自然,不再是每 tick 跳几十点的瞬移
-          var speed = 90 + Math.random() * 50;          // pt/s
+          var speed = idleState.phase === 2 ? 100 : idleState.phase === 1 ? 45 : 65;
           st.walkDur = Math.max(320, (wdist / speed) * 1000);
           st.walkDist = wdist;
         }
@@ -2072,15 +2093,16 @@ function run(argv){
       }
     }
     if (now >= st.blinkAt && st.mode === 'idle') {
-      playSeq([FR.idle0, FR.blink, FR.idle0], 90, true, null);
+      var resting = idleState.phase === 2 ? FR.angry0 : idleState.phase === 1 ? FR.sad0 : FR.idle0;
+      playSeq([resting, idleState.phase ? resting : FR.blink, resting], 90, true, null);
       st.blinkAt = now + 1800 + Math.random() * 4200;
     }
-    if (!st.animSeq) {
+    if (!st.animSeq && idleState.phase === 0) {
       var r = Math.random();
       if (r < 0.006) playSeq([FR.idle0, FR.lookL, FR.idle0], 280, true, null);
       else if (r < 0.012) playSeq([FR.idle0, FR.lookR, FR.idle0], 280, true, null);
     }
-    st.frame = st.animSeq ? st.animSeqFrame : st.frame;
+    st.frame = st.animSeq ? st.animSeqFrame : idleState.phase === 2 ? FR.angry0 : idleState.phase === 1 ? FR.sad0 : st.frame;
     grip.setNeedsDisplay(true);
   });
 
@@ -2097,6 +2119,7 @@ function run(argv){
       try {
         var d = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
         if (!d || !d.ok) return;
+        if (d.idle) updateIdleContext(d.idle, Date.now());
         lastCmdSeq = Math.max(Number(d.seq) || 0, lastCmdSeq);
         if (d.quizGeom) {
           lastQuizGeom = d.quizGeom; syncQuizWinSize();
@@ -2110,28 +2133,18 @@ function run(argv){
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz') {
             hideSpeakCard();
+            hideQuizCard();
             st.quizResultHideAt = 0;
-            st.quiz = true; st.mode = 'quiz'; st.animSeq = null;
-            bubble = { lines: c.lines, until: Date.now() + (c.ms || 26000) };
-            // 先挥手 180ms(像在"举牌"),再滑出抽查卡
-            playSeq([FR.wave0, FR.wave1, FR.wave0], 90, true, function(){
-              showQuizCard();
-              st.frame = FR.think0;
-              grip.setNeedsDisplay(true);
-              // 卡片滑入(190ms)结束 = 真正上屏的那一刻 → 告诉伴侣"可以念了"。
-              // 由这里回报而不是靠固定延时,音画才对得上。
-              // 卡片滑入动画 190ms;250ms 后 = 卡已停稳,此刻开口
-              $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.25, true, function(tm){
-                tm.invalidate;
-                postUrl('http://127.0.0.1:' + M.port + '/pet-quiz-shown.php', '');
-              });
-            });
+            st.quiz = true; st.mode = 'idle'; st.animSeq = null; bubble = null;
+            // A pending question never pins the pet. Hover reveals the existing
+            // question, and the shown acknowledgement is sent once per quiz.
+            if (st.hover) revealIdleQuiz(Date.now());
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz-end') {
             hideSpeakCard();
             st.quiz = false; if (st.mode === 'quiz') { st.mode = 'idle'; st.idleHoldUntil = Date.now() + 1500; }
             hideQuizCard();
-            bubble = c.lines ? { lines: c.lines, until: Date.now() + (c.ms || 6000) } : null;
+            bubble = st.hover && c.lines ? { lines: c.lines, until: Date.now() + (c.ms || 6000) } : null;
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'answer-card') {
             // 派大星先转头+开心,再滑出卡片(有"它给你看"的感觉)
@@ -2224,7 +2237,7 @@ function run(argv){
 
   // 孤儿自毁 + 心跳
   var missTicks = 0;
-  function petSelfDestruct(){ if (bubbleWin) { try { bubbleWin.orderOut($()); } catch {} bubbleWin = null; } hideSpeakCard(); hideQuizCard(); win.orderOut($()); $.exit(0); }
+  function petSelfDestruct(){ saveIdleClock(); idleTimerWin.orderOut($()); idleNudgeWin.orderOut($()); if (bubbleWin) { try { bubbleWin.orderOut($()); } catch {} bubbleWin = null; } hideSpeakCard(); hideQuizCard(); win.orderOut($()); $.exit(0); }
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2, true, function(){
     missTicks++;
     if (M.ownerPid && OWNER_PPID !== String(M.ownerPid)) petSelfDestruct();
@@ -2243,7 +2256,7 @@ function run(argv){
       }
     });
   });
-  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(3, true, function(){ savePos(); });
+  $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(3, true, function(){ savePos(); saveIdleClock(); });
 
   $.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   $.NSApplication.sharedApplication.run;
@@ -4766,6 +4779,56 @@ function activeUserId(db) {
     return users.length === 1 ? users[0].id : null;
   } catch { return null; }
 }
+let patrickIdleCache = { at: 0, value: null };
+function notePatrickStudy(at, userId) {
+  const db = userId ? null : openSrsDb();
+  try {
+    const id = userId || (db && activeUserId(db));
+    if (id) {
+      if (!state.patrickStudyByUser) state.patrickStudyByUser = {};
+      state.patrickStudyByUser[id] = Math.max(Number(state.patrickStudyByUser[id]) || 0, Number(at) || 0);
+    }
+    patrickIdleCache.at = 0;
+  } finally { if (db) db.close(); }
+}
+function patrickIdleContext() {
+  const now = Date.now();
+  if (patrickIdleCache.value && now - patrickIdleCache.at < 1000) return patrickIdleCache.value;
+  const value = { userKey: '', studyAt: 0, eligible: false };
+  const db = openSrsDb();
+  try {
+    const userId = db && activeUserId(db);
+    if (userId) {
+      value.userKey = String(userId);
+      value.studyAt = Number(state.patrickStudyByUser?.[userId]) || 0;
+      const review = readReviewState(db, userId);
+      const studyEvents = new Set(['learn', 'legacy', 'review-pass', 'mastered', 'forgot', 'fuzzy']);
+      for (const bucket of Object.values(review)) {
+        for (const item of Object.values(bucket?.words || {})) {
+          value.studyAt = Math.max(value.studyAt, Number(item.lastSeenAt) || 0, Number(item.learnedAt) || 0, Number(item.petQuiz?.lastAt) || 0);
+          // Maintenance is not practice: automatic demotion must not cool the pet.
+          for (const event of item.events || []) if (studyEvents.has(event.type)) value.studyAt = Math.max(value.studyAt, Number(event.at) || 0);
+        }
+      }
+      const activityRow = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='learningActivity'").get(userId);
+      const activity = activityRow ? JSON.parse(activityRow.value_json) : {};
+      for (const day of Object.values(activity.days || {})) {
+        for (const event of Object.values(day || {})) {
+          if (!event.canceled && ['learn', 'quiz', 'review', 'sentence'].includes(event.kind)) value.studyAt = Math.max(value.studyAt, Number(event.at) || 0);
+        }
+      }
+      const words = review[CFG.library]?.words || {};
+      const due = Object.values(words).some(item => Number(item.stage) < SRS_INTERVALS_MIN.length && Number(item.due) > 0 && Number(item.due) <= now);
+      const fresh = petFirstPassWords().some(word => !words[wordKey(word)]);
+      const settingsRow = db.prepare("SELECT value_json FROM user_state WHERE user_id=? AND namespace='settings'").get(userId);
+      const settings = settingsRow ? JSON.parse(settingsRow.value_json) : {};
+      value.eligible = settings.srsEnabled !== false && CFG.quizAutoStart !== false && featureOn('betaPetQuiz') && Boolean(due || fresh || patrickQuizState);
+    }
+  } catch (error) { value.eligible = false; }
+  finally { if (db) db.close(); }
+  patrickIdleCache = { at: now, value };
+  return value;
+}
 function syncQuizUser(req) {
   const userId = Number(req.headers['x-wordpaper-user-id']);
   if (!Number.isSafeInteger(userId) || userId <= 0 || CFG.srsUserId === userId) return;
@@ -4774,6 +4837,7 @@ function syncQuizUser(req) {
   try {
     if (!db.prepare('SELECT id FROM users WHERE id=?').get(userId)) return;
     CFG.srsUserId = userId;
+    patrickIdleCache.at = 0;
     saveConfig();
     clearQuizCard(); pendingQuiz = null; quizResultUntil = 0;
     pushPatrickCmd({ cmd: 'quiz-end' });
@@ -4807,6 +4871,7 @@ function persistLearningActivity(event) {
     const value = learningActivity.record(row ? JSON.parse(row.value_json) : null, event);
     const ok = writeReviewState(db, event.userId, value, 'learningActivity');
     db.exec(ok ? 'COMMIT' : 'ROLLBACK');
+    if (ok && !event.canceled) notePatrickStudy(event.at, event.userId);
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch {}
     console.error('[companion] 学习次数保存失败:', error.message);
@@ -6756,7 +6821,7 @@ const server = http.createServer((req, res) => {
     const commands = patrickCmds.filter(c => c.seq > after);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     // quizGeom:当前抽查卡的点击命中区(按内容算的),子窗拿它调窗口高 + 做行命中。
-    return res.end(JSON.stringify({ ok: true, seq: patrickCmdSeq, commands, quizGeom: (displayedQuiz && displayedQuiz.geom) || null }));
+    return res.end(JSON.stringify({ ok: true, seq: patrickCmdSeq, commands, quizGeom: (displayedQuiz && displayedQuiz.geom) || null, idle: patrickIdleContext() }));
   }
   // 抽查:网页把到期词推来 → 派大星弹 4 选 1 抽查卡;作答落回 petMemoryEvents。
   if (url === '/pet-quiz.php') {

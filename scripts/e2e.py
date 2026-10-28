@@ -71,6 +71,9 @@ def main():
                     raise
                 browser = p.chromium.launch(channel="chrome")
             context = browser.new_context(viewport={"width": 1460, "height": 980})
+            # This suite exercises CSV/paste imports, which work without the
+            # optional Excel CDN. A stalled CDN must not block page reloads.
+            context.route('https://cdn.jsdelivr.net/**', lambda route: route.fulfill(status=200, body=''))
             account = context.request.post(base + "/api/auth/register", headers={"Origin": base}, data={
                 "username": "e2e_user_" + str(port), "password": "wordpaper-e2e-password",
             })
@@ -261,9 +264,9 @@ def main():
             page.click("#btn-open-memory")
             check("到期词显示双向作答", page.locator(".memory-answer.forgot").count() >= 1 and page.locator(".memory-answer.remembered").count() >= 1)
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.forgot").click()
-            # Answering now refreshes the authoritative schedule before grading.
-            # Wait for its visible completion instead of reading the old cache.
-            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
+            # Answers now refresh the authoritative review before changing it.
+            # Wait for the actual answer receipt, not merely dispatching a click.
+            page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-result").wait_for(state="visible")
             forgot_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("没记住后重置第一周期", forgot_state["stage"] == 0 and forgot_state["failCount"] == 1 and forgot_state["due"] > page.evaluate("Date.now()"))
             check("没记住后展示中文", page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-meaning.locked").count() == 0)
@@ -279,7 +282,7 @@ def main():
 
             page.click("#btn-open-memory")
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.remembered").click()
-            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
+            page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-result").wait_for(state="visible")
             passed_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("记住了推进下一周期", passed_state["stage"] == 1 and passed_state["due"] > page.evaluate("Date.now()"))
             page.click("#btn-close-memory")
@@ -287,7 +290,7 @@ def main():
             force_review_state(len(page.evaluate("Review.INTERVALS_MIN")) - 1)
             page.click("#btn-open-memory")
             page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-answer.remembered").click()
-            page.locator('.memory-entry.answered', has_text='e2e-memory-word').wait_for()
+            page.locator(".memory-entry", has_text="e2e-memory-word").locator(".memory-result").wait_for(state="visible")
             mastered_state = page.evaluate("p => Review.getWord(p.lib, p.word)", {"lib": lib, "word": memory_word})
             check("全部周期后才真正巩固", mastered_state["stage"] == len(page.evaluate("Review.INTERVALS_MIN")) and mastered_state["due"] is None)
             page.click("#btn-close-memory")
@@ -325,6 +328,7 @@ def main():
             # 同一台 Mac 上的第二个账号:小词灵直接可用(共享本机桌面伴侣),
             # 学习记录仍按账号各自独立保存。
             other_context = browser.new_context(viewport={"width": 1460, "height": 980})
+            other_context.route('https://cdn.jsdelivr.net/**', lambda route: route.fulfill(status=200, body=''))
             other_account = other_context.request.post(base + "/api/auth/register", headers={"Origin": base}, data={
                 "username": "e2e_pet_share_" + str(port), "password": "wordpaper-e2e-password",
             })
