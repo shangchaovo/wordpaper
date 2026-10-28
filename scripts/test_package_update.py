@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-package-update-') as folder:
         copy_app(args.baseline_dmg, installed.parent, temp / 'baseline-mount')
         current = (oldres / 'VERSION').read_text().strip()
         updater_root = oldres
-        assert not (oldres / 'assets/pet-voices.html').exists(), 'Baseline must predate the new menu page'
+        assert tuple(map(int, current.split('.'))) < tuple(map(int, package.VERSION.split('.'))), 'Baseline must be older than the candidate'
         print('PASS using released updater from v' + current, flush=True)
     else:
         oldres.mkdir(parents=True); (installed / 'MacOS').mkdir()
