@@ -28,6 +28,7 @@ test('sleep gaps, screen lock, and no work do not accumulate time', () => {
 test('only new learning clears the clock, repeated snapshots and restart preserve it', () => {
   const c=clock(1080000);c.context({userKey:'1',studyAt:10,eligible:true});assert.equal(c.format(),'18:00');
   const restored=createIdleClock(c.snapshot());restored.context({userKey:'1',studyAt:10,eligible:true});assert.equal(restored.format(),'18:00');
+  restored.context({userKey:'',studyAt:0,eligible:false});assert.equal(restored.format(),'18:00');
   c.context({userKey:'1',studyAt:20,eligible:true});assert.equal(c.snapshot().elapsedMs,0);
   restored.context({userKey:'2',studyAt:1,eligible:true});assert.equal(restored.snapshot().elapsedMs,0);
 });
