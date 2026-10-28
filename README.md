@@ -32,6 +32,8 @@
 
 已安装 **2.6.2 及以上旧版本** 的用户可在 App 中点「检查更新」。**2.6.1 及更早版本**请下载完整 DMG，覆盖「应用程序」里的 WordPaper.app；账号与学习数据保留在原数据目录。新逐词明细从本版开始积累，旧版没有记录的复习与造句细节不会被补造。逾期规则也适用于已有积压词，详细说明见 [复习规则](docs/REVIEW-POLICY.md)。
 
+如果应用内下载因慢速网络超过 5 分钟而超时，可稍后重试，或从 [正式发布页](https://github.com/shangchaovo/wordpaper/releases/tag/companion-v2.6.7) 下载对应芯片的完整 DMG，退出 App 后替换安装。下载失败不会清空原 App 或学习数据。
+
 **线上：[wordpaper.pages.dev](https://wordpaper.pages.dev/)**  
 另有一份 GitHub Pages 镜像：[shangchaovo.github.io/wordpaper](https://shangchaovo.github.io/wordpaper/)
 
