@@ -11,6 +11,7 @@ const net = require('net');
 const { promisify } = require('util');
 const { execFile, spawn } = require('child_process');
 const { openStorage, STATE_NAMESPACES } = require('./lib/storage');
+const srsPolicy = require('./js/srs-policy');
 
 const ROOT = __dirname;
 const LOCAL_ENV_FILE = path.join(ROOT, '.env');
@@ -1405,7 +1406,7 @@ async function handle(req, res) {
     if (mirroring()) {
       const mirrored = await upstream.pushState(namespace, body.value, body.expectedRevision);
       if (mirrored.kind === 'conflict') { json(res, 409, { conflict: true, revision: mirrored.revision, value: mirrored.value }); return; }
-      json(res, 200, { conflict: false, revision: mirrored.revision, updatedAt: Date.now(), queued: mirrored.kind === 'queued' });
+      json(res, 200, { conflict: false, revision: mirrored.revision, updatedAt: Date.now(), queued: mirrored.kind === 'queued', ...(namespace === 'learningActivity' ? { value: mirrored.value } : {}) });
       return;
     }
     const result = storage.putState(session.user.id, namespace, body.value, body.expectedRevision);
@@ -1519,6 +1520,9 @@ function normalizeImportedReview(payload) {
           events: Array.isArray(item.events) ? item.events.slice(-64) : [],
         };
         if (item.lastSeenAt) clean.lastSeenAt = Number(item.lastSeenAt);
+        if (Number(item.scheduledIntervalMs) > 0) clean.scheduledIntervalMs = Number(item.scheduledIntervalMs);
+        if (Number(item.scheduledAt) > 0) clean.scheduledAt = Number(item.scheduledAt);
+        if (srsPolicy.status(item)?.handled && item.overdue.toStage === clean.stage) clean.overdue = item.overdue;
         const existing = dstLib.words[key];
         if (!existing) {
           // dryRun 也要照常统计(只是最后不落库),否则预览永远显示 0
@@ -1543,6 +1547,15 @@ function normalizeImportedReview(payload) {
         const b = clean.due ? Number(clean.due) : Infinity;
         const mergedDue = Math.min(a, b);
         existing.due = Number.isFinite(mergedDue) ? mergedDue : null;
+        // Keep the marker for the schedule actually retained by the merge.
+        // Export/import must not demote an already handled missed review again.
+        if (existing.overdue && !srsPolicy.status(existing)?.handled) delete existing.overdue;
+        if (!existing.overdue && clean.overdue && clean.due === existing.due && clean.stage === existing.stage) existing.overdue = clean.overdue;
+        if (b < a) {
+          delete existing.scheduledIntervalMs; delete existing.scheduledAt;
+          if (clean.scheduledIntervalMs) existing.scheduledIntervalMs = clean.scheduledIntervalMs;
+          if (clean.scheduledAt) existing.scheduledAt = clean.scheduledAt;
+        }
         existing.learnedCount = Math.max(Number(existing.learnedCount) || 0, clean.learnedCount);
         existing.reviewCount = Math.max(Number(existing.reviewCount) || 0, clean.reviewCount);
         existing.successCount = Math.max(Number(existing.successCount) || 0, clean.successCount);
@@ -1698,6 +1711,11 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('listening', () => {
+  const maintainReviews = () => {
+    try { storage.reconcileReviews(); } catch (error) { console.error('[review] overdue policy:', error.message); }
+  };
+  maintainReviews();
+  setInterval(maintainReviews, 30000).unref();
   console.log(`WordPaper running at http://${HOST}:${PORT}`);
   console.log(`mode=${MODE} data=${storage.databasePath}`);
   if (MODE === 'public') console.log('desktop companion endpoints are disabled; expose only this app port behind HTTPS');

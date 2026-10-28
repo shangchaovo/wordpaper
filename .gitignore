@@ -13,6 +13,7 @@ runtime-data/
 
 # render-test output
 scripts/out_v3/
+scripts/out_learning/
 
 # companion one-click zip (rebuilt on demand by server /companion.zip)
 scripts/每日壁纸伴侣.zip

@@ -4,7 +4,7 @@
   const NS = 'wp:';
   const STATE_KEYS = [
     'settings', 'uiTheme', 'customWords', 'knownWords', 'reminders', 'engine',
-    'review', 'seeded', 'moduleLayout', 'hiddenModules', 'petMemoryCursor', 'petSyncCursor', 'dragHint', 'dailyPlan',
+    'review', 'seeded', 'moduleLayout', 'hiddenModules', 'petMemoryCursor', 'petSyncCursor', 'dragHint', 'dailyPlan', 'learningActivity',
   ];
   let cache = {};
   let revisions = {};
@@ -148,6 +148,11 @@
       stateEpoch++;
       revisions[key] = Number(body.revision) || snapshot.expectedRevision + 1;
       const latest = pending[key];
+      if (key === 'learningActivity' && body.value) {
+        cache[key] = window.LearningActivity.merge(body.value, latest?.value);
+        localSet(userPrefix + key, cache[key]);
+        if (latest && JSON.stringify(latest.value) !== serialized) latest.value = cache[key];
+      }
       if (latest && JSON.stringify(latest.value) === serialized && latest.expectedRevision === snapshot.expectedRevision) {
         delete pending[key];
       } else if (latest) {

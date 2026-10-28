@@ -129,7 +129,7 @@ function makeClient(base) {
     assert.equal(j.learning, 1, 'learning count');
     assert.ok(Array.isArray(j.words) && j.words.length === 2);
     const amuse = j.words.find(w => w.word === 'amuse');
-    assert.equal(amuse.stage, 2);
+    assert.equal(amuse.stage, 1, 'old overdue schedule is demoted once before export');
     assert.equal(amuse.reviewCount, 2);
     assert.ok(amuse.due && amuse.due.startsWith('20'), 'due must be ISO string');
     // 不夹带账号敏感字段
@@ -174,8 +174,9 @@ function makeClient(base) {
     assert.equal(real.status, 200, JSON.stringify(real.data));
     assert.equal(real.data.imported, 2);
     assert.equal(real.data.added, 0, 're-importing the same data adds nothing');
-    const afterReal = (await a.req('/api/export/progress?format=json')).data.total;
-    assert.equal(afterReal, 2, 'total unchanged after idempotent import');
+    const roundTrip = (await a.req('/api/export/progress?format=json')).data;
+    assert.equal(roundTrip.total, 2, 'total unchanged after idempotent import');
+    assert.equal(roundTrip.words.find(w => w.word === 'amuse').stage, 1, 'round-trip preserves the one-time overdue marker');
 
     // 5) 合并语义:导入一条 stage 更高的同词 → 升级,且 due 取更早
     const bumped = {
@@ -190,7 +191,7 @@ function makeClient(base) {
     assert.equal(up.data.upgraded, 1, 'higher stage wins, got: ' + JSON.stringify(up.data));
     const j2 = (await a.req('/api/export/progress?format=json')).data;
     const amuse2 = j2.words.find(w => w.word === 'amuse');
-    assert.equal(amuse2.stage, 5, 'stage upgraded');
+    assert.equal(amuse2.stage, 4, 'imported stage 5 with a different old due is demoted once');
     assert.equal(amuse2.failCount, 1, 'counters merged (max)');
 
     // 6) 兼容完整备份格式 { format:'wordpaper-backup', state:{ review } }
@@ -215,8 +216,9 @@ function makeClient(base) {
       body: JSON.stringify({ payload: jsonExport, dryRun: false }),
     });
     assert.equal(bImport.status, 200);
-    const bTotal = (await bReg.req('/api/export/progress?format=json')).data.total;
-    assert.equal(bTotal, 2, 'account B sees only its own imported words');
+    const bExport = (await bReg.req('/api/export/progress?format=json')).data;
+    assert.equal(bExport.total, 2, 'account B sees only its own imported words');
+    assert.equal(bExport.words.find(w => w.word === 'amuse').stage, 1, 'a restored backup retains the overdue marker');
     const aTotal = (await a.req('/api/export/progress?format=json')).data.total;
     assert.equal(aTotal, 3, 'account A unaffected by B import');
 

@@ -20,7 +20,7 @@ try {
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
 </script>
-<link rel="stylesheet" href="css/styles.css?v=20261027a">
+<link rel="stylesheet" href="css/styles.css?v=20261029-overdue">
 <link rel="stylesheet" href="css/ui-themes.css?v=20261023d">
 <link rel="stylesheet" href="css/motion.css?v=20261023e">
 <link rel="stylesheet" href="css/liquid-glass.css?v=2026102702">
@@ -181,6 +181,8 @@ try {
         <p class="hint">在桌面小词灵点词卡完成首轮；该词会立即移出并自动补入新词，也可以前后翻页。到期后在记忆本完成后续轮次。</p>
         <div id="srs-status" class="srs-status">已记 0 词 · 待复习 0 词</div>
         <div id="srs-records" class="srs-records" aria-live="polite"></div>
+        <div id="srs-overdue" class="srs-overdue" aria-live="polite" hidden></div>
+        <details class="srs-policy-help"><summary>逾期怎样处理</summary><p class="hint">到期后还有随本轮间隔变化的宽限期，临近结束会再次提醒。超过宽限期降一轮，同一次漏复习只降一次，仍可立即复习；第 1 轮不再降低。旧的逾期词从本版起同样处理，已完成的学习次数保留。</p><p class="hint">宽限期按记忆衰减模型估算，是本应用的排期规则，并非对你是否遗忘的测量。关闭复习提醒不会暂停逾期计时。</p><div id="srs-grace-table" class="hint"></div></details>
         <button id="btn-open-memory" class="btn primary srs-learn" type="button">打开艾宾浩斯记忆本 →</button>
         <div id="srs-countdown" class="srs-countdown" hidden>
           <span class="srs-cd-icon"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg></span>
@@ -190,30 +192,38 @@ try {
 
       <section id="module-plan" class="card module-card">
         <div class="card-head">
-          <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-flag"/></svg></span>学习规划</h2>
+          <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-flag"/></svg></span>今日学习目标</h2>
         </div>
-        <p class="hint">定一个目标（每天几个词），配合打卡和词典通关。数据存你自己的账号里，随时可调。</p>
+        <p class="hint">每一遍练习都有进度。今天看练了多少次，长期记忆交给复习周期。</p>
+        <div class="plan-metrics" aria-label="今天的学习次数" aria-live="polite">
+          <div class="plan-metric selected"><span>学习合计</span><b id="plan-count-total">0</b><small>次学习</small></div>
+          <div class="plan-metric"><span>单词背诵</span><b id="plan-count-recite">0</b><small>次练习</small></div>
+          <div class="plan-metric"><span>造句练习</span><b id="plan-count-sentence">0</b><small>次输出</small></div>
+        </div>
         <div class="plan-grid">
-          <label class="row"><span>每天目标(词)</span><input id="inp-plan-daily" type="number" min="1" max="200" value="10"></label>
+          <label class="row"><span>达标看什么</span><select id="sel-plan-metric"><option value="total">学习总次数（背诵 + 造句）</option><option value="recite">单词背诵次数</option><option value="sentence">造句次数</option></select></label>
+          <label class="row"><span>每天目标（次）</span><input id="inp-plan-daily" type="number" min="1" max="1000" step="1" value="10"></label>
+          <p id="plan-rule" class="hint plan-rule"></p>
           <div class="plan-row">
             <span class="plan-label">今日进度</span>
-            <div class="plan-bar"><div id="plan-bar-fill"></div></div>
-            <b id="plan-progress-text">0/10</b>
+            <div class="plan-bar" role="progressbar" aria-label="今日学习目标完成量" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0"><div id="plan-bar-fill"></div></div>
+            <b id="plan-progress-text">0/10 次</b>
           </div>
           <div class="plan-row plan-streak">
             <span class="plan-label">连续打卡</span>
-            <span id="plan-streak">🔥 0 天</span>
+            <span id="plan-streak">0 天</span>
           </div>
         </div>
-        <div class="plan-dict">
-          <div class="plan-dict-head"><span>词典通关</span><span id="plan-dict-progress" class="plan-dict-progress">0%</span></div>
-          <div class="plan-bar slim"><div id="plan-dict-fill"></div></div>
-          <div id="plan-dict-eta" class="hint plan-eta">按当前速度，通关还需 -- 天</div>
-        </div>
         <div id="plan-checkin-btnrow">
-          <button id="btn-plan-checkin" class="btn primary small" type="button">今日已学够，打卡 ✓</button>
+          <button id="btn-plan-checkin" class="btn primary small" type="button" disabled>还差 10 次学习</button>
         </div>
+        <p id="plan-checkin-note" class="hint" hidden></p>
         <div id="plan-history" class="plan-history"></div>
+        <details id="plan-records" class="plan-records">
+          <summary>当天单词与下次复习 <span id="plan-record-count"></span></summary>
+          <label class="row"><span>学习日期</span><input id="plan-record-date" type="date"></label>
+          <div id="plan-word-records" class="plan-word-records" aria-live="polite"></div>
+        </details>
       </section>
 
       <details id="module-automation" class="card module-card">
@@ -477,6 +487,7 @@ try {
       <button id="btn-close-memory" class="modal-close" type="button" title="关闭" aria-label="关闭记忆本">✕</button>
     </div>
     <div id="memory-summary" class="memory-summary"></div>
+    <p class="hint">到期后请在宽限期内完成复习。超时只降低一轮，次数与学习记录保留；词卡会标出降级倒计时和下一次复习的具体时间。</p>
     <div class="memory-export">
       <span class="memory-export-hint">数据是你的，随时可以带走：</span>
       <a class="chip" href="api/export/progress?format=csv" download>导出表格 CSV</a>
@@ -486,6 +497,11 @@ try {
         <input id="file-import-progress" type="file" accept=".json,application/json" hidden>
       </label>
       <span id="memory-import-status" class="memory-import-status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="memory-search">
+      <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="memory-search-input" type="search" placeholder="搜索单词或释义" aria-label="搜索记忆本单词或释义">
+      <button id="memory-search-clear" type="button" hidden aria-label="清空搜索">清空</button>
     </div>
     <div id="memory-notebook-list" class="memory-notebook-list" aria-live="polite"></div>
     <button id="btn-enable-srs-notice" class="chip srs-notice" type="button">开启系统复习提醒</button>
@@ -607,15 +623,17 @@ try {
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 <!-- ?v= busts browser cache — bump after any js/ change -->
-<script src="js/store.js?v=2026102702"></script>
+<script src="js/srs-policy.js?v=20261029a"></script>
+<script src="js/learning-activity.js?v=20261029a"></script>
+<script src="js/store.js?v=20261028-activity"></script>
 <script src="js/words.js?v=20260810j"></script>
 <script src="js/importer.js?v=20260810f"></script>
 <script src="js/ocr.js?v=20260810f"></script>
 <script src="js/reminders.js?v=20260810f"></script>
-<script src="js/review.js?v=20260812a"></script>
+<script src="js/review.js?v=20261029-policy"></script>
 <script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20261028-library"></script>
+<script src="js/app.js?v=20261029-v266"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

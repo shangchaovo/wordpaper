@@ -121,6 +121,70 @@ test('late image conversion cannot overwrite a newer expanded card or resurrect 
   assert.equal(fs.existsSync(png), false);
 });
 
+test('overdue maintenance demotes once and warns even while an unanswered quiz is open', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE user_state(user_id INTEGER, namespace TEXT, value_json TEXT, revision INTEGER, updated_at INTEGER); CREATE TABLE app_meta(key TEXT PRIMARY KEY, value TEXT)');
+  ctx.testDb = db;
+  run(`openSrsDb = () => ({ prepare: (...args) => testDb.prepare(...args), exec: sql => testDb.exec(sql), close() {} });
+    activeUserId = () => 1; patrickVisible = true; quizResultUntil = 0; sentenceClosedAt = 0; sentenceWinChild = null;
+    state.reviewNoticeKeys = {};
+    writeReviewState(testDb, 1, {cet4:{words:{
+      'late|逾期':{word:{word:'late',meaning:'逾期'}, stage:3, due:Date.now()-40*3600000, reviewCount:5, failCount:1},
+      'soon|即将':{word:{word:'soon',meaning:'即将'}, stage:1, due:Date.now()-60000}
+    }}});
+    offerQuiz([{word:'late',meaning:'逾期',stage:3,due:Date.now()-40*3600000}], 'cet4', 1);
+    reviewMaintenanceTick();`);
+  const saved = run("readReviewState(testDb, 1).cet4.words['late|逾期']");
+  assert.equal(saved.stage, 2);
+  assert.equal(saved.failCount, 1);
+  assert.equal(saved.reviewCount, 5);
+  assert.equal(run('patrickQuizState.stage'), 2);
+  const bubbleRender = renders.at(-1);
+  const bubbleSvg = fs.readFileSync(bubbleRender[1][3], 'utf8');
+  if (process.argv[2] === '--policy-fixture') fs.writeFileSync(path.resolve(process.argv[3]), bubbleSvg);
+  assert.match(bubbleSvg, /soon/);
+  assert.match(bubbleSvg, /还有.*降到第/);
+  assert.match(bubbleSvg, /已从第 4 轮降到第 3 轮/);
+  fs.writeFileSync(bubbleRender[1].at(-1), 'rendered warning image');
+  bubbleRender.at(-1)(null);
+  assert.equal(run('patrickCmds.at(-1).cmd'), 'bubble', 'publish the rendered warning before telling the native window to show it');
+  assert.match(run('patrickCmds.at(-1).lines[0].text'), /soon.*还有/);
+  assert.equal(run('Object.keys(state.reviewNoticeKeys).length'), 2);
+  const keys = run('JSON.stringify(state.reviewNoticeKeys)');
+  run('reviewMaintenanceTick()');
+  assert.equal(run('JSON.stringify(state.reviewNoticeKeys)'), keys, 'deduplicated across maintenance passes');
+  assert.equal(run("readReviewState(testDb, 1).cet4.words['late|逾期'].events.length"), 1);
+  assert.equal(db.prepare("SELECT value_json FROM user_state WHERE namespace='learningActivity'").get(), undefined, 'automatic policy is not practice');
+  // The saved notice keys survive companion restart (loadState reads this file).
+  const onDisk = JSON.parse(fs.readFileSync(path.join(temp, 'state.json'), 'utf8'));
+  assert.equal(Object.keys(onDisk.reviewNoticeKeys).length, 2);
+  run(`clearQuizCard(); sentenceWinChild = {}; state.reviewNoticeKeys = {}; reviewMaintenanceTick()`);
+  assert.equal(run('Object.keys(state.reviewNoticeKeys).length'), 0, 'defer notifications during sentence writing');
+  run('sentenceWinChild = null; reviewMaintenanceTick()');
+  assert.equal(run('Object.keys(state.reviewNoticeKeys).length'), 2);
+  db.close();
+});
+
+test('first-pass practice creates a next-review time and word log while the workspace is closed', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE user_state(user_id INTEGER, namespace TEXT, value_json TEXT, revision INTEGER, updated_at INTEGER); CREATE TABLE app_meta(key TEXT PRIMARY KEY, value TEXT)');
+  ctx.testDb = db;
+  run(`const firstPassEvent = {action:'learn', activityId:'first-pass-log', userId:1, library:'cet4', at:Date.now(), word:{word:'schedule',meaning:'排期'}};
+    persistLearningActivity(firstPassEvent);`);
+  const item = run("readReviewState(testDb, 1).cet4.words['schedule|排期']");
+  assert.equal(item.stage, 0);
+  assert.equal(item.due, run('firstPassEvent.at + 20*60000'));
+  assert.equal(run('firstPassEvent.srsApplied'), true);
+  run('persistLearningActivity(firstPassEvent)');
+  const value = JSON.parse(db.prepare("SELECT value_json FROM user_state WHERE namespace='learningActivity'").get().value_json);
+  const entries = Object.values(value.days).flatMap(Object.values);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].word.word, 'schedule');
+  assert.equal(entries[0].nextDue, item.due);
+  assert.equal(run("readReviewState(testDb, 1).cet4.words['schedule|排期'].events.length"), 1);
+  db.close();
+});
+
 if (process.argv[2] === '--fixtures') {
   const output = path.resolve(process.argv[3]);
   fs.mkdirSync(output, { recursive: true });
@@ -146,5 +210,6 @@ for (const job of renders) {
   if (job[0] !== 'sips') continue;
   for (const filename of [job[1][3], job[1].at(-1)]) { try { fs.unlinkSync(filename); } catch {} }
 }
+try { fs.unlinkSync(path.join(os.tmpdir(), `dw_status_bubble-${process.pid}.png`)); } catch {}
 console.log(`${passed} passed; ${failed} failed`);
 if (failed) process.exitCode = 1;

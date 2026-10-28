@@ -40,9 +40,9 @@ const ctx=vm.createContext({console,Buffer,URL,__dirname:root,
 const source=fs.readFileSync(path.join(root,'companion.js'),'utf8');vm.runInContext(source.slice(0,source.indexOf('const server = http.createServer(')),ctx);
 const run=s=>vm.runInContext(s,ctx);
 const db=new DatabaseSync(':memory:');
-db.exec('CREATE TABLE users(id INTEGER); INSERT INTO users VALUES(1),(2); CREATE TABLE user_state(user_id INTEGER, namespace TEXT, value_json TEXT, revision INTEGER, updated_at INTEGER)');
+db.exec('CREATE TABLE users(id INTEGER); INSERT INTO users VALUES(1),(2); CREATE TABLE user_state(user_id INTEGER, namespace TEXT, value_json TEXT, revision INTEGER, updated_at INTEGER); CREATE TABLE app_meta(key TEXT PRIMARY KEY,value TEXT)');
 ctx.testDb=db;
-run(`openSrsDb=()=>({prepare:(...args)=>testDb.prepare(...args),close(){}});CFG.srsUserId=1;CFG.library='custom';
+run(`openSrsDb=()=>({prepare:(...args)=>testDb.prepare(...args),exec:(...args)=>testDb.exec(...args),close(){}});CFG.srsUserId=1;CFG.library='custom';
   featureOn=()=>true;petFirstPassWords=()=>[{word:'hello',meaning:'你好'}];`);
 test('context watches actual web learning and keeps accounts isolated',()=>{
   db.prepare('INSERT INTO user_state VALUES(?,?,?,?,?)').run(1,'review',JSON.stringify({custom:{words:{'hello|你好':{word:{word:'hello',meaning:'你好'},stage:1,due:Date.now()+60000,lastSeenAt:100}}}}),1,999);
@@ -54,6 +54,31 @@ test('context watches actual web learning and keeps accounts isolated',()=>{
   run('notePatrickStudy(500,2)');assert.equal(run('patrickIdleContext().studyAt'),500);
   db.prepare('INSERT INTO user_state VALUES(?,?,?,?,?)').run(2,'settings',JSON.stringify({srsEnabled:false}),1,1000);
   run('patrickIdleCache.at=0');assert.equal(run('patrickIdleContext().eligible'),false);
+});
+test('overdue maintenance does not reset idle, while completed sentences do',()=>{
+  const now=Date.now();
+  const word={word:'overdue',meaning:'逾期'};
+  db.prepare('UPDATE user_state SET value_json=? WHERE user_id=1 AND namespace=?').run(JSON.stringify({custom:{words:{'overdue|逾期':{
+    word,stage:3,due:now-86400000,lastSeenAt:100,events:[{at:100,type:'review-pass'}]
+  }}}}),'review');
+  run('CFG.srsUserId=1;patrickIdleCache.at=0');
+  assert.equal(run('patrickIdleContext().studyAt'),100);
+  const review=JSON.parse(db.prepare("SELECT value_json FROM user_state WHERE user_id=1 AND namespace='review'").get().value_json);
+  assert.equal(review.custom.words['overdue|逾期'].stage,2);
+  assert.equal(review.custom.words['overdue|逾期'].events.at(-1).type,'overdue-demotion');
+  // A settled hot clock must stay hot when its next read only applies policy.
+  const saved=createIdleClock({userKey:'1',studyAt:100,elapsedMs:1080000});saved.context(run('patrickIdleContext()'));
+  assert.equal(saved.format(),'18:00');
+  const day=new Date().toLocaleDateString('en-CA');
+  db.prepare('INSERT INTO user_state VALUES(?,?,?,?,?)').run(1,'learningActivity',JSON.stringify({days:{[day]:{
+    practiced:{kind:'sentence',at:now,library:'custom',word},
+    undone:{kind:'review',at:now+1000,canceled:true},
+    maintenance:{kind:'overdue-demotion',at:now+2000}
+  }}}),1,now);
+  run('patrickIdleCache.at=0');assert.equal(run('patrickIdleContext().studyAt'),now);
+  saved.context(run('patrickIdleContext()'));assert.equal(saved.snapshot().elapsedMs,0);
+  run(`notePatrickStudy(${now},1);notePatrickStudy(100,1)`);
+  assert.equal(run('state.patrickStudyByUser[1]'),now);
 });
 const native=run('buildPatrickJXA({W:190,H:206,words:[],keys:[],frameNames:PATRICK_FRAME,dark:true})');
 new vm.Script(native);

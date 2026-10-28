@@ -411,6 +411,29 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 .memory-pill b { color:var(--accent-2); }
 .memory-pill-forgot { background:#fff7f1; border-color:#f2c8ad; }
 /* 学习规划模块 */
+.plan-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; margin:14px 0; }
+.plan-metric { display:flex; flex-direction:column; gap:5px; padding:11px 8px; border:1px solid var(--line); border-radius:12px; color:var(--sub); }
+.plan-metric.selected { border-color:var(--accent-2); background:color-mix(in srgb, var(--accent-2) 8%, transparent); }
+.plan-metric > span { font-size:11px; font-weight:700; }
+.plan-metric > b { color:var(--ink); font-size:27px; line-height:1.15; font-variant-numeric:tabular-nums; }
+.plan-metric > small { font-size:10px; }
+.plan-rule { margin:0; min-height:3em; line-height:1.6; }
+.srs-overdue { margin:10px 0; padding:10px; border:1px solid var(--line); border-left:3px solid #b98234; border-radius:10px; }
+.srs-overdue-title { font-size:12px; font-weight:750; margin-bottom:5px; }
+.srs-overdue button { display:block; width:100%; text-align:left; color:var(--ink); background:transparent; border:0; border-top:1px solid var(--line); padding:8px 0; cursor:pointer; font:inherit; overflow-wrap:anywhere; }
+.srs-overdue button span { display:block; font-size:11px; color:var(--sub); margin-top:3px; line-height:1.6; }
+.srs-policy-help, .plan-records { margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }
+.srs-policy-help summary, .plan-records summary { font-size:12px; font-weight:700; cursor:pointer; }
+.srs-policy-help .hint { margin:8px 0; line-height:1.65; }
+.plan-records .row { margin-top:10px; }
+.plan-word-records { max-height:360px; overflow:auto; overscroll-behavior:contain; }
+.plan-word-record { padding:10px 0; border-top:1px solid var(--line); font-size:11px; line-height:1.65; overflow-wrap:anywhere; }
+.plan-word-record b { display:block; font-size:13px; color:var(--ink); }
+.plan-word-record span, .plan-word-record small { display:block; color:var(--sub); }
+.memory-schedule, .memory-overdue { display:block; font-size:11px; color:var(--sub); line-height:1.65; margin-top:5px; }
+.memory-overdue { padding:6px 8px; border-left:2px solid #b98234; }
+#memory-modal .memory-entry.due { padding-bottom:64px; }
+.plan-grid select { min-width:0; max-width:100%; }
 .plan-grid { display:flex; flex-direction:column; gap:9px; margin-bottom:10px; }
 .plan-row { display:flex; align-items:center; gap:8px; font-size:12.5px; }
 .plan-label { flex:0 0 auto; color:var(--sub); font-weight:700; min-width:56px; }
@@ -420,10 +443,6 @@ textarea { width: 100%; resize: vertical; margin-bottom: 8px; }
 .plan-bar > div.done { background:linear-gradient(90deg,#3f9e6b,#69c78f); }
 #plan-progress-text { font-size:12px; color:var(--ink); min-width:44px; text-align:right; }
 #plan-streak { font-size:12.5px; font-weight:800; color:var(--accent-2); }
-.plan-dict { margin:10px 0; padding-top:10px; border-top:1px dashed var(--line); }
-.plan-dict-head { display:flex; justify-content:space-between; font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:5px; }
-.plan-dict-progress { color:var(--accent-2); }
-.plan-eta { margin-top:5px; }
 #plan-checkin-btnrow { margin-bottom:8px; }
 #btn-plan-checkin:disabled { opacity:.55; cursor:default; }
 .plan-history { display:flex; gap:4px; flex-wrap:wrap; }
