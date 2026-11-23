@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Isolated launcher: native registration/readiness, reuse, and update restart."""
+from contextlib import ExitStack
 import http.server
 import importlib.util
 import json
@@ -25,6 +26,22 @@ def free_port():
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
 
+def recently_closed_port():
+    with socket.socket() as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('127.0.0.1', 0)); server.listen()
+        addr = server.getsockname()
+        with socket.create_connection(addr) as client:
+            peer, _ = server.accept()
+            peer.close()  # Local active close leaves the server port in TIME_WAIT.
+            assert client.recv(1) == b''
+    return addr[1]
+
+def stop_test_process(proc):
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait(timeout=8)
+
 def wait_for(fn, timeout=30):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -34,7 +51,7 @@ def wait_for(fn, timeout=30):
         time.sleep(.15)
     raise AssertionError('timed out')
 
-with tempfile.TemporaryDirectory(prefix='wordpaper-launcher-test-') as folder:
+with tempfile.TemporaryDirectory(prefix='wordpaper-launcher-test-') as folder, ExitStack() as resources:
     temp = Path(folder)
     app = temp / 'WordPaper.app'
     res = app / 'Contents/Resources'
@@ -60,7 +77,13 @@ with tempfile.TemporaryDirectory(prefix='wordpaper-launcher-test-') as folder:
     # Replace only the dialog executable in this temporary launcher copy.
     launcher.write_text(package.LAUNCHER.replace('/usr/bin/osascript', shlex.quote(str(fake_dialog))))
     launcher.chmod(0o755)
-    port, comp = free_port(), free_port()
+    port = recently_closed_port()
+    # lsof shows this separate IPv6-only listener as *:port, as it can for
+    # interface-scoped macOS services. IPv4 loopback can use the same number.
+    other = resources.enter_context(socket.socket(socket.AF_INET6, socket.SOCK_STREAM))
+    other.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    other.bind(('::', 0)); other.listen()
+    comp = other.getsockname()[1]
     (state / 'port.json').write_text(json.dumps({'port': port}))
     config = temp / 'config.json'
     config.write_text(json.dumps({'autoSetWallpaper': False, 'petEnabled': False, 'hotkeyEnabled': False}))
@@ -91,6 +114,16 @@ updater.applyUpdate=async(current,target)=>{
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     base = f'http://127.0.0.1:{port}'
     def health(): return json.load(opener.open(base + '/healthz', timeout=1))
+    # Leave a real bundle companion without its server. The launcher should
+    # reclaim that exact PID while allowing the unrelated wildcard to survive.
+    old = subprocess.Popen(['node', 'companion.js'], cwd=res,
+        env={**env, 'WORDPAPER_PORT': str(comp), 'WORDPAPER_WEB_ORIGIN': f'http://localhost:{port}'},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    resources.callback(stop_test_process, old)
+    def old_companion_started():
+        req = urllib.request.Request(f'http://127.0.0.1:{comp}/menu-status.json', headers={'X-WordPaper-Local': '1'})
+        return json.load(opener.open(req, timeout=1)).get('ownerPid') == old.pid
+    wait_for(old_companion_started)
     proc = subprocess.Popen(['/bin/bash', str(launcher)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
         wait_for(lambda: health()['ok'])
@@ -108,6 +141,10 @@ updater.applyUpdate=async(current,target)=>{
             request = urllib.request.Request(companion_base + '/menu-status.json', headers={'X-WordPaper-Local': '1'})
             return json.load(opener.open(request, timeout=2))
         companion_before = companion_status()['ownerPid']
+        assert companion_before != old.pid and old.wait(timeout=5) is not None
+        with socket.create_connection(('::1', comp), timeout=1):
+            pass
+        print('PASS saved TIME_WAIT port retained; stale loopback companion replaced alongside independent wildcard', flush=True)
         # Simulate a companion previously claimed by a different App/origin.
         # Reopening must update the existing process, not rely on its startup env.
         other_app = temp / 'Previous WordPaper.app'
@@ -199,6 +236,50 @@ updater.applyUpdate=async(current,target)=>{
     assert '请先把左侧的 WordPaper 拖到右边' in (logs / 'dialog.log').read_text()
     assert not (logs / 'open.log').exists(), 'Translocation error unexpectedly opened Finder'
     print('PASS DMG translocation shows its instruction without opening a random Finder folder', flush=True)
+
+    # Exercise the raw foreign-owner path without launching any real dialog.
+    # On Darwin a reusable exact bind can coexist with an IPv4 wildcard.
+    # On hosts where the wildcard excludes loopback it must be protected.
+    for host in ('127.0.0.1', '0.0.0.0'):
+        with socket.socket() as foreign:
+            foreign.bind((host, 0)); foreign.listen()
+            foreign_port = foreign.getsockname()[1]
+            with socket.socket() as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    probe.bind(('127.0.0.1', foreign_port)); probe.listen()
+                    allows_loopback = True
+                except OSError:
+                    allows_loopback = False
+            if host == '0.0.0.0' and allows_loopback:
+                # Darwin permits these sockets to coexist. Also exercise owner
+                # discovery with a failed-bind fixture and this real wildcard PID.
+                owner_function = package.LAUNCHER.split('loopback_listeners() {', 1)[1].split('stop_old_bundle_chain()', 1)[0]
+                script = 'pick_port() { return 1; }\nloopback_listeners() {' + owner_function + 'loopback_listeners "$1"'
+                owners = subprocess.check_output(['/bin/bash', '-c', script, 'probe', str(foreign_port)], text=True)
+                assert owners.split() == [str(os.getpid())]
+            case = temp / ('foreign-' + host); case.mkdir()
+            case_logs = case / 'logs'; case_logs.mkdir()
+            case_ready = case / 'ready.json'
+            case_env = {**env, 'PORT':str(free_port()), 'WORDPAPER_COMPANION_PORT':str(foreign_port),
+                'WORDPAPER_DATA_DIR':str(case/'state'), 'WORDPAPER_LOG_DIR':str(case_logs),
+                'WORDPAPER_NATIVE_READY_FILE':str(case_ready)}
+            launched = subprocess.Popen(['/bin/bash', str(launcher)], env=case_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                if allows_loopback:
+                    wait_for(lambda: case_ready.exists())
+                    assert launched.poll() is None
+                else:
+                    assert launched.wait(timeout=20) != 0 and not case_ready.exists()
+                    assert '被其它程序占用' in (case_logs/'dialog.log').read_text()
+                assert str(os.getpid()) in subprocess.check_output(['lsof', '-nP', '-a', '-p', str(os.getpid()),
+                    f'-tiTCP:{foreign_port}', '-sTCP:LISTEN'], text=True).split()
+            finally:
+                if launched.poll() is None:
+                    os.killpg(launched.pid, signal.SIGTERM)
+                    launched.wait(timeout=12)
+            print(f'PASS foreign listener {host} preserved; loopback bindable={allows_loopback}', flush=True)
 
     # Use HTTP fixtures for malformed/old companion registration responses.
     # The launcher executes its actual reuse branch without spawning any service.

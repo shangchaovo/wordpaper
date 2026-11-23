@@ -191,22 +191,26 @@ export HOST="${HOST:-127.0.0.1}"
 # 端口挑选:优先用户显式 PORT;否则从 8770 起找可绑定的(macOS AirPlay/sharingd
 # 常驻占 8770,IPv6/IPv4 都会被拒)。8771 保留给伴侣。launcher 选定后,server 仍是
 # fail-fast 绑定语义(不匹配就起不来,不会静默漂移)。
-pick_port() {  # $1=起始端口;打印第一个可绑定的端口,失败打印空
-  /usr/bin/python3 -c 'import socket, sys
+# Pass "exact" to probe the companion port itself, including 8771.
+pick_port() {
+  /usr/bin/python3 - "$1" "${2:-main}" <<'PYPORT'
+import socket, sys
 start = int(sys.argv[1])
-skip = {8771}
-for port in range(start, start + 30):
-    if port in skip:
+exact = sys.argv[2] == "exact"
+for port in range(start, min(start + (1 if exact else 30), 65536)):
+    if not exact and port == 8771:
         continue
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", port))
-        sock.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            sock.listen(1)
+        except OSError:
+            continue
         print(port)
         sys.exit(0)
-    except OSError:
-        continue
-sys.exit(1)' "$1"
+sys.exit(1)
+PYPORT
 }
 # 端口粘滞:上次选过的口存 ~/.wordpaper/port.json,下次优先复用 — 浏览器书签/已开
 # 标签页的 localhost:PORT 在重启后仍然有效(否则每次自动换口,老标签页会 refused)。
@@ -285,9 +289,22 @@ require_native_workspace() {
 bundle_process() {
   lsof -a -p "$1" -d cwd -Fn 2>/dev/null | grep -q "WordPaper.app/Contents/Resources"
 }
+# macOS can report an interface-scoped socket as *:port. Probe the address
+# Node will bind, then prefer its exact IPv4 owner over coexisting wildcards.
+loopback_listeners() {
+  local port="$1" owners
+  pick_port "$port" exact >/dev/null && return 0
+  owners="$(lsof -nP -ti4TCP@127.0.0.1:"$port" -sTCP:LISTEN 2>/dev/null)"
+  if [ -n "$owners" ]; then
+    echo "$owners"
+  elif ! pick_port "$port" exact >/dev/null; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fpn 2>/dev/null |
+      awk -v wildcard="n*:$port" '/^p/ { pid=substr($0,2) } $0==wildcard && !seen[pid]++ { print pid }'
+  fi
+}
 stop_old_bundle_chain() {
   for port in "$PORT" "$COMP_PORT"; do
-    for p in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
+    for p in $(loopback_listeners "$port"); do
       bundle_process "$p" && kill "$p" 2>/dev/null
     done
   done
@@ -335,7 +352,7 @@ fi
 # ── 伴侣端口残留清理。走到这里说明伴侣没在跑或只剩半吊子状态:
 #    上次异常退出(断电/强制退出)留下的旧伴侣占着 8771 不放,
 #    新伴侣会 bind 失败秒退。只清理由 companion.js 占用的进程。───
-STALE="$(lsof -nP -tiTCP:$COMP_PORT -sTCP:LISTEN 2>/dev/null || true)"
+STALE="$(loopback_listeners "$COMP_PORT")"
 if [ -n "$STALE" ]; then
   for p in $STALE; do
     if bundle_process "$p" && ps -p "$p" -o command= 2>/dev/null | grep -q "companion.js"; then
@@ -346,7 +363,7 @@ if [ -n "$STALE" ]; then
     fi
   done
   for _ in $(seq 1 20); do
-    [ -z "$(lsof -nP -tiTCP:$COMP_PORT -sTCP:LISTEN 2>/dev/null || true)" ] && break
+    [ -z "$(loopback_listeners "$COMP_PORT")" ] && break
     sleep 0.25
   done
 fi
