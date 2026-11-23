@@ -29,3 +29,7 @@ scripts/node-dist/**
 !scripts/node-dist/node-arm64
 !scripts/node-dist/node-x64
 **/.DS_Store
+**/.env
+**/.env.*
+**/*.sqlite
+**/*.sqlite-*

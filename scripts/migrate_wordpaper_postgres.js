@@ -65,7 +65,7 @@ function sourceSnapshot(db, decisions, inventoryOnly) {
   if (nextId < 1n || nextId >= BigInt(Number.MAX_SAFE_INTEGER)) throw new MigrationError('现有账号编号超出 WordPaper 的安全范围。');
 
   const identities = inventoryOnly ? null : canonicalIdentities(db, names, decisions);
-  function rows(table) {
+  function rawRows(table) {
     if (table.name === 'auth_identities' && identities) return identities;
     const order = ' ORDER BY ' + orderedKeys(table, 'BINARY');
     let sql;
@@ -82,6 +82,35 @@ function sourceSnapshot(db, decisions, inventoryOnly) {
     const statement = sqliteRead(db, sql);
     statement.setReturnArrays(true);
     return statement.iterate();
+  }
+
+  // SQLite INTEGER affinity also permits CURRENT_TIMESTAMP's UTC text format.
+  // Normalize its representation, not the instant. Report every converted field.
+  function* rows(table, conversions) {
+    const columns = table.columns.split(' ');
+    const numericColumns = columns.map((name, index) => ({ name, index })).filter(({ name }) =>
+      ['id', 'user_id', 'email_verified', 'revision', 'created_at', 'updated_at'].includes(name));
+    for (const originalRow of rawRows(table)) {
+      const row = [...originalRow];
+      for (const { name, index } of numericColumns) {
+        const original = row[index];
+        if (typeof original === 'bigint') continue;
+        if (['created_at', 'updated_at'].includes(name) && typeof original === 'string' &&
+            /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(original)) {
+          const iso = original.replace(' ', 'T') + '.000Z';
+          const ms = Date.parse(iso);
+          if (Number.isSafeInteger(ms) && ms >= 0 && new Date(ms).toISOString() === iso) {
+            conversions?.push({ table: table.name, field: name, sourceFormat: 'SQLite UTC timestamp',
+              userId: Number(row[columns.indexOf(columns.includes('user_id') ? 'user_id' : 'id')]),
+              ...(columns.includes('namespace') ? { namespace: row[columns.indexOf('namespace')] } : {}), unixMs: ms });
+            row[index] = BigInt(ms);
+            continue;
+          }
+        }
+        throw new MigrationError('无法无损转换数值字段 ' + table.name + '.' + name + '。');
+      }
+      yield row;
+    }
   }
 
   return { nextId, rows };
@@ -188,10 +217,10 @@ function inspectState(report, row) {
 }
 
 function inspectSource(source) {
-  const report = { counts: {}, checksums: {}, accounts: {} };
+  const report = { counts: {}, checksums: {}, accounts: {}, conversions: [] };
   for (const table of tables) {
     const summary = digest();
-    for (const row of source.rows(table)) {
+    for (const row of source.rows(table, report.conversions)) {
       if (row.some(value => typeof value === 'bigint' && (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)))) {
         throw new MigrationError('来源记录 ID、时间或版本超出 WordPaper 可表示的整数范围。');
       }

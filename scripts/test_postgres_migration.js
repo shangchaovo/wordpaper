@@ -31,6 +31,7 @@ function seed(directory, name, option = {}) {
   store.close();
   const file = path.join(directory, 'wordpaper.sqlite');
   const db = new DatabaseSync(file);
+  db.exec("UPDATE user_state SET updated_at='2026-01-02 03:04:05' WHERE namespace='reminders'");
   db.prepare('INSERT INTO auth_identities VALUES (?,?,?,?,?,?,?,?)').run('google-desktop', 'google-subject-' + name, user.id, null,1,null,1,1);
   const encrypted = createAccountCipher('', sourceKey).encrypt(String(user.id),'example-key');
   db.prepare('INSERT INTO user_models VALUES (?,?,?,?,?,?)').run(user.id,'https://example.test','openai','example',encrypted,123);
@@ -123,6 +124,8 @@ async function run() {
     assert.equal(migrate('dry-run',a,'one',url).accounts['1'].reminders.items,1);
     const first = migrate('import',a,'one',url);
     assert.deepEqual(first.accountMapping,{'1':'1'});
+    assert.equal(first.accounts['1'].reminders.updatedAt, Date.UTC(2026,0,2,3,4,5));
+    assert.equal(first.conversions.length,1);
     assert.equal(migrate('import',a,'one',url).previouslyImported,true);
     assert.deepEqual(migrate('verify',a,'one',url).checksums,first.checksums);
     const second = migrate('import',b,'two',url);
