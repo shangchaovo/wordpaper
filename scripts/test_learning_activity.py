@@ -82,7 +82,7 @@ def main():
                         return original(fn, ms, ...args);
                       };''')
                     page.goto(base, wait_until='domcontentloaded')
-                    page.wait_for_selector('#library-cards .lib-card')
+                    page.wait_for_selector('#library-cards .lib-card:visible')
                     sync_activity(page)
                     expect(page.locator('#plan-count-total')).to_have_text('7', timeout=12000)
                     assert page.locator('#plan-count-recite').inner_text() == '6'
@@ -95,7 +95,7 @@ def main():
                         page.evaluate('async () => { for (const sync of window.__learningTicks) await sync(); await Store.flush(); }')
                     expect(page.locator('#plan-count-total')).to_have_text('7')
                     page.reload(wait_until='domcontentloaded')
-                    page.wait_for_selector('#library-cards .lib-card')
+                    page.wait_for_selector('#library-cards .lib-card:visible')
                     sync_activity(page)
                     expect(page.locator('#plan-count-total')).to_have_text('7', timeout=12000)
                     assert page.evaluate('async () => await Store.flush()')

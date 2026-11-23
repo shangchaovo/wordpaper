@@ -87,7 +87,7 @@ def main():
                         print('Pending requests:', sorted(pending), 'Repeated requests:', {k:v for k,v in counts.items() if v>2}, 'Page errors:', errors, flush=True)
                         log.seek(0); print(log.read()[-5000:], flush=True)
                         raise
-                    page.wait_for_selector('#library-cards .lib-card')
+                    page.wait_for_selector('#library-cards .lib-card:visible')
                     page.wait_for_function('window.__quizTimers.length > 0')
                     assert page.evaluate("Store.getReview().ielts.words['commute|通勤'].stage") == 0
                     assert context.request.post(base + '/pet-mode.php?mode=patrick', headers=headers).ok
@@ -127,9 +127,19 @@ def main():
                     assert page.evaluate("async () => { const all=Store.getReview(); all.ielts.cursor=7; Store.saveReview(all); return await Store.flush(); }")
                     final = context.request.get(base + '/api/state').json()['state']['review']['ielts']
                     assert final['cursor'] == 7 and final['words'][key]['reviewCount'] == 1
+                    mastered=context.request.post(companion_base+'/pet-key.php',data={'action':'remember','quizId':geom['id']}).json()
+                    assert mastered.get('mastered'),mastered
+                    for _ in range(2):
+                        page.evaluate('async () => { for (const sync of window.__quizTimers) await sync(); await Store.flush(); }')
+                    record=page.evaluate("Store.getReview().ielts.words['commute|通勤']")
+                    assert record['stage']==8 and record['due'] is None and record['manualMastered']
+                    assert record['reviewCount']==1 and record['petQuiz']['count']==1,'marking familiar must preserve real practice counters'
+                    assert page.locator('#plan-count-total').inner_text()=='1','manual mastery must not fabricate practice'
+                    persisted=context.request.get(base+'/api/state').json()['state']['review']['ielts']['words'][key]
+                    assert persisted==record,'browser replay must not restore the canceled schedule'
                     assert not errors, errors
                     browser.close()
-                    print('PASS native answer persists once, browser refreshes value/revision, stale/invalid clicks rejected')
+                    print('PASS native answer and manual mastery persist, browser refresh/replay preserves canceled schedule and real counters')
             finally:
                 if companion:
                     companion.kill(); companion.wait()

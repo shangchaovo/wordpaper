@@ -11,6 +11,7 @@ const net = require('net');
 const { promisify } = require('util');
 const { execFile, spawn } = require('child_process');
 const { openStorage, STATE_NAMESPACES } = require('./lib/storage');
+const { createLocalGoogleAuth, PROVIDER: LOCAL_GOOGLE_PROVIDER } = require('./lib/local-google-auth');
 const srsPolicy = require('./js/srs-policy');
 
 const ROOT = __dirname;
@@ -53,6 +54,12 @@ const EMAIL_FROM = String(process.env.WORDPAPER_EMAIL_FROM || '').trim();
 const MAX_JSON_BYTES = 25 * 1024 * 1024;
 const MAX_PROXY_BYTES = 25 * 1024 * 1024;
 const scryptAsync = promisify(crypto.scrypt);
+const openSystemBrowser = process.platform === 'darwin'
+  ? url => promisify(execFile)('/usr/bin/open', [url], { timeout: 5000 })
+  : null;
+const openLocalGoogleBrowser = process.env.NODE_ENV === 'test' && process.env.WORDPAPER_TEST_LOCAL_GOOGLE_BROWSER === '1'
+  ? url => fs.promises.writeFile(path.join(DATA_DIR, 'test-google-authorization.txt'), url, { mode: 0o600 })
+  : openSystemBrowser;
 
 function providerEndpoint(envName, fallback) {
   return process.env.NODE_ENV === 'test' && process.env[envName] ? String(process.env[envName]) : fallback;
@@ -69,7 +76,26 @@ const RESEND_EMAIL_ENDPOINT = providerEndpoint('WORDPAPER_TEST_RESEND_ENDPOINT',
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT 必须是 1-65535 的整数');
 if (!Number.isInteger(COMPANION_PORT) || COMPANION_PORT < 1 || COMPANION_PORT > 65535) throw new Error('WORDPAPER_COMPANION_PORT 无效');
 
-const storage = openStorage(DATA_DIR);
+const databaseUrl = MODE === 'public' ? String(process.env.WORDPAPER_DATABASE_URL || '').trim() : '';
+if (MODE === 'public') {
+  const backend = String(process.env.WORDPAPER_STORAGE_BACKEND || '').trim();
+  if (backend && !['sqlite', 'postgres'].includes(backend)) throw new Error('WORDPAPER_STORAGE_BACKEND 必须是 sqlite 或 postgres');
+  if (backend === 'postgres' && !databaseUrl) throw new Error('云端 Postgres 缺少 WORDPAPER_DATABASE_URL');
+  if (backend === 'sqlite' && databaseUrl) throw new Error('SQLite 与云端数据库配置冲突，请检查 WORDPAPER_STORAGE_BACKEND');
+}
+const modelKey = databaseUrl ? Buffer.from(process.env.WORDPAPER_MODEL_KEY_BASE64 || '', 'base64') : undefined;
+if (databaseUrl && modelKey.length !== 32) throw new Error('WordPaper PostgreSQL 部署需要有效的 WORDPAPER_MODEL_KEY_BASE64');
+const storage = openStorage(DATA_DIR, { databaseUrl, modelKey });
+const backgroundObjects = databaseUrl && require('./lib/background-objects').createBackgroundObjects({
+  origin: process.env.WORDPAPER_STORAGE_ORIGIN,
+  key: process.env.WORDPAPER_STORAGE_SECRET,
+  bucket: process.env.WORDPAPER_STORAGE_BUCKET || 'wordpaper-backgrounds',
+});
+async function expandBackground(userId, snapshot) {
+  if (backgroundObjects && snapshot.state.settings) {
+    snapshot.state.settings = await backgroundObjects.expand(userId, snapshot.state.settings);
+  }
+}
 storage.deleteExpiredSessions();
 storage.deleteExpiredOAuthFlows();
 
@@ -77,18 +103,33 @@ storage.deleteExpiredOAuthFlows();
 // 只有 local 模式允许配对/镜像;public 实例永远是权威数据源,不做卫星。
 const upstream = require('./lib/upstream');
 const updater = require('./lib/updater');
-upstream.init({
-  storage,
-  usernameKey,
-  createUser: (username, key, hash) => storage.createUser(username, key, hash),
-  findUserByKey: key => storage.findUserByKey(key),
-});
-upstream.startBackground();
+if (MODE === 'local') {
+  upstream.init({
+    storage,
+    usernameKey,
+    createUser: (username, key, hash) => storage.createUser(username, key, hash),
+    findUserByKey: key => storage.findUserByKey(key),
+  });
+  upstream.startBackground();
+}
 function mirroring() { return MODE === 'local' && upstream.isPaired(); }
+const handleModel = require('./lib/model-routes').createModelRoutes({
+  storage, upstream, mirroring, mode: MODE, requireSession, requireCsrf, readJson, json,
+});
 const handleDeviceAuth = require('./lib/device-auth').createDeviceAuth({
   storage, upstream, json, readJson, requireOrigin, requireCsrf, requireSession,
   requestSession, authRateAllowed, expectedOrigin, oauthProviderConfigured, newSession,
-  isLoopbackRequest, mode: MODE, sessionDays: SESSION_DAYS, parseCookies,
+  isLoopbackRequest, mode: MODE, sessionDays: SESSION_DAYS, parseCookies, openSystemBrowser,
+  pairedHostEnabled: req => !mirroring() && syncServer?.listening &&
+    (isLoopbackRequest(req) || req.socket.localAddress === syncServer.address().address),
+});
+const localGoogleAuth = createLocalGoogleAuth({
+  dataDir: DATA_DIR, storage, localOrigin: localGoogleOrigin, requestSession, requireCsrf, readJson, json, parseCookies,
+  appendSetCookies, authRateAllowed, authorizationUrl: googleAuthorizationUrl, openSystemBrowser: openLocalGoogleBrowser,
+  googleIdentity: (code, flow, client) => googleIdentity(code, flow, client, process.platform === 'darwin' && process.env.NODE_ENV !== 'test'
+    ? require('./lib/local-google-network').localGoogleProviderJson : providerJson),
+  newLocalSession: (req, res, user) => newSession(req, res, user, false, 'Strict', true),
+  accountErrors: ACCOUNT_ERRORS, accountAuthMs: ACCOUNT_AUTH_MS,
 });
 
 // Only advertise published releases with an uploaded installer. main/VERSION
@@ -156,9 +197,11 @@ function beginUpdate(target) {
 }
 storage.deleteExpiredEmailVerifications();
 setInterval(() => {
-  storage.deleteExpiredSessions();
-  storage.deleteExpiredOAuthFlows();
-  storage.deleteExpiredEmailVerifications();
+  try {
+    storage.deleteExpiredSessions();
+    storage.deleteExpiredOAuthFlows();
+    storage.deleteExpiredEmailVerifications();
+  } catch (error) { console.error('[auth] expired record cleanup:', error.message); }
 }, 60 * 60 * 1000).unref();
 
 const MIME_TYPES = {
@@ -189,6 +232,7 @@ const COMPANION_METHODS = new Map([
   ['/pet.php', new Set(['POST'])],
   ['/pet-mode.php', new Set(['POST'])],
   ['/pet-speak.php', new Set(['POST'])],
+  ['/pet-shortcuts.php', new Set(['GET', 'POST'])],
   ['/pet-voices.json', new Set(['GET'])],
   ['/pet-voice.php', new Set(['POST'])],
   ['/pet-voice-preview.php', new Set(['POST'])],
@@ -198,6 +242,7 @@ const COMPANION_METHODS = new Map([
   ['/pet-sentence-window.php', new Set(['POST'])],
   ['/pet-sentence.php', new Set(['POST'])],
   ['/pet-sentence.json', new Set(['GET'])],
+  ['/pet-model-settings.php', new Set(['POST'])],
   ['/pet-ime.php', new Set(['POST'])],
   ['/pet-celebrate.php', new Set(['POST'])],
   ['/pet-patrick.json', new Set(['GET'])],
@@ -247,7 +292,7 @@ function securityHeaders(res) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
 }
 
 function json(res, status, value, headers) {
@@ -284,10 +329,19 @@ function tokenHash(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
 }
 
+function localGoogleSessionHash(token) {
+  // Another WordPaper process may share this database. HTTP rejects NUL in
+  // cookie headers, so its normal token hash cannot address the local scope.
+  return tokenHash('\0wordpaper-local-google:' + token);
+}
+
 function requestSession(req) {
   const cookies = parseCookies(req);
   const token = cookies['__Host-wp_session'] || cookies.wp_session;
-  const session = token ? storage.findSession(tokenHash(token)) : null;
+  let session = token ? storage.findSession(tokenHash(token)) : null;
+  if (!session && /^[A-Za-z0-9_-]{43}$/.test(token || '') && localGoogleOrigin(req)) {
+    session = storage.findSession(localGoogleSessionHash(token));
+  }
   if (session && mirroring() && session.user.id !== upstream.localUserId()) return null;
   return session;
 }
@@ -336,12 +390,23 @@ function appendSetCookies(res, cookies) {
   res.setHeader('Set-Cookie', values.concat(cookies));
 }
 
-function expectedOrigin(req) {
-  if (PUBLIC_ORIGIN) return PUBLIC_ORIGIN;
+function requestOrigin(req) {
   const protocol = isSecureRequest(req) ? 'https' : 'http';
   const forwardedHost = lastForwardedValue(req, 'x-forwarded-host');
   const host = forwardedHost || req.headers.host;
   return host ? `${protocol}://${host}` : '';
+}
+
+function expectedOrigin(req) {
+  return PUBLIC_ORIGIN || requestOrigin(req);
+}
+
+function localGoogleOrigin(req) {
+  if (MODE !== 'local' || mirroring() || !isLoopbackRequest(req) || !isLoopbackHost(req.socket.localAddress)) return '';
+  if (req.headers.forwarded || req.headers['x-forwarded-for'] || req.headers['x-forwarded-host'] || req.headers['x-forwarded-proto']) return '';
+  const request = URL.parse(requestOrigin(req));
+  if (!request || !isLoopbackHost(request.hostname) || request.href !== request.origin + '/') return '';
+  return request.origin;
 }
 
 function validMutationOrigin(req) {
@@ -475,13 +540,14 @@ async function passwordMatches(password, encoded) {
   return crypto.timingSafeEqual(expected, actual);
 }
 
-function newSession(req, res, user, allowLegacyImport, sameSite) {
+function newSession(req, res, user, allowLegacyImport, sameSite, localGoogle = false) {
   const previous = requestSession(req);
   if (previous) storage.deleteSession(previous.tokenHash);
   const token = crypto.randomBytes(32).toString('base64url');
   const csrfToken = crypto.randomBytes(24).toString('base64url');
   const maxAge = SESSION_DAYS * 24 * 60 * 60;
-  storage.createSession(tokenHash(token), user.id, csrfToken, Date.now() + maxAge * 1000, allowLegacyImport);
+  const hash = localGoogle ? localGoogleSessionHash(token) : tokenHash(token);
+  storage.createSession(hash, user.id, csrfToken, Date.now() + maxAge * 1000, allowLegacyImport);
   const obsolete = isSecureRequest(req)
     ? 'wp_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
     : '__Host-wp_session=; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=0';
@@ -490,18 +556,21 @@ function newSession(req, res, user, allowLegacyImport, sameSite) {
 }
 
 const authAttempts = new Map();
+const AUTH_WINDOW_MS = 10 * 60 * 1000;
+const AUTH_ATTEMPT_LIMIT = 30;
 function authRateAllowed(req) {
   // With one trusted reverse-proxy hop, the proxy-appended rightmost address is
   // authoritative; client-supplied values can only appear to its left.
   const forwardedCandidate = lastForwardedValue(req, 'x-forwarded-for');
   const forwarded = net.isIP(forwardedCandidate) ? forwardedCandidate : '';
   const key = forwarded || String(req.socket.remoteAddress || 'unknown');
+  if (storage.claimAuthAttempt) return storage.claimAuthAttempt(tokenHash(key), AUTH_WINDOW_MS, AUTH_ATTEMPT_LIMIT);
   const now = Date.now();
   let entry = authAttempts.get(key);
-  if (!entry || entry.resetAt <= now) entry = { count: 0, resetAt: now + 10 * 60 * 1000 };
+  if (!entry || entry.resetAt <= now) entry = { count: 0, resetAt: now + AUTH_WINDOW_MS };
   entry.count += 1;
   authAttempts.set(key, entry);
-  return entry.count <= 30;
+  return entry.count <= AUTH_ATTEMPT_LIMIT;
 }
 
 function safeNextPath(value) {
@@ -509,33 +578,38 @@ function safeNextPath(value) {
   if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.includes('\\')) return '/';
   try {
     const parsed = new URL(candidate, 'http://wordpaper.invalid');
-    if (parsed.origin !== 'http://wordpaper.invalid') return '/';
+    if (parsed.origin !== 'http://wordpaper.invalid' || parsed.pathname.startsWith('//')) return '/';
     return parsed.pathname + parsed.search + parsed.hash;
   } catch {
     return '/';
   }
 }
 
-function oauthProviderConfigured(provider) {
-  const stableCallback = process.env.NODE_ENV !== 'production' || Boolean(PUBLIC_ORIGIN || (provider === 'google' ? GOOGLE_REDIRECT_URI : WECHAT_REDIRECT_URI));
-  if (provider === 'google') return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && stableCallback);
-  if (provider === 'wechat') return Boolean(WECHAT_APP_ID && WECHAT_APP_SECRET && stableCallback);
-  return false;
+function oauthProviderConfigured(req, provider) {
+  return Boolean(oauthRedirectUri(req, provider));
 }
 
 function oauthRedirectUri(req, provider) {
-  const configured = provider === 'google' ? GOOGLE_REDIRECT_URI : WECHAT_REDIRECT_URI;
-  return configured || `${expectedOrigin(req)}/api/auth/${provider}/callback`;
-}
-
-function validOAuthRedirectUri(value, provider) {
+  if (mirroring()) return '';
+  let configured;
+  if (provider === 'google' && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) configured = GOOGLE_REDIRECT_URI;
+  else if (provider === 'wechat' && WECHAT_APP_ID && WECHAT_APP_SECRET) configured = WECHAT_REDIRECT_URI;
+  else return '';
+  const production = process.env.NODE_ENV === 'production';
+  if (production && !configured && !PUBLIC_ORIGIN) return '';
+  const pathname = `/api/auth/${provider}/callback`;
+  const value = configured || expectedOrigin(req) + pathname;
   try {
     const parsed = new URL(value);
-    if (parsed.username || parsed.password || parsed.hash || parsed.search) return false;
-    if (parsed.pathname !== `/api/auth/${provider}/callback`) return false;
-    return process.env.NODE_ENV !== 'production' || parsed.protocol === 'https:';
+    const allowLoopbackHttp = !production && parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !allowLoopbackHttp) return '';
+    if (parsed.href !== parsed.origin + pathname) return '';
+    // The flow cookie belongs to the browser origin that starts authorization.
+    if (parsed.origin !== new URL(requestOrigin(req)).origin) return '';
+    if (PUBLIC_ORIGIN && parsed.origin !== new URL(PUBLIC_ORIGIN).origin) return '';
+    return value;
   } catch {
-    return false;
+    return '';
   }
 }
 
@@ -546,31 +620,45 @@ function oauthBinding(req) {
 
 function oauthFailure(res, code, flow) {
   appendSetCookies(res, clearOAuthFlowCookies());
-  redirect(res, flow && flow.purpose !== 'login'
-    ? `/?accountError=${encodeURIComponent(code)}#account`
-    : `/login.html?authError=${encodeURIComponent(code)}`);
+  if (flow && flow.purpose !== 'login') {
+    redirect(res, `/?accountError=${encodeURIComponent(code)}#account`);
+    return;
+  }
+  const query = new URLSearchParams({ authError: code });
+  const nextPath = safeNextPath(flow?.nextPath);
+  if (nextPath !== '/') query.set('next', nextPath);
+  redirect(res, `/login.html?${query}`);
+}
+
+function googleAuthorizationUrl(clientId, redirectUri, state, codeVerifier) {
+  const authorization = new URL(GOOGLE_AUTHORIZATION_ENDPOINT);
+  authorization.searchParams.set('client_id', clientId);
+  authorization.searchParams.set('redirect_uri', redirectUri);
+  authorization.searchParams.set('response_type', 'code');
+  authorization.searchParams.set('scope', 'openid email profile');
+  authorization.searchParams.set('state', state);
+  authorization.searchParams.set('code_challenge', crypto.createHash('sha256').update(codeVerifier).digest('base64url'));
+  authorization.searchParams.set('code_challenge_method', 'S256');
+  authorization.searchParams.set('prompt', 'select_account');
+  return authorization.toString();
 }
 
 function oauthStart(req, res, parsed, provider, accountFlow) {
-  if (!oauthProviderConfigured(provider)) {
-    oauthFailure(res, `${provider}_not_configured`);
+  const nextPath = accountFlow ? '/#account' : safeNextPath(parsed.searchParams.get('next'));
+  const redirectUri = oauthRedirectUri(req, provider);
+  if (!redirectUri) {
+    if (accountFlow) json(res, 503, { error: `${provider === 'google' ? 'Google' : '微信'}登录尚未配置完成` });
+    else oauthFailure(res, `${provider}_not_configured`, { purpose: 'login', nextPath });
     return;
   }
   if (!accountFlow && !authRateAllowed(req)) {
-    oauthFailure(res, 'rate_limited');
-    return;
-  }
-
-  const redirectUri = oauthRedirectUri(req, provider);
-  if (!validOAuthRedirectUri(redirectUri, provider)) {
-    oauthFailure(res, `${provider}_not_configured`);
+    oauthFailure(res, 'rate_limited', { purpose: 'login', nextPath });
     return;
   }
 
   const state = crypto.randomBytes(32).toString('base64url');
   const binding = crypto.randomBytes(32).toString('base64url');
   const codeVerifier = provider === 'google' ? crypto.randomBytes(48).toString('base64url') : '';
-  const nextPath = accountFlow ? '/#account' : safeNextPath(parsed.searchParams.get('next'));
   const initiatingSession = requestSession(req);
   storage.createOAuthFlow(
     tokenHash(state), tokenHash(binding), provider, codeVerifier,
@@ -588,17 +676,9 @@ function oauthStart(req, res, parsed, provider, accountFlow) {
   }
 
   if (provider === 'google') {
-    const authorization = new URL(GOOGLE_AUTHORIZATION_ENDPOINT);
-    authorization.searchParams.set('client_id', GOOGLE_CLIENT_ID);
-    authorization.searchParams.set('redirect_uri', redirectUri);
-    authorization.searchParams.set('response_type', 'code');
-    authorization.searchParams.set('scope', 'openid email profile');
-    authorization.searchParams.set('state', state);
-    authorization.searchParams.set('code_challenge', crypto.createHash('sha256').update(codeVerifier).digest('base64url'));
-    authorization.searchParams.set('code_challenge_method', 'S256');
-    authorization.searchParams.set('prompt', 'select_account');
-    if (accountFlow) json(res, 200, { authorizationUrl: authorization.toString() });
-    else redirect(res, authorization.toString());
+    const authorizationUrl = googleAuthorizationUrl(GOOGLE_CLIENT_ID, redirectUri, state, codeVerifier);
+    if (accountFlow) json(res, 200, { authorizationUrl });
+    else redirect(res, authorizationUrl);
     return;
   }
 
@@ -648,23 +728,26 @@ function usableAccessToken(value) {
   return token && token.length <= 4096 && !/[\r\n]/.test(token) ? token : '';
 }
 
-async function googleIdentity(code, flow) {
+async function googleIdentity(code, flow, desktopClient, requestJson = providerJson) {
   const form = new URLSearchParams({
     code,
-    client_id: GOOGLE_CLIENT_ID,
-    client_secret: GOOGLE_CLIENT_SECRET,
+    client_id: desktopClient?.clientId || GOOGLE_CLIENT_ID,
     redirect_uri: flow.redirectUri,
     grant_type: 'authorization_code',
     code_verifier: flow.codeVerifier,
   });
-  const tokenBody = await providerJson(GOOGLE_TOKEN_ENDPOINT, {
+  const clientSecret = desktopClient ? desktopClient.clientSecret : GOOGLE_CLIENT_SECRET;
+  if (clientSecret) form.set('client_secret', clientSecret);
+  const tokenBody = await requestJson(GOOGLE_TOKEN_ENDPOINT, {
     method: 'POST',
+    ...(desktopClient ? { redirect: 'error' } : {}),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: form.toString(),
   });
   const accessToken = usableAccessToken(tokenBody.access_token);
   if (!accessToken) throw new Error('Google did not return an access token');
-  const profile = await providerJson(GOOGLE_USERINFO_ENDPOINT, {
+  const profile = await requestJson(GOOGLE_USERINFO_ENDPOINT, {
+    ...(desktopClient ? { redirect: 'error' } : {}),
     headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
   });
   const subject = String(profile.sub || '').trim();
@@ -710,7 +793,7 @@ async function wechatIdentity(code, flow) {
 }
 
 async function oauthCallback(req, res, parsed, provider) {
-  if (!oauthProviderConfigured(provider)) {
+  if (!oauthProviderConfigured(req, provider)) {
     oauthFailure(res, `${provider}_not_configured`);
     return;
   }
@@ -726,8 +809,10 @@ async function oauthCallback(req, res, parsed, provider) {
     oauthFailure(res, 'oauth_expired');
     return;
   }
-  if (parsed.searchParams.get('error') || !code) {
-    oauthFailure(res, 'oauth_cancelled', flow);
+  const providerError = parsed.searchParams.get('error');
+  if (providerError || !code) {
+    const cancelled = providerError === 'access_denied' || (!providerError && provider === 'wechat');
+    oauthFailure(res, cancelled ? 'oauth_cancelled' : 'oauth_failed', flow);
     return;
   }
   if (code.length > 4096) { oauthFailure(res, 'oauth_expired', flow); return; }
@@ -768,7 +853,7 @@ async function oauthCallback(req, res, parsed, provider) {
     newSession(req, res, account.user, account.created, 'Lax');
     if (flow.initiatingSessionHash) storage.deleteSession(flow.initiatingSessionHash);
     appendSetCookies(res, clearOAuthFlowCookies());
-    redirect(res, flow.nextPath);
+    redirect(res, safeNextPath(flow.nextPath));
   } catch (error) {
     if (!ACCOUNT_ERRORS[error.code]) console.error(`${provider} OAuth failed:`, error && error.message ? error.message : error);
     oauthFailure(res, ACCOUNT_ERRORS[error.code] ? error.code : 'oauth_failed', flow);
@@ -779,23 +864,43 @@ async function handleAccount(req, res, parsed) {
   const session = requireSession(req, res);
   if (!session) return;
   if (mirroring()) {
+    const origin = upstream.normalizeUrl(upstream.pairedInfo().url);
+    const accountUrl = origin + '/login.html?next=' + encodeURIComponent('/#account');
     if (parsed.pathname === '/api/account' && req.method === 'GET') {
-      json(res, 200, { managedExternally: true, accountUrl: upstream.pairedInfo().url + '/#account' });
+      json(res, 200, { managedExternally: true, accountUrl });
+    } else if (parsed.pathname === '/api/account/open-center') {
+      if (req.method !== 'POST') return json(res, 405, { error: 'Method Not Allowed' });
+      if (!isLoopbackRequest(req) || !openSystemBrowser) return json(res, 403, { error: '请在这台 Mac 上打开账号中心。' });
+      if (!requireCsrf(req, res, session)) return;
+      // Older native bridges discard private HTTP origins. Dispatch only the
+      // account page derived from this Mac's existing pairing.
+      try {
+        await openSystemBrowser(accountUrl);
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 503, { error: '系统浏览器未能打开，请复制下方地址到浏览器。' });
+      }
     } else json(res, 409, { error: '请在主账号所在的 WordPaper 网站管理登录绑定。' });
     return;
   }
   const credentials = storage.accountCredentials(session.user.id);
-  const enabledProviders = ['google', 'wechat'].filter(oauthProviderConfigured);
+  const enabledProviders = ['google', 'wechat'].filter(provider => oauthProviderConfigured(req, provider));
+  const localGoogle = localGoogleAuth.enabled(req);
+  const accountGoogle = localGoogle || (localGoogleOrigin(req) && credentials.identities.some(row => row.provider === LOCAL_GOOGLE_PROVIDER))
+    ? LOCAL_GOOGLE_PROVIDER : 'google';
+  if (localGoogle) enabledProviders.push(LOCAL_GOOGLE_PROVIDER);
   const reauthRequired = () => Date.now() - session.authenticatedAt > ACCOUNT_AUTH_MS;
   if (parsed.pathname === '/api/account' && req.method === 'GET') {
     json(res, 200, {
       user: session.user, hasPassword: Boolean(credentials.passwordHash), reauthRequired: reauthRequired(),
       providers: ['google', 'wechat'].map(provider => {
-        const identity = credentials.identities.find(row => row.provider === provider);
+        const accountProvider = provider === 'google' ? accountGoogle : provider;
+        const identity = credentials.identities.find(row => row.provider === accountProvider);
         return {
-          provider, enabled: enabledProviders.includes(provider), bound: Boolean(identity),
+          provider, enabled: enabledProviders.includes(accountProvider), bound: Boolean(identity),
+          ...(accountProvider === LOCAL_GOOGLE_PROVIDER ? { localDesktop: true } : {}),
           label: identity ? identity.email || identity.display_name || (provider === 'google' ? 'Google 账号' : '微信账号') : '',
-          canUnlink: Boolean(identity && (credentials.passwordHash || credentials.identities.some(row => row.provider !== provider && enabledProviders.includes(row.provider)))),
+          canUnlink: Boolean(identity && (credentials.passwordHash || credentials.identities.some(row => row.provider !== accountProvider && enabledProviders.includes(row.provider)))),
         };
       }),
     });
@@ -817,7 +922,8 @@ async function handleAccount(req, res, parsed) {
   const match = /^\/api\/account\/(google|wechat)\/(link|replace|unlink|reauth)$/.exec(parsed.pathname);
   if (!match) { json(res, 404, { error: 'Not Found' }); return; }
   const [, provider, purpose] = match;
-  const identity = credentials.identities.find(row => row.provider === provider);
+  const accountProvider = provider === 'google' ? accountGoogle : provider;
+  const identity = credentials.identities.find(row => row.provider === accountProvider);
   if ((purpose === 'link' && identity) || (purpose !== 'link' && !identity)) {
     json(res, 409, { error: ACCOUNT_ERRORS.binding_changed }); return;
   }
@@ -826,7 +932,7 @@ async function handleAccount(req, res, parsed) {
   }
   if (purpose === 'unlink') {
     try {
-      storage.unlinkIdentity(session.user.id, provider, session.tokenHash, enabledProviders);
+      storage.unlinkIdentity(session.user.id, accountProvider, session.tokenHash, enabledProviders);
       json(res, 200, { ok: true });
     } catch (error) {
       if (!ACCOUNT_ERRORS[error.code]) throw error;
@@ -834,9 +940,7 @@ async function handleAccount(req, res, parsed) {
     }
     return;
   }
-  if (!oauthProviderConfigured(provider) || !validOAuthRedirectUri(oauthRedirectUri(req, provider), provider)) {
-    json(res, 503, { error: `${provider === 'google' ? 'Google' : '微信'}登录尚未配置完成` }); return;
-  }
+  if (accountProvider === LOCAL_GOOGLE_PROVIDER) return json(res, 409, { error: '请在 WordPaper App 内使用 Google 桌面授权。' });
   oauthStart(req, res, parsed, provider, { purpose, expectedSubject: identity?.provider_subject || '' });
 }
 
@@ -880,6 +984,47 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+function notifySpeechChange(userId) {
+  const request = http.request({ host: '127.0.0.1', port: COMPANION_PORT, path: '/pet-speech-reset.php', method: 'POST',
+    timeout: 1000, headers: { 'X-WordPaper-Local': '1', 'X-WordPaper-User-Id': String(userId) } }, response => response.resume());
+  request.on('error', () => {});  // A stopped companion reads the saved selection on its next start.
+  request.on('timeout', () => request.destroy());
+  request.end();
+}
+
+function speechSettingsAvailable(req) {
+  return MODE === 'local' && isSameMachineRequest(req);
+}
+
+async function handleSpeechSettings(req, res, preview) {
+  if (!speechSettingsAvailable(req)) return json(res, 404, { error: '语音设置仅适用于本机桌面伴侣。' });
+  const session = requireSession(req, res);
+  if (!session) return;
+  const id = session.user.id;
+  if (!preview && req.method === 'GET') return json(res, 200, storage.speech.summary(id));
+  if (!(preview ? req.method === 'POST' : ['PUT', 'DELETE'].includes(req.method))) return json(res, 405, { error: '不支持此操作。' });
+  if (!requireCsrf(req, res, session)) return;
+  try {
+    let result;
+    if (req.method === 'DELETE') result = storage.speech.remove(id);
+    else {
+      const fields = await readJson(req);
+      const provider = require('./lib/speech-provider');
+      const config = provider.normalizeSpeech(fields, fields?.apiKey ? null : storage.speech.get(id));
+      if (preview) {
+        const audio = await provider.generateSpeech(config, require('./lib/speech').SAMPLE);
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': audio.length, 'Cache-Control': 'no-store' });
+        return res.end(audio);
+      }
+      result = storage.speech.save(id, config);
+    }
+    notifySpeechChange(id);
+    json(res, 200, result);
+  } catch (error) {
+    json(res, error.status || 500, { error: error.status ? error.message : '无法读取或保存语音设置。' });
+  }
+}
+
 function probeCompanion() {
   return new Promise(resolve => {
     const request = http.get({ host: '127.0.0.1', port: COMPANION_PORT, path: '/status.json', timeout: 1200 }, response => {
@@ -919,7 +1064,7 @@ async function proxyToCompanion(req, res, session) {
     if (body.length) headers['Content-Length'] = body.length;
     const upstream = http.request({
       host: '127.0.0.1', port: COMPANION_PORT, path: req.url,
-      method: req.method, headers, timeout: endpoint === '/pet-voice-preview.php' ? 60000 : 30000,
+      method: req.method, headers, timeout: ['/pet-voice-preview.php', '/pet-sentence.php', '/pet-chat.php', '/pet-ask.php'].includes(endpoint) ? 65000 : 30000,
     }, response => {
       const responseHeaders = {
         'Content-Type': response.headers['content-type'] || 'application/json; charset=utf-8',
@@ -1051,9 +1196,10 @@ async function handleAuth(req, res, parsed) {
   if (pathname === '/api/auth/providers' && req.method === 'GET') {
     json(res, 200, {
       email: { enabled: true, registrationEnabled: emailRegistrationEnabled(req) },
-      google: { enabled: oauthProviderConfigured('google') && !mirroring() },
-      wechat: { enabled: oauthProviderConfigured('wechat') && !mirroring() },
-      pairingAllowed: MODE === 'local',
+      google: { enabled: oauthProviderConfigured(req, 'google') },
+      wechat: { enabled: oauthProviderConfigured(req, 'wechat') },
+      ...(localGoogleAuth.enabled(req) ? { localGoogle: { enabled: true } } : {}),
+      pairingAllowed: MODE === 'local' && isLoopbackRequest(req),
       paired: upstream.pairedInfo(),
     });
     return true;
@@ -1161,7 +1307,7 @@ async function handleAuth(req, res, parsed) {
     let user;
     try { user = storage.createUser(username, key, hash); }
     catch (error) {
-      if (String(error.code || '').startsWith('SQLITE_CONSTRAINT') || /UNIQUE constraint failed/i.test(String(error.message || ''))) { json(res, 409, { error: username.includes('@') ? '该邮箱已注册' : '该用户名已存在' }); return true; }
+      if (error.code === '23505' || String(error.code || '').startsWith('SQLITE_CONSTRAINT') || /UNIQUE constraint failed/i.test(String(error.message || ''))) { json(res, 409, { error: username.includes('@') ? '该邮箱已注册' : '该用户名已存在' }); return true; }
       throw error;
     }
     const session = newSession(req, res, user, true);
@@ -1193,7 +1339,12 @@ async function handle(req, res) {
   const pathname = parsed.pathname;
 
   if (pathname === '/healthz' && req.method === 'GET') {
-    json(res, 200, { ok: true, mode: MODE, version: BUNDLED_VERSION || '' });
+    let database = {};
+    if (databaseUrl) {
+      try { database = { database: 'postgres', schemaVersion: storage.check().version }; }
+      catch { json(res, 503, { ok: false, mode: MODE, database: 'postgres' }); return; }
+    }
+    json(res, 200, { ok: true, mode: MODE, version: BUNDLED_VERSION || '', ...database });
     return;
   }
 
@@ -1221,7 +1372,16 @@ async function handle(req, res) {
 
   if (await handleAuth(req, res, parsed)) return;
   if (await handleDeviceAuth(req, res, parsed)) return;
+  if (pathname.startsWith('/api/local-google/')) { await localGoogleAuth.handle(req, res, pathname); return; }
 
+  if (pathname === '/api/account/speech' || pathname === '/api/account/speech/preview') {
+    await handleSpeechSettings(req, res, pathname.endsWith('/preview'));
+    return;
+  }
+  if (['/api/account/model', '/api/account/model/test', '/api/ai/chat'].includes(pathname)) {
+    await handleModel(req, res, pathname);
+    return;
+  }
   if (pathname === '/api/account' || pathname.startsWith('/api/account/')) {
     await handleAccount(req, res, parsed);
     return;
@@ -1296,7 +1456,9 @@ async function handle(req, res) {
     redirect(res, pathname === '/connect.html' ? '/login.html?next=' + encodeURIComponent(pathname + parsed.search) : '/login.html');
     return;
   }
-  if ((pathname === '/login' || pathname === '/login.html') && session && !(MODE === 'local' && parsed.searchParams.get('sync') === '1')) {
+  const showingOAuthError = parsed.searchParams.has('authError');
+  const showingDesktopSync = MODE === 'local' && parsed.searchParams.get('sync') === '1';
+  if ((pathname === '/login' || pathname === '/login.html') && session && !showingOAuthError && !showingDesktopSync) {
     redirect(res, safeNextPath(parsed.searchParams.get('next')));
     return;
   }
@@ -1307,6 +1469,7 @@ async function handle(req, res) {
     json(res, 200, {
       user: Object.assign({}, session.user, { role: (meRow && meRow.role) || 'user' }),
       csrfToken: session.csrfToken, allowLegacyImport: session.allowLegacyImport,
+      speechSettingsAvailable: speechSettingsAvailable(req),
       mirrored: mirroring(), upstream: mirroring() ? upstream.status() : null,
       update: updateNotice(),
     });
@@ -1385,11 +1548,33 @@ async function handle(req, res) {
     return true;
   }
 
+  if (pathname === '/api/sync/conflicts' && mirroring()) {
+    if (!session) { json(res, 401, { error: '请先登录' }); return; }
+    if (req.method === 'GET') { json(res, 200, { conflicts: storage.mirrorConflicts(session.user.id) }); return; }
+    if (req.method === 'DELETE') {
+      if (!requireCsrf(req, res, session)) return;
+      storage.dismissMirrorConflict(session.user.id, parsed.searchParams.get('id') || '');
+      json(res, 200, { ok: true }); return;
+    }
+  }
+
   if (pathname === '/api/state' && req.method === 'GET') {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
-    // 卫星模式:先补推再拉取,返回的本地缓存即为上游最新镜像;断网自动回退缓存。
-    const snapshot = mirroring() ? await upstream.mirroredState() : storage.getState(session.user.id);
-    json(res, 200, Object.assign({ user: session.user }, snapshot));
+    const paired = mirroring();
+    let known;
+    const header = req.headers['x-wordpaper-revisions'];
+    if (!paired && header) {
+      try { known = JSON.parse(header); } catch {}
+      if (!known || typeof known !== 'object' || Array.isArray(known) || Object.keys(known).length > 100) {
+        json(res, 400, { error: '同步版本无效' }); return;
+      }
+    }
+    // Provisional SQLite revisions can collide with canonical revisions after
+    // offline writes settle. The loopback hop always sends the local snapshot.
+    const snapshot = paired ? await upstream.mirroredState() : storage.getState(session.user.id, known);
+    await expandBackground(session.user.id, snapshot);
+    json(res, 200, { user: session.user, ...snapshot, ...(known ? { partial: true } : {}),
+      ...(paired ? { upstream: upstream.status(), pending: upstream.pendingCount(), conflictCount: storage.mirrorConflicts(session.user.id, true) } : {}) });
     return;
   }
 
@@ -1403,13 +1588,26 @@ async function handle(req, res) {
     if (!Object.prototype.hasOwnProperty.call(body, 'value') || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
       json(res, 400, { error: 'value 或 expectedRevision 无效' }); return;
     }
+    if (requestSession(req)?.user.id !== session.user.id) { json(res, 401, { error: '账号已改变，请重新登录' }); return; }
     if (mirroring()) {
       const mirrored = await upstream.pushState(namespace, body.value, body.expectedRevision);
-      if (mirrored.kind === 'conflict') { json(res, 409, { conflict: true, revision: mirrored.revision, value: mirrored.value }); return; }
-      json(res, 200, { conflict: false, revision: mirrored.revision, updatedAt: Date.now(), queued: mirrored.kind === 'queued', ...(namespace === 'learningActivity' ? { value: mirrored.value } : {}) });
+      const upstreamStatus = upstream.status();
+      if (mirrored.kind === 'conflict') { json(res, 409, { conflict: true, revision: mirrored.revision, value: mirrored.value, upstream: upstreamStatus, ...(mirrored.archived ? { archived: true } : {}) }); return; }
+      json(res, 200, { conflict: false, revision: mirrored.revision, updatedAt: Date.now(), queued: mirrored.kind === 'queued', pending: upstream.pendingCount(), upstream: upstreamStatus, ...(Object.hasOwn(mirrored, 'value') ? { value: mirrored.value } : {}) });
       return;
     }
+    if (namespace === 'settings' && backgroundObjects) {
+      const current = storage.getSettingsRow(session.user.id);
+      if (current && current.revision !== body.expectedRevision) {
+        json(res, 409, { conflict: true, revision: current.revision, value: await backgroundObjects.expand(session.user.id, current.value) });
+        return;
+      }
+      body.value = await backgroundObjects.write(session.user.id, body.value, current?.value);
+    }
     const result = storage.putState(session.user.id, namespace, body.value, body.expectedRevision);
+    if (result.conflict && namespace === 'settings' && backgroundObjects) {
+      result.value = await backgroundObjects.expand(session.user.id, result.value);
+    }
     if (result.conflict) { json(res, 409, result); return; }
     json(res, 200, result);
     return;
@@ -1585,6 +1783,7 @@ function normalizeImportedReview(payload) {
   if (pathname === '/api/export' && req.method === 'GET') {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
     const snapshot = storage.getState(session.user.id);
+    await expandBackground(session.user.id, snapshot);
     json(res, 200, {
       format: 'wordpaper-backup', schemaVersion: 1, exportedAt: new Date().toISOString(),
       username: session.user.username, state: snapshot.state,
@@ -1670,7 +1869,7 @@ function normalizeImportedReview(payload) {
       return;
     }
     const status = await probeCompanion();
-    json(res, 200, { ok: true, companion: Boolean(status), available: true, pet: Boolean(status && status.pet), hotkey: status && status.hotkey });
+    json(res, 200, { ok: true, companion: Boolean(status), available: true, pet: Boolean(status && status.pet), petMode: status?.petMode, hotkey: status && status.hotkey });
     return;
   }
 
@@ -1702,15 +1901,41 @@ function normalizeImportedReview(payload) {
   serveStatic(req, res, pathname);
 }
 
-const server = http.createServer((req, res) => {
+function serveRequest(req, res) {
   handle(req, res).catch(error => {
     console.error(error);
     if (!res.headersSent) json(res, error.status || 500, { error: error.status ? error.message : '服务器内部错误' });
     else res.destroy();
   });
-});
+}
+
+const server = http.createServer(serveRequest);
+let syncServer;
+let syncRetry;
+function listenForPairedMacs() {
+  if (MODE !== 'local' || !isLoopbackHost(HOST)) return;
+  const file = path.join(DATA_DIR, 'tailscale-sync.json');
+  if (!fs.existsSync(file)) return;
+  try {
+    const { address, peers, port } = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const tailnet = ip => net.isIPv4(ip) && ip.split('.')[0] === '100' && Number(ip.split('.')[1]) >= 64 && Number(ip.split('.')[1]) <= 127;
+    if (!tailnet(address) || !Array.isArray(peers) || !peers.length || !peers.every(tailnet)) throw new Error('请填写本机及配对设备的 Tailscale IPv4 地址。');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('请填写固定的账号同步端口。');
+    const allowed = new Set(peers);
+    // Keep the original socket address so every desktop-only route retains its
+    // same-machine checks. This listener never forwards as a loopback client.
+    syncServer = http.createServer(serveRequest);
+    syncServer.on('connection', socket => { if (!allowed.has(socket.remoteAddress)) socket.destroy(); });
+    syncServer.on('error', error => {
+      console.error('[sync] Tailscale listener:', error.code);
+      if (error.code === 'EADDRNOTAVAIL' && !closing) syncRetry = setTimeout(listenForPairedMacs, 15000).unref();
+    });
+    syncServer.listen(port, address);
+  } catch (error) { console.error('[sync] Tailscale configuration:', error.message); }
+}
 
 server.on('listening', () => {
+  listenForPairedMacs();
   const maintainReviews = () => {
     try { storage.reconcileReviews(); } catch (error) { console.error('[review] overdue policy:', error.message); }
   };
@@ -1753,10 +1978,15 @@ function hardExit(code) {
 function shutdown() {
   if (closing) return;
   closing = true;
-  server.close(() => {
+  localGoogleAuth.close();
+  clearTimeout(syncRetry);
+  const listeners = syncServer?.listening ? [server, syncServer] : [server];
+  let remaining = listeners.length;
+  listeners.forEach(listener => listener.close(() => {
+    if (--remaining) return;
     storage.close();
     hardExit(0);
-  });
+  }));
   setTimeout(() => hardExit(1), 6000).unref();
 }
 process.on('SIGINT', shutdown);

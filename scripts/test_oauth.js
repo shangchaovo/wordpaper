@@ -227,7 +227,7 @@ if (require.main === module) (async function main() {
   const mock = await startMockProvider(mockPort, exchanges);
   let app;
   try {
-    app = await startApp(appPort, dataDir, mockBase);
+    app = await startApp(appPort, dataDir, mockBase, { TRUST_PROXY: '1' });
     const { base } = app;
 
     const discovery = await fetch(base + '/api/auth/providers');
@@ -236,6 +236,28 @@ if (require.main === module) (async function main() {
       email: { enabled: true, registrationEnabled: true }, google: { enabled: true }, wechat: { enabled: true },
       paired: null, pairingAllowed: false,
     });
+
+    // An alias cannot start a flow whose callback uses a different browser origin.
+    const alias = `http://localhost:${appPort}`;
+    const aliasHeaders = { 'X-Forwarded-Host': new URL(alias).host };
+    const aliasDiscovery = await (await fetch(base + '/api/auth/providers', { headers: aliasHeaders })).json();
+    const deviceNext = '/connect.html?code=ABCDEF-012345';
+    for (const provider of ['google', 'wechat']) {
+      assert.equal(aliasDiscovery[provider].enabled, false);
+      const start = await fetch(base + `/api/auth/${provider}/start?next=${encodeURIComponent(deviceNext)}`, {
+        headers: aliasHeaders, redirect: 'manual',
+      });
+      assert.equal(start.status, 302);
+      const login = new URL(start.headers.get('location'), alias);
+      assert.equal(login.pathname, '/login.html');
+      assert.equal(login.searchParams.get('authError'), `${provider}_not_configured`);
+      assert.equal(login.searchParams.get('next'), deviceNext);
+      const device = await fetch(base + '/api/device/start', {
+        method: 'POST', headers: { ...aliasHeaders, Origin: alias, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, challenge: 'a'.repeat(43) }),
+      });
+      assert.equal(device.status, 503);
+    }
 
     const parallelEmail = 'parallel@example.test';
     const parallelResponses = await Promise.all([0, 1].map(() => fetch(base + '/api/auth/email/code', {
@@ -363,6 +385,27 @@ if (require.main === module) (async function main() {
     const wechatSession = await (await fetch(base + '/api/session', { headers: { Cookie: wechatCookie } })).json();
     assert.notEqual(wechatSession.user.id, googleSession.user.id);
 
+    const connectPath = '/connect.html?code=012345-ABCDEF';
+    const cancelledFlow = await startFlow(base, 'google', connectPath, wechatCookie);
+    const cancelled = await fetch(`${base}/api/auth/google/callback?state=${cancelledFlow.state}&error=access_denied`, {
+      headers: { Cookie: cancelledFlow.flowCookie }, redirect: 'manual',
+    });
+    const retryUrl = new URL(cancelled.headers.get('location'), base);
+    assert.equal(retryUrl.pathname, '/login.html');
+    assert.equal(retryUrl.searchParams.get('authError'), 'oauth_cancelled');
+    assert.equal(retryUrl.searchParams.get('next'), connectPath);
+    const retryPage = await fetch(retryUrl, { headers: { Cookie: wechatCookie }, redirect: 'manual' });
+    assert.equal(retryPage.status, 200, 'an existing session skipped the failed authorization screen');
+
+    const failedFlow = await startFlow(base, 'wechat', retryUrl.searchParams.get('next'), wechatCookie);
+    const failed = await callback(base, 'wechat', failedFlow, 'wechat-code-failed');
+    const failedRetry = new URL(failed.headers.get('location'), base);
+    assert.equal(failedRetry.searchParams.get('authError'), 'oauth_failed');
+    assert.equal(failedRetry.searchParams.get('next'), connectPath);
+    const retryFlow = await startFlow(base, 'google', failedRetry.searchParams.get('next'), wechatCookie);
+    const retryResult = await callback(base, 'google', retryFlow, 'google-code-a');
+    assert.equal(retryResult.headers.get('location'), connectPath);
+
     const db = new DatabaseSync(path.join(dataDir, 'wordpaper.sqlite'));
     const identities = db.prepare('SELECT provider, provider_subject, email FROM auth_identities ORDER BY provider').all();
     assert.equal(identities.length, 4);
@@ -389,6 +432,12 @@ if (require.main === module) (async function main() {
     const persistedCookie = cookieValue(persistedResult, 'wp_session');
     const persistedSession = await (await fetch(app.base + '/api/session', { headers: { Cookie: persistedCookie } })).json();
     assert.equal(persistedSession.user.id, googleSession.user.id, 'provider identity changed after restart');
+
+    const providerErrorFlow = await startFlow(base, 'google', connectPath);
+    const providerError = await fetch(`${base}/api/auth/google/callback?state=${providerErrorFlow.state}&error=temporarily_unavailable`, {
+      headers: { Cookie: providerErrorFlow.flowCookie }, redirect: 'manual',
+    });
+    assert.equal(new URL(providerError.headers.get('location'), base).searchParams.get('authError'), 'oauth_failed');
 
     assert.ok(exchanges.some(entry => entry.provider === 'google'));
     assert.ok(exchanges.some(entry => entry.provider === 'wechat'));

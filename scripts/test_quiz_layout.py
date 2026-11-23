@@ -77,6 +77,8 @@ function run() {
   var screen = $.NSScreen.mainScreen.frame;
   var M = {port: PORT, quizBtnSkipX1:145};
   var compact = COMPACT, full = FULL, lastQuizGeom = compact;
+  ObjC.registerSubclass({name:'DWPatrickWindow',superclass:'NSPanel',methods:{canBecomeKeyWindow:{types:['bool',[]],implementation:function(){return true;}}}});
+  function focusPatrickWindow(){} function patrickKeyEvent(){} function patrickFlagsChanged(){}
   METHODS
   function assert(ok, message) { if (!ok) throw new Error(message); }
   function tick() { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.25)); }

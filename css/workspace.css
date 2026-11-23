@@ -1,0 +1,127 @@
+/* Workbench layout. The preview, its tools and both side panels share one grid. */
+:root .app .workbench {
+  max-width: 1920px;
+  gap: clamp(12px, 1.2vw, 24px);
+  padding: 18px clamp(12px, 1.6vw, 32px) 28px;
+}
+@media (min-width: 1121px) {
+  .app .workbench { grid-template-columns: clamp(244px, 16vw, 304px) minmax(0, 1fr) clamp(248px, 17vw, 324px); }
+}
+.app .workbench .preview { align-items: stretch; gap: 12px; }
+.app .preview-top { gap: 8px 16px; padding: 0 2px; }
+.preview-heading { display: grid; gap: 4px; min-width: 0; }
+.preview-heading h2 { margin: 0; font: 650 clamp(18px, 1.3vw, 23px)/1.16 var(--font); letter-spacing: -.025em; color: var(--ink); }
+.preview-heading #meta { font: 500 11px/1.5 var(--font); color: var(--sub); font-variant-numeric: tabular-nums; }
+.app .preview-top .meta-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.app .preview-top .btn { white-space: nowrap; }
+.app .workbench .stage { min-width: 0; min-height: 140px; }
+.app .workbench .panel-col { scrollbar-gutter: stable; }
+.app .workbench .card-head h2 { line-height: 1.35; }
+.app .workbench .srs-learn { margin: 0 0 12px; }
+.app .workbench .srs-records:empty { display: none; }
+.wallpaper-palette { margin: 5px 0 12px; }
+.wallpaper-palette > summary,
+#module-library .lib-group-heading {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px;
+  margin: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px;
+  background: transparent; color: var(--ink); font: 500 12px/1.4 var(--font); cursor: pointer;
+}
+.wallpaper-palette > summary { list-style: none; }
+.wallpaper-palette > summary::-webkit-details-marker { display: none; }
+.wallpaper-palette > summary::after, #module-library .lib-group-heading::after {
+  content: ''; display: block; flex: 0 0 auto; width: 6px; height: 6px; margin: 0 3px 0 2px;
+  border: solid var(--sub); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg);
+}
+.wallpaper-palette[open] > summary::after, #module-library .lib-group-heading[aria-expanded="true"]::after { transform: rotate(135deg); }
+.wallpaper-palette .palette-current { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.palette-current i { width: 23px; height: 15px; border-radius: 5px; border: 1px solid var(--line); }
+.palette-current b { color: var(--sub); font-weight: 500; }
+.wallpaper-palette[open] .swatches { margin-top: 8px; }
+.app #theme-swatches .swatch { min-height: 30px; aspect-ratio: auto; }
+:root .app .topbar { column-gap: clamp(12px, 2vw, 36px); }
+.app .topbar .brand { flex: 0 0 auto; }
+.app .topbar .layout-actions { min-width: 0; flex: 1; flex-wrap: wrap; justify-content: flex-end; }
+.workspace-preferences { position: relative; flex: none; }
+#workspace-tools-toggle { display: inline-flex; align-items: center; gap: 5px; }
+#workspace-tools-toggle .ic { width: 15px; height: 15px; }
+.workspace-settings-panel {
+  position: absolute; z-index: 2; top: calc(100% + 6px); right: 0; width: 156px;
+  display: grid; gap: 2px; padding: 5px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--paper); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
+}
+.workspace-settings-panel > :is(button, a) {
+  display: block; padding: 9px 12px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--ink); text-align: left; font: 500 13px/1.4 var(--font); text-decoration: none; cursor: pointer;
+}
+.workspace-settings-panel > :is(button, a):hover,
+.wallpaper-palette > summary:hover, #module-library .lib-group-heading:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.app .topbar .account-tools { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+.app .topbar :is(.account-link, .btn, .ui-theme-option, .sync-status) { white-space: nowrap; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .top-actions.layout-actions,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app .meta-actions {
+  border: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.layout-actions, .meta-actions)[data-liquid-optic]::before,
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .app :is(.layout-actions, .meta-actions)[data-liquid-optic]::after { content: none; }
+:root[data-ui-theme="liquid"] .workbench :is(.panel-col, .pet-dock) { border: 1px solid var(--line); background: var(--paper); box-shadow: none; }
+:root[data-ui-theme="liquid"] .workbench .stage { border: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 5%, var(--paper)); box-shadow: none; }
+:root:is([data-ui-theme="liquid"], [data-ui-theme="darkliquid"]) .workbench :is(.panel-col, .pet-dock, .stage) { border-radius: 18px; }
+@container preview (max-width: 660px) {
+  .app .preview-top { align-items: flex-start; }
+  .app .preview-top .meta-actions { width: auto; max-width: 100%; }
+  .app .preview-top .btn { flex: 0 0 auto; }
+  :root .app .pet-dock .pet-dock-actions .btn { width: auto; flex: 0 0 auto; }
+}
+@media (max-width: 1120px) {
+  :root .app .topbar { position: relative; flex-wrap: wrap; row-gap: 8px; }
+  :root .app .topbar .layout-actions { justify-content: flex-start; }
+  .app .workbench .panel-col { scrollbar-gutter: auto; }
+}
+@media (max-width: 720px) {
+  :root .app .workbench { padding: 12px; }
+  :root .app .topbar { padding: 12px; }
+  .app .topbar .account-tools { justify-content: flex-start; }
+  .app .workbench .preview { gap: 10px; }
+  :root .app .pet-dock { padding: 12px; }
+}
+
+#module-library { container-type: inline-size; }
+#module-library .lib-cards { gap: 5px; }
+#module-library .lib-group-heading { justify-content: flex-start; box-shadow: none; }
+#module-library .lib-group-heading b { font-size: 12px; }
+#module-library .lib-group-heading > span { margin-left: auto; font-variant-numeric: tabular-nums; }
+#module-library .lib-group-heading[aria-expanded="true"] { margin-bottom: 6px; }
+@container (max-width: 274px) {
+  #module-library .lib-group-grid { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  #module-library .lib-card { min-height: 46px; grid-template-columns: 28px minmax(0, 1fr); padding: 6px 8px; }
+  #module-library .lib-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 6px; align-items: center; }
+  #module-library .lib-body b { grid-column: 1; }
+  #module-library .lib-desc { grid-column: 1; grid-row: 2; }
+  #module-library .lib-count { grid-column: 2; grid-row: 1 / 3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #module-library .lib-card .lib-cover { width: 26px; height: 34px; }
+}
+.app .srs-overdue summary { margin: 0; cursor: pointer; }
+.sync-status[data-state="offline"], .sync-status[data-state="reauth"] { color: var(--danger); }
+.app .srs-overdue[open] summary { margin-bottom: 6px; }
+#speech-form :is(input, select) { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--paper); color: var(--ink); font: inherit; }
+#speech-form audio { width: 100%; }
+.account-center-address summary { color: var(--sub); font-size: 12px; cursor: pointer; }
+.account-center-address input { margin-top: 6px; width: 100%; }
+.account-providers > a.btn { text-align: center; text-decoration: none; }
+@media (max-width: 840px) {
+  :root .app .topbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; row-gap: 6px; }
+  .app .topbar .layout-actions { grid-column: 1 / -1; grid-row: 2; width: 100%; padding: 0; justify-content: flex-start; }
+  .app .topbar.compact-tools .layout-actions > :not(.ui-theme-picker) { display: none; }
+  .app .workspace-preferences { display: contents; }
+  .app .topbar #workspace-tools-toggle { grid-column: 2; grid-row: 1; justify-self: end; white-space: nowrap; }
+  .app .workspace-settings-panel {
+    grid-column: 1 / -1; position: static; width: auto; display: flex; flex-wrap: wrap;
+    gap: 4px; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 5px 0 0;
+    background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  .app .topbar .tagline { max-width: 100%; }
+}
+@media (max-width: 480px) {
+  .app .topbar .tagline { display: none; }
+}

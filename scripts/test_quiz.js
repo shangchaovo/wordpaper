@@ -22,7 +22,7 @@ const ctx = vm.createContext({
 const source = fs.readFileSync(path.join(root, 'companion.js'), 'utf8');
 vm.runInContext(source.slice(0, source.indexOf('const server = http.createServer(')), ctx);
 const run = code => vm.runInContext(code, ctx);
-run('ttsStopNow = () => {}; ttsPrewarm = () => {}; playSfx = () => {}; scheduleStatusBubble = () => {};');
+run('ttsStopNow = () => {}; ttsPrewarm = () => {}; scheduleStatusBubble = () => {};');
 let passed = 0, failed = 0;
 function test(name, fn) {
   try { fn(); passed++; console.log('PASS', name); }
@@ -189,19 +189,23 @@ if (process.argv[2] === '--fixtures') {
   const output = path.resolve(process.argv[3]);
   fs.mkdirSync(output, { recursive: true });
   const samples = [
+    { name: 'manual-mastered', word: 'commute', phonetic: '/kəˈmjuːt/', category: 'review', manualMastered:true, done:true },
     { name: 'normal', word: 'commute', phonetic: '/kəˈmjuːt/', category: 'review', roundInfo: { stage: 0, total: 8, nextIn: '1 小时' } },
+    { name: 'custom-shortcuts', word: 'commute', phonetic: '/kəˈmjuːt/', category: 'fresh', customKeys: true },
     { name: 'long-word', word: 'pneumonoultramicroscopicsilicovolcanoconiosis', phonetic: '/ˌnjuːmənoʊˌʌltrəˌmaɪkrəˌskɒpɪkˌsɪlɪkoʊvɒlˌkeɪnoʊˈkoʊsɪs/', category: 'review', roundInfo: { stage: 7, total: 8, nextIn: null } },
     { name: 'japanese', word: 'コンピューター', phonetic: 'コンピューター', category: 'fresh' },
     { name: 'collapsed', word: 'disproportionate', phonetic: '/ˌdɪsprəˈpɔːrʃənət/', category: 'review', roundInfo: { stage: 0, total: 8, nextIn: '1 小时' }, long: true },
     { name: 'expanded', word: 'disproportionate', phonetic: '/ˌdɪsprəˈpɔːrʃənət/', category: 'review', roundInfo: { stage: 0, total: 8, nextIn: '1 小时' }, long: true, expand: true },
   ];
   for (const sample of samples) {
+    run(sample.customKeys ? "CFG.patrickShortcuts={answer0:{code:'PageDown',mods:15},answer1:{code:'Backspace',mods:15}}" : 'CFG.patrickShortcuts={}');
     ctx.sample = { pickedIndex: -1, ...sample };
     ctx.options = [sample.long ? 'adj. 不成比例的；与实际情况相比过大或过小，需要结合具体语境理解。'.repeat(80) : 'n. 通勤；上下班的往返路程', 'v. 交换；改变；减轻', 'n. 社区；团体；共同体', 'adj. 一致的；连贯的；前后一致的'];
     const out = run('buildQuizSVG(sample, options, false)');
     fs.writeFileSync(path.join(output, sample.name + '.svg'), out.svg);
     fs.writeFileSync(path.join(output, sample.name + '.json'), JSON.stringify(out.geom));
   }
+  run('CFG.patrickShortcuts={}');
   fs.writeFileSync(path.join(output, 'patrick.jxa.js'), run('buildPatrickJXA({ W:190, H:206, words:[], keys:[], frameNames:{} })'));
 }
 

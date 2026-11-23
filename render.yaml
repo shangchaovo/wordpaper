@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: wordpaper-api
+    runtime: docker
+    plan: free
+    region: oregon
+    autoDeployTrigger: 'off'
+    healthCheckPath: /healthz
+    envVars:
+      - key: WORDPAPER_STORAGE_BACKEND
+        value: postgres
+      - key: WORDPAPER_DATABASE_URL
+        sync: false
+      - key: WORDPAPER_MODEL_KEY_BASE64
+        sync: false
+      - key: WORDPAPER_STORAGE_ORIGIN
+        sync: false
+      - key: WORDPAPER_STORAGE_SECRET
+        sync: false
+      - key: WORDPAPER_PUBLIC_ORIGIN
+        sync: false
+      - key: WORDPAPER_GOOGLE_CLIENT_ID
+        sync: false
+      - key: WORDPAPER_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: WORDPAPER_GOOGLE_REDIRECT_URI
+        sync: false
+      - key: TRUST_PROXY
+        value: '1'

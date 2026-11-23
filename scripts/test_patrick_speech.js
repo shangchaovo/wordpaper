@@ -126,11 +126,12 @@ try {
     assert.equal(run('speakCardState'), null);
     assert.equal(run('patrickCmds.at(-1).reason'), 'error');
   });
-  test('missing examples read the word once; disabled voice does not open a bubble', () => {
+  test('missing account reads the word then keeps the AI setup hint; disabled voice does not open a bubble', () => {
     reset(''); begin();
     assert.equal(run('ttsQueue.length'), 0);
     complete(0);
-    assert.equal(run('patrickCmds.at(-1).reason'), 'done');
+    assert.equal(run('patrickCmds.at(-1).phase'), 'error');
+    assert.match(run('speakCardState.exampleError'),/登录/);
     run('featureCache.flags.betaPatrickVoice=false');
     assert.equal(run("patrickSpeakWord(0, 'visible-quiz').error"), 'voice-disabled');
     assert.equal(renders.length, 1);
@@ -161,6 +162,17 @@ try {
     assert.equal(run('patrickCmds.at(-1).cues[0].start'),.1);
     assert.match(run('patrickCmds.at(-1).file'),/sonia/);
   });
+  test('changing shortcut captions preserves the active audio session',()=>{
+    const result=begin();complete(0);
+    run("CFG.patrickShortcuts={answer0:{code:'KeyJ',mods:0}};renderSpeakCard(speakCardState,true)");
+    renderAt(renders.length-1);
+    assert.equal(run('speakCardState.id'),result.id);
+    assert.equal(run('speakCardState.part'),1);
+    assert.equal(run('speakCardState.started'),true);
+    assert.equal(run('patrickCmds.at(-1).cmd'),'speak-update');
+    assert.equal(complete(1),true);
+    run('CFG.patrickShortcuts=undefined');
+  });
   test('bubble avoids the quiz and stays within multiple screen origins', () => {
     for (const origin of [-1440, 0, 1512]) {
       ctx.screenRect = { x: origin, y: 24, w: 1440, h: 876 };
@@ -189,6 +201,10 @@ try {
     ctx.ex = {en:'A complete sentence with unexpectedly long words. '.repeat(16),zh:'完整保留长句与译文，不提前截断。'.repeat(12)};
     fs.writeFileSync(path.join(out,'long.svg'),run('buildSpeakSVG(word,ex,true).svg'));
     fs.writeFileSync(path.join(out,'empty.svg'),run("buildSpeakSVG({word:'amuse'},null,false).svg"));
+    const choice=run("buildSpeakSVG({word:'spare',phonetic:'/speə/'},null,true,false,{choice:true,canGenerate:true})");
+    fs.writeFileSync(path.join(out,'ai-choice.svg'),choice.svg);
+    fs.writeFileSync(path.join(out,'ai-choice.json'),JSON.stringify(choice.geom));
+    fs.writeFileSync(path.join(out,'ai-retry.svg'),run("buildSpeakSVG({word:'spare'},null,true,false,{error:'模型暂时不可用，请重试。',canGenerate:true}).svg"));
     fs.writeFileSync(path.join(out,'patrick.jxa.js'),run('buildPatrickJXA({W:190,H:206,words:[],keys:[],frameNames:PATRICK_FRAME,dark:true})'));
     fs.writeFileSync(path.join(out,'menu.jxa.js'),run('buildMenuBarJXA(CFG.port,process.pid)'));
     new vm.Script(fs.readFileSync(path.join(out,'patrick.jxa.js'),'utf8'));

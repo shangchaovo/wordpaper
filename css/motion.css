@@ -148,8 +148,35 @@ html:has(#memory-modal:not([hidden])) { overflow: hidden; scrollbar-gutter: stab
 :root[data-ui-theme="darkliquid"] #memory-modal { --memory-paper: #161b26; }
 #memory-modal .memory-card::before, #memory-modal .memory-card::after { display: none; }
 #memory-modal .memory-card > * { flex-shrink: 0; animation: none; }
-#memory-modal .memory-notebook-list { flex-shrink: 1; min-height: 0; overscroll-behavior: contain; isolation: isolate; }
+#memory-modal .memory-notebook-list {
+  flex-shrink: 1; min-height: 0; overscroll-behavior: contain; isolation: isolate;
+  /* Only the list scrolls. Its rows must fit long meanings, schedules and controls. */
+  grid-auto-rows: max-content; align-content: start;
+  /* Keep the word in place when undo restores the taller answer row. */
+  overflow-anchor: none;
+}
 #memory-modal .memory-entry.due:hover { transform: none; }
+#memory-modal button[aria-disabled="true"] { cursor: wait; opacity: .55; transform: none; }
+#memory-modal .memory-meaning.locked { opacity: .7; }
+
+/* Keep the checkbox and its focus ring at full contrast when screening words. */
+#library-word-list .library-word.known { opacity: 1; }
+#library-word-list .known .library-word-main { opacity: .65; }
+@media screen and (prefers-reduced-motion: no-preference) {
+  #memory-modal .memory-meaning,
+  #library-word-list .library-word-main { transition: transform 160ms var(--ease-out), opacity 160ms ease-out; }
+  #memory-modal .memory-meaning.locked { transform: translateY(3px); }
+  #library-word-list .known .library-word-main { transform: translateX(3px); }
+}
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  #memory-modal :is(.memory-answer, .memory-undo):hover,
+  #library-word-list .library-word:hover { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #word-inspector { animation: none; }
+  #memory-modal :is(.memory-entry, .memory-meaning, .memory-answer, .memory-undo),
+  #library-word-list :is(.library-word, .library-word-main) { transition: none; }
+}
 @media (forced-colors: active) {
   #memory-modal .memory-card { background: Canvas; }
 }

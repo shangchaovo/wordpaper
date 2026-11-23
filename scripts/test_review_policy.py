@@ -73,7 +73,7 @@ def main():
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     page.goto(base, wait_until='domcontentloaded')
-                    page.wait_for_selector('#library-cards .lib-card')
+                    page.wait_for_selector('#library-cards .lib-card:visible')
                     expect(page.locator('#srs-overdue')).to_contain_text('还剩')
                     expect(page.locator('#srs-overdue')).to_contain_text('降至第 1 轮')
                     expect(page.locator('#srs-overdue')).to_contain_text('已从第 4 轮降至第 3 轮')
@@ -85,6 +85,7 @@ def main():
 
                     # A warning links to the matching word. Completing it records
                     # exactly one practice and its actual new due time.
+                    page.locator('#srs-overdue summary').click()
                     page.locator('#srs-overdue button').filter(has_text='late').click()
                     card = page.locator('.memory-entry[data-review-key="late|逾期"]')
                     expect(card.locator('.memory-overdue')).to_contain_text('第 4 轮降至第 3 轮')

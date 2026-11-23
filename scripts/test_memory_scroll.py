@@ -67,7 +67,7 @@ def main():
                         page.on("console", lambda message: errors.append(
                             "console.error: " + message.text) if message.type == "error" else None)
                         page.goto(base, wait_until="domcontentloaded")
-                        page.wait_for_selector("#library-cards .lib-card")
+                        page.wait_for_selector("#library-cards .lib-card:visible")
                         page.wait_for_timeout(800)
 
                         for theme in THEMES:
@@ -133,9 +133,17 @@ def main():
                                 listing.evaluate("element => { element.scrollTop = 0; }")
                                 point_to_list(page, listing)
                                 page.mouse.wheel(0, 450)
-                                page.wait_for_timeout(250)
-                                check(label + " 滚轮能滚动词卡列表",
-                                      listing.evaluate("element => element.scrollTop") > 0)
+                                # Wheel dispatch can precede the compositor's scroll.
+                                scrolled = listing.evaluate("""el => new Promise(resolve => {
+                                  const deadline = performance.now() + 2500;
+                                  const check = () => {
+                                    if (el.scrollTop > 0) resolve(true);
+                                    else if (performance.now() >= deadline) resolve(false);
+                                    else requestAnimationFrame(check);
+                                  };
+                                  check();
+                                })""")
+                                check(label + " 滚轮能滚动词卡列表", scrolled)
                                 for delta in (100000, 2000, 2000):
                                     page.mouse.wheel(0, delta)
                                     page.wait_for_timeout(150)

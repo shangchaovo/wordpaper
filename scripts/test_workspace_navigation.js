@@ -228,6 +228,16 @@ childProcess.execFile = function (command, args, ...rest) {
     await expectNavigation('workspace-home', ['-a', realAppPath, 'wordpaper://open?path=' + encodeURIComponent('/')], true);
     await expectNavigation('workspace-memory', ['-a', realAppPath, 'wordpaper://open?path=' + encodeURIComponent('/?openMemory=1')], true);
 
+    const beforeShortcuts = captures().length;
+    assert.equal((await request('/pet-shortcuts-window.php')).data.ok, true);
+    assert.deepEqual(captures().slice(beforeShortcuts).map(item => item.args), [
+      ['-a', realAppPath, 'wordpaper://open?path=' + encodeURIComponent('/#shortcuts')],
+    ]);
+    assert.equal((await request('/pet-shortcuts-window.php', {method:'GET'})).status, 405);
+    assert.equal((await request('/pet-shortcuts-window.php', {headers:{Origin:'https://example.com'}})).status, 403);
+    assert.equal(captures().length, beforeShortcuts + 1);
+    passed('keyboard settings open once in the registered App and reject foreign origins');
+
     const beforeDeniedNavigation = captures().length;
     assert.equal((await request('/menu.php?cmd=workspace-memory', { headers: {} })).status, 403);
     assert.equal((await request('/menu.php?cmd=workspace-home', { method: 'GET' })).status, 405);

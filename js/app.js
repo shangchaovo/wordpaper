@@ -103,6 +103,7 @@
 
   function loadSettings() {
     settings = window.Store.getSettings();
+    if (!Object.hasOwn(THEMES, settings.theme)) settings.theme = 'cream';
     settings.uiTheme = UI_THEMES.has(settings.uiTheme) ? settings.uiTheme : 'liquid';
     document.documentElement.dataset.uiTheme = settings.uiTheme;
     // 初中/高中词书已恢复为独立 ECDICT 词库,无需再映射到 JLPT。
@@ -689,6 +690,44 @@
   }
 
   function bindControls() {
+    const menu = $('#workspace-tools-toggle');
+    const topbar = menu.closest('.topbar');
+    const panel = $('#workspace-settings-panel');
+    const narrowHeader = window.matchMedia('(max-width: 840px)');
+    function setToolsExpanded(expanded) {
+      panel.hidden = !expanded;
+      menu.setAttribute('aria-expanded', String(expanded));
+      menu.setAttribute('aria-controls', narrowHeader.matches ? 'workspace-settings-panel workspace-tools' : 'workspace-settings-panel');
+      topbar.classList.toggle('compact-tools', narrowHeader.matches && !expanded);
+    }
+    setToolsExpanded(false);
+    narrowHeader.addEventListener('change', () => setToolsExpanded(false));
+    menu.addEventListener('click', () => setToolsExpanded(menu.getAttribute('aria-expanded') !== 'true'));
+    panel.addEventListener('click', event => {
+      if (event.target.closest('button, a')) setToolsExpanded(false);
+    });
+    for (const dialog of [$('#model-dialog'), $('#speech-dialog')]) {
+      dialog.addEventListener('close', () => menu.focus({ preventScroll: true }));
+    }
+    document.addEventListener('pointerdown', event => {
+      if (!panel.hidden && !topbar.contains(event.target)) setToolsExpanded(false);
+    });
+    topbar.addEventListener('focusout', event => {
+      if (!panel.hidden && event.relatedTarget && !topbar.contains(event.relatedTarget)) setToolsExpanded(false);
+    });
+    topbar.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !panel.hidden) {
+        setToolsExpanded(false);
+        menu.focus();
+      }
+    });
+    const palette = $('#wallpaper-palette');
+    palette.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && palette.open) {
+        palette.open = false;
+        palette.querySelector('summary').focus({ preventScroll: true });
+      }
+    });
     $$('.ui-theme-option').forEach(button => button.addEventListener('click', () => {
       switchUITheme(button.dataset.uiTheme);
     }));
@@ -815,30 +854,17 @@
     // 换词特效下拉:选中即存 localStorage 并触发 pet-sync,下次换词生效。
     const petFx = $('#sel-pet-transition');
     if (petFx) {
-      petFx.value = window.Store.read('petTransition', 'dissolve-pop');
+      petFx.value = settings.petTransition || 'dissolve-pop';
       petFx.addEventListener('change', () => {
-        window.Store.write('petTransition', petFx.value);
+        settings.petTransition = petFx.value;
+        saveSettings();
         syncCompanionLearningContext();
         toast('换词特效：' + petFx.options[petFx.selectedIndex].text);
       });
     }
-    // 形态下拉:词卡 ⇄ 派大星。POST /pet-mode.php 即时切换(伴侣保存 config 并重建窗口)。
-    const petModeSel = $('#sel-pet-mode');
-    if (petModeSel) {
-      petModeSel.value = window.Store.read('petMode', 'card');
-      petModeSel.addEventListener('change', async () => {
-        const mode = petModeSel.value === 'patrick' ? 'patrick' : 'card';
-        try {
-          const r = await fetch('pet-mode.php?mode=' + mode, { method: 'POST' });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          window.Store.write('petMode', mode);
-          toast(mode === 'patrick' ? '派大星来啦！它会在桌面散步' : '已切回词卡形态');
-        } catch (e) {
-          toast('切换形态失败：桌面伴侣没在运行');
-          petModeSel.value = window.Store.read('petMode', 'card');
-        }
-      });
-    }
+    $('#sel-pet-mode')?.addEventListener('change', event => {
+      mutatePetWindow('pet-mode.php?mode=' + encodeURIComponent(event.target.value));
+    });
     // 壁纸/预览同步总闸:默认开。关掉后壁纸/预览回退各自独立随机,不再跟随小词灵。
     const petSyncToggle = $('#chk-pet-sync');
     if (petSyncToggle) {
@@ -871,6 +897,10 @@
     if (petDock) petDock.addEventListener('click', handleCompanionAction);
 
     syncCompanionButton();
+    const checkPet = () => { if (!document.hidden && (companionUp || companionAction === 'start')) syncCompanionButton(true); };
+    window.addEventListener('focus', checkPet);
+    document.addEventListener('visibilitychange', checkPet);
+    setInterval(checkPet, 5000);
 
     bindImport();
     bindReminders();
@@ -1109,6 +1139,9 @@
 
   /* ---------- library cards ---------- */
   let justPickedLib = null;
+  const openLibraryGroups = new Set();
+  const foldedSearchGroups = new Set();
+  let lastLibraryQuery = '';
   function libraryCountText(lib) {
     const count = lib.id === 'custom' ? window.Store.getCustomWords().length : libCounts[lib.id];
     return typeof count === 'number' ? count.toLocaleString() + ' 词' : (count === '?' ? '词数暂不可用' : '加载中…');
@@ -1124,7 +1157,7 @@
 
   function renderLibraryCards() {
     const box = $('#library-cards');
-    const focusedLibrary = box.contains(document.activeElement) ? document.activeElement.dataset.library : null;
+    const focused = box.contains(document.activeElement) ? document.activeElement.dataset : {};
     box.innerHTML = '';
     const selected = LIBRARIES.find(lib => lib.id === settings.library) || LIBRARIES[0];
     const selectedLabel = $('#selected-library-label');
@@ -1134,6 +1167,10 @@
     $('#btn-browse-selected-library').setAttribute('aria-label', '浏览并初筛：' + selected.name);
     // Search across titles, descriptions, source names and book editions.
     const query = ($('#library-filter') && $('#library-filter').value || '').trim().toLowerCase();
+    if (query !== lastLibraryQuery) {
+      foldedSearchGroups.clear();
+      lastLibraryQuery = query;
+    }
     const visible = LIBRARIES.filter(lib => {
       if (!query) return true;
       const group = LIBRARY_GROUPS.find(item => item.id === lib.group);
@@ -1152,9 +1189,28 @@
       section.dataset.group = group.id;
       section.setAttribute('role', 'group');
       section.setAttribute('aria-label', group.name);
-      if (group.detail) section.innerHTML = `<div class="lib-group-heading" aria-hidden="true"><b>${group.name}</b><span>${group.detail}</span></div>`;
       const grid = document.createElement('div');
       grid.className = 'lib-group-grid';
+      if (group.detail) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'lib-group-heading';
+        toggle.dataset.groupToggle = group.id;
+        grid.id = 'library-group-' + group.id;
+        grid.hidden = query ? foldedSearchGroups.has(group.id) : !openLibraryGroups.has(group.id);
+        toggle.setAttribute('aria-controls', grid.id);
+        toggle.setAttribute('aria-expanded', String(!grid.hidden));
+        toggle.innerHTML = `<b>${group.name}</b><span>${books.length} 本</span>`;
+        toggle.addEventListener('click', () => {
+          grid.hidden = !grid.hidden;
+          toggle.setAttribute('aria-expanded', String(!grid.hidden));
+          if (query) {
+            if (grid.hidden) foldedSearchGroups.add(group.id); else foldedSearchGroups.delete(group.id);
+          } else if (grid.hidden) openLibraryGroups.delete(group.id);
+          else openLibraryGroups.add(group.id);
+        });
+        section.appendChild(toggle);
+      }
       books.forEach(lib => {
         const card = document.createElement('button');
         card.type = 'button';
@@ -1181,7 +1237,9 @@
       section.appendChild(grid);
       box.appendChild(section);
     });
-    if (focusedLibrary) box.querySelector(`[data-library="${focusedLibrary}"]`)?.focus({ preventScroll: true });
+    const restore = focused.library ? box.querySelector(`[data-library="${focused.library}"]`)
+      : focused.groupToggle && box.querySelector(`[data-group-toggle="${focused.groupToggle}"]`);
+    if (restore) restore.focus({ preventScroll: true });
   }
 
   function loadLibraryCounts() {
@@ -1324,16 +1382,23 @@
   /* ---------- theme + pattern pickers ---------- */
   function renderThemeSwatches() {
     const box = $('#theme-swatches');
+    const palette = $('#wallpaper-palette');
     box.innerHTML = '';
     Object.entries(THEMES).forEach(([key, t]) => {
+      const active = key === settings.theme;
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'swatch' + (key === settings.theme ? ' on' : '');
+      b.className = 'swatch' + (active ? ' on' : '');
+      b.setAttribute('aria-pressed', String(active));
       b.title = t.name;
       b.style.background = t.dark
         ? `linear-gradient(135deg, ${t.bg} 0%, ${t.bg2} 55%, ${t.accent} 165%)`
         : `linear-gradient(135deg, ${t.bg} 0%, ${t.accentSoft} 60%, ${t.accent} 100%)`;
       b.innerHTML = `<span>${t.name}</span>`;
+      if (active) {
+        $('#palette-sample').style.background = b.style.background;
+        $('#palette-name').textContent = t.name;
+      }
       b.addEventListener('click', () => {
         if (settings.theme !== key) requestPreviewSwap();
         settings.theme = key;
@@ -1343,6 +1408,8 @@
           settings.bgPattern = 'none';
           renderPatternPicker();
         }
+        palette.open = false;
+        palette.querySelector('summary').focus({ preventScroll: true });
         renderThemeSwatches();
         commit();
       });
@@ -1753,9 +1820,11 @@
     return null;
   }
 
+  let wordLabelAnimation;
   function bindWordInspector() {
     const inspector = $('#word-inspector');
     if (!inspector) return;
+    window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => wordLabelAnimation?.cancel());
     const set = (key, value) => updateSelectedWordStyle({ [key]: value });
     const syncScale = e => set('scale', Number(e.target.value));
     // input 用于拖动中的实时反馈；change 兜底部分浏览器只在松手时派发的情况。
@@ -1779,9 +1848,20 @@
     selectedWordIndex = index;
     const word = lastSel.words[index];
     const theme = THEMES[settings.theme] || THEMES.cream;
-    $('#word-inspector').hidden = false;
+    const inspector = $('#word-inspector'), label = $('#selected-word-label');
+    const switching = !inspector.hidden && label.textContent !== word.word;
+    inspector.hidden = false;
     syncWordScaleAvailability();
-    $('#selected-word-label').textContent = word.word;
+    if (label.textContent !== word.word) label.textContent = word.word;
+    if (switching) {
+      wordLabelAnimation?.cancel();
+      if (label.animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        wordLabelAnimation = label.animate(
+          [{ opacity: .55, transform: 'translateY(3px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 160, easing: 'ease-out' }
+        );
+      }
+    }
     $('#sel-word-scale').value = settings.fontScale || 1;
     $('#sel-word-scale-number').value = Math.round((settings.fontScale || 1) * 100);
     $('#sel-word-weight').value = settings.fontWeight || 700;
@@ -2035,10 +2115,11 @@
       }
     }
     rows.sort((a, b) => Number(a.info.handled) - Number(b.info.handled) || a.info.deadline - b.info.deadline);
-    box.hidden = !rows.length; box.innerHTML = '';
+    box.hidden = !rows.length;
+    const list = box.querySelector('.srs-overdue-list');
+    list.replaceChildren();
     if (rows.length) {
-      const title = document.createElement('div'); title.className = 'srs-overdue-title';
-      title.textContent = `逾期提醒 · ${rows.length} 个词`; box.appendChild(title);
+      box.querySelector('summary').textContent = `逾期提醒 · ${rows.length} 个词`;
       rows.slice(0, 3).forEach(({ library, item }) => {
         const button = document.createElement('button'); button.type = 'button';
         const label = document.createElement('b'); label.textContent = item.word?.word || '单词';
@@ -2047,7 +2128,7 @@
           if (settings.library !== library) { settings.library = library; renderLibraryCards(); syncDependentUI(); commit(); }
           $('#memory-search-input').value = item.word.word;
           $('#memory-search-clear').hidden = false; openMemoryNotebook();
-        }); box.appendChild(button);
+        }); list.appendChild(button);
       });
     }
     const fresh = rows.filter(({ library, key, info }) => {
@@ -2358,65 +2439,69 @@
     if (clear) clear.addEventListener('click', () => { input.value = ''; clear.hidden = true; renderMemoryNotebook(); input.focus(); });
   }
 
+  function renderNotebookSummary() {
+    const st = window.Review.stats(settings.library);
+    $('#memory-summary').innerHTML =
+      `<span class="memory-pill memory-pill-due">到点该复习 <b>${st.due}</b></span>` +
+      `<span class="memory-pill">还在记 <b>${st.pending}</b></span>` +
+      `<span class="memory-pill">已经记住 <b>${st.done}</b></span>` +
+      `<span class="memory-pill memory-pill-forgot">遗忘 <b>${st.failures}</b> 次</span>`;
+  }
+
+  function buildNotebookCard(item, masteredFlag, now) {
+    const ROUNDS = window.Review.INTERVALS_MIN.length;
+    /* 卡片来源标注:🐾=派大星考过(patrickQuiz 事件 / markPetQuiz);🆕=新词(还没作答过)。 */
+    const petTag = item.petQuiz && item.petQuiz.count ? '<span class="memory-tag pet">🐾 派大星考过' + (item.petQuiz.count > 1 ? '×' + item.petQuiz.count : '') + '</span>' : '';
+    const newTag = !item.manualMastered && (Number(item.reviewCount) || 0) === 0 ? '<span class="memory-tag new">🆕 新词</span>' : '';
+
+    const dueNow = !!(item.due && item.due <= now);
+    const card = document.createElement('article');
+    card.dataset.reviewKey = window.Review.wordKey(item.word);
+    card.className = 'memory-entry' + (dueNow && !masteredFlag ? ' due' : '') + (masteredFlag ? ' mastered' : '');
+    const meta = masteredFlag
+      ? (item.manualMastered ? '已手动标熟 · 不再安排复习' : `已经记住 · 复习了 ${item.reviewCount || 0} 次`)
+      : dueNow
+        ? `到点了 · 先回想再作答（第 ${item.stage + 1}/${ROUNDS} 轮）`
+        : `还在记 · 第 ${item.stage + 1}/${ROUNDS} 轮 · ${fmtCountdown(item.due - now)}后考你`;
+    const meaningClass = masteredFlag ? 'memory-meaning' : 'memory-meaning locked';
+    const meaningText = masteredFlag ? escapeHTML((item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || '')) : '中文释义已遮盖';
+    card.innerHTML = `<b>${escapeHTML(item.word.word)}</b>` +
+      `<span class="memory-tags">${petTag}${newTag}</span>` +
+      `<span class="memory-meta">${meta}</span><span class="${meaningClass}" aria-label="${masteredFlag ? '已记住，显示释义' : '作答后显示中文释义'}">${meaningText}</span>`;
+    if (dueNow && !masteredFlag) {
+      const actions = document.createElement('div'); actions.className = 'memory-actions';
+      actions.innerHTML = '<button type="button" class="memory-answer forgot">不会</button>' +
+        '<button type="button" class="memory-answer fuzzy">模糊</button>' +
+        '<button type="button" class="memory-answer remembered">背过了</button>';
+      actions.querySelector('.forgot').addEventListener('click', () => answerNotebookWord(item, card, 'forgot'));
+      actions.querySelector('.fuzzy').addEventListener('click', () => answerNotebookWord(item, card, 'fuzzy'));
+      actions.querySelector('.remembered').addEventListener('click', () => answerNotebookWord(item, card, 'remembered'));
+      card.appendChild(actions);
+    }
+    const schedule = document.createElement('span'); schedule.className = 'memory-schedule';
+    schedule.textContent = item.due ? `下次复习：${reviewTime(item.due)}${item.due <= now ? ' · 现在可复习' : ''}` : '全部周期完成 · 暂无后续排期';
+    const overdue = document.createElement('span'); overdue.className = 'memory-overdue';
+    overdue.textContent = overdueText(item); overdue.hidden = !overdue.textContent;
+    card.append(schedule, overdue);
+    return card;
+  }
+
   function renderMemoryNotebook() {
-    const list = $('#memory-notebook-list'), summary = $('#memory-summary');
-    if (!list || !summary || !window.Review) return;
+    const list = $('#memory-notebook-list');
+    if (!list || !window.Review) return;
     bindProgressImport();
     bindMemorySearch();
-    const ROUNDS = window.Review.INTERVALS_MIN.length;              // 一共 8 轮
-    const active = window.Review.activeWords(settings.library);     // 还在记(没跑满 8 轮)
-    const mastered = window.Review.masteredWords(settings.library); // 已经记住(跑满 8 轮)
+    const active = window.Review.activeWords(settings.library);
+    const mastered = window.Review.masteredWords(settings.library);
     const now = Date.now();
     const isDue = (item) => !!(item.due && item.due <= now);
-    const dueCount = active.filter(isDue).length;
-    const st = window.Review.stats(settings.library);
-    summary.innerHTML =
-      `<span class="memory-pill memory-pill-due">到点该复习 <b>${dueCount}</b></span>` +
-      `<span class="memory-pill">还在记 <b>${active.length}</b></span>` +
-      `<span class="memory-pill">已经记住 <b>${mastered.length}</b></span>` +
-      `<span class="memory-pill memory-pill-forgot">遗忘 <b>${st.failures}</b> 次</span>`;
+    renderNotebookSummary();
     list.innerHTML = '';
     if (!active.length && !mastered.length) {
       list.innerHTML = '<div class="memory-empty">还没有记忆记录。先在桌面小词灵点击词卡完成首轮学习，再回到这里复习。</div>';
       return;
     }
 
-    /* 卡片来源标注:🐾=派大星考过(patrickQuiz 事件 / markPetQuiz);🆕=新词(还没作答过)。 */
-    const petTag = (item) => item.petQuiz && item.petQuiz.count ? '<span class="memory-tag pet">🐾 派大星考过' + (item.petQuiz.count > 1 ? '×' + item.petQuiz.count : '') + '</span>' : '';
-    const newTag = (item) => (Number(item.reviewCount) || 0) === 0 ? '<span class="memory-tag new">🆕 新词</span>' : '';
-
-    const buildCard = (item, masteredFlag) => {
-      const dueNow = isDue(item);
-      const card = document.createElement('article');
-      card.dataset.reviewKey = window.Review.wordKey(item.word);
-      card.className = 'memory-entry' + (dueNow && !masteredFlag ? ' due' : '') + (masteredFlag ? ' mastered' : '');
-      const meta = masteredFlag
-        ? `已经记住 · 复习了 ${item.reviewCount || 0} 次`
-        : dueNow
-          ? `到点了 · 先回想再作答（第 ${item.stage + 1}/${ROUNDS} 轮）`
-          : `还在记 · 第 ${item.stage + 1}/${ROUNDS} 轮 · ${fmtCountdown(item.due - now)}后考你`;
-      const meaningClass = masteredFlag ? 'memory-meaning' : 'memory-meaning locked';
-      const meaningText = masteredFlag ? escapeHTML((item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || '')) : '中文释义已遮盖';
-      card.innerHTML = `<b>${escapeHTML(item.word.word)}</b>` +
-        `<span class="memory-tags">${petTag(item)}${newTag(item)}</span>` +
-        `<span class="memory-meta">${meta}</span><span class="${meaningClass}" aria-label="${masteredFlag ? '已记住，显示释义' : '作答后显示中文释义'}">${meaningText}</span>`;
-      if (dueNow && !masteredFlag) {
-        const actions = document.createElement('div'); actions.className = 'memory-actions';
-        actions.innerHTML = '<button type="button" class="memory-answer forgot">不会</button>' +
-          '<button type="button" class="memory-answer fuzzy">模糊</button>' +
-          '<button type="button" class="memory-answer remembered">背过了</button>';
-        actions.querySelector('.forgot').addEventListener('click', () => answerNotebookWord(item, card, 'forgot'));
-        actions.querySelector('.fuzzy').addEventListener('click', () => answerNotebookWord(item, card, 'fuzzy'));
-        actions.querySelector('.remembered').addEventListener('click', () => answerNotebookWord(item, card, 'remembered'));
-        card.appendChild(actions);
-      }
-      const schedule = document.createElement('span'); schedule.className = 'memory-schedule';
-      schedule.textContent = item.due ? `下次复习：${reviewTime(item.due)}${item.due <= now ? ' · 现在可复习' : ''}` : '全部周期完成 · 暂无后续排期';
-      const overdue = document.createElement('span'); overdue.className = 'memory-overdue';
-      overdue.textContent = overdueText(item); overdue.hidden = !overdue.textContent;
-      card.append(schedule, overdue);
-      return card;
-    };
     const addSection = (title, hint, items, masteredFlag, emptyNote) => {
       const head = document.createElement('div');
       head.className = 'memory-section-head' + (masteredFlag ? ' mastered' : '');
@@ -2426,7 +2511,7 @@
         const note = document.createElement('div'); note.className = 'memory-empty memory-section-empty'; note.textContent = emptyNote; list.appendChild(note);
         return;
       }
-      items.forEach(item => list.appendChild(buildCard(item, masteredFlag)));
+      items.forEach(item => list.appendChild(buildNotebookCard(item, masteredFlag, now)));
     };
 
     const q = String(($('#memory-search-input') || {}).value || '').trim().toLowerCase();
@@ -2442,12 +2527,24 @@
     addSection('📌 还在记', '到点的排在最前面，答「背过了」进入下一轮；跑满 8 轮就毕业', sortedActive, false, '没有还在记的词 —— 全都记住了 🎉');
     addSection('✅ 已经记住', '跑满全部 8 轮复习，以后不用再管', sortedMastered, true, '还没有已经记住的词 —— 跑满 8 轮复习的词会自动进到这里。');
   }
-  async function answerNotebookWord(item, card, grade) {
-    card.querySelectorAll('.memory-answer').forEach(button => { button.disabled = true; });
-    if (window.Store.currentUser() && (!await window.Store.flush() || !await window.Store.refreshKey('review'))) {
-      card.querySelectorAll('.memory-answer').forEach(button => { button.disabled = false; });
-      toast('复习记录正在同步，请稍后再作答'); return;
+  // A native disabled button drops keyboard focus while the review is syncing.
+  async function notebookActionReady(card, retryMessage) {
+    if (card.hasAttribute('aria-busy')) return false;
+    card.setAttribute('aria-busy', 'true');
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(button => button.setAttribute('aria-disabled', 'true'));
+    try {
+      const ready = !window.Store.currentUser() || (await window.Store.flush() && await window.Store.refreshKey('review'));
+      if (!ready) toast(retryMessage);
+      return ready;
+    } finally {
+      card.removeAttribute('aria-busy');
+      buttons.forEach(button => button.removeAttribute('aria-disabled'));
     }
+  }
+
+  async function answerNotebookWord(item, card, grade) {
+    if (!await notebookActionReady(card, '复习记录正在同步，请稍后再作答')) return;
     // getRandomValues also works on the supported plain-HTTP LAN origin.
     const activityId = 'notebook:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
     const result = window.Review.reviewWord(settings.library, item.word, grade, { activityId });
@@ -2455,8 +2552,13 @@
     if (result.item?.lastUndo?.activityId === activityId) recordDailyActivity({ action: 'review', activityId, at: result.item.lastUndo.at,
       library: settings.library, word: item.word, nextDue: result.item.due });
     const meaning = card.querySelector('.memory-meaning');
-    if (meaning) { meaning.classList.remove('locked'); meaning.textContent = (item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || ''); }
-    card.classList.remove('due'); card.classList.add('answered', result.action === 'remembered' || result.action === 'mastered' ? 'remembered' : (result.action === 'fuzzy' ? 'fuzzy' : 'forgotten'));
+    if (meaning) {
+      meaning.classList.remove('locked');
+      meaning.removeAttribute('aria-label');
+      meaning.textContent = (item.word.pos ? item.word.pos + ' ' : '') + (item.word.meaning || '');
+    }
+    const restoreFocus = card.contains(document.activeElement) && !card.closest('[hidden], .modal-closing');
+    card.classList.remove('due'); card.classList.add('answered', grade === 'forgot' ? 'forgotten' : grade);
     const actions = card.querySelector('.memory-actions'); if (actions) actions.remove();
     const meta = card.querySelector('.memory-meta');
     if (meta) {
@@ -2471,29 +2573,31 @@
     card.appendChild(resultTag);
     // 防误触:作答后可撤销,恢复到点击前状态。
     const undoBtn = document.createElement('button'); undoBtn.type = 'button'; undoBtn.className = 'memory-undo'; undoBtn.textContent = '撤销';
-    undoBtn.addEventListener('click', () => undoNotebookWord(item, card));
+    undoBtn.addEventListener('click', () => undoNotebookWord(item, card, grade));
     card.appendChild(undoBtn);
+    if (restoreFocus) undoBtn.focus({ preventScroll: true });
     const gradeMsg = {
       remembered: `${item.word.word}：背过了，进入下一轮`,
       fuzzy: `${item.word.word}：模糊，稍后再考一次（不进不退）`,
       forgot: `${item.word.word}：不会，20 分钟后重新开始`,
     };
     toast(gradeMsg[grade] || gradeMsg.remembered);
+    renderNotebookSummary();
     updateSrsUI();
     // 作答后的中文一直保留，直到用户关闭或重新打开记忆本；不再定时遮回去。
   }
-  async function undoNotebookWord(item, card) {
-    const button = card.querySelector('.memory-undo'); if (button) button.disabled = true;
-    if (window.Store.currentUser() && (!await window.Store.flush() || !await window.Store.refreshKey('review'))) {
-      if (button) button.disabled = false;
-      toast('复习记录正在同步，请稍后再撤销'); return;
-    }
+  async function undoNotebookWord(item, card, grade) {
+    if (!await notebookActionReady(card, '复习记录正在同步，请稍后再撤销')) return;
     const previous = window.Review.getWord(settings.library, item.word)?.lastUndo;
     const result = window.Review.undoReview(settings.library, item.word);
     if (!result || result.action !== 'undo') { toast('该词排期已更新，没有可撤销的操作'); renderMemoryNotebook(); updateSrsUI(); return; }
     if (previous?.activityId) recordDailyActivity({ action: 'review', activityId: previous.activityId, at: previous.at, canceled: true });
     toast(`${item.word.word}：已撤销，恢复到作答前`);
-    renderMemoryNotebook();
+    const restoreFocus = card.contains(document.activeElement) && !card.closest('[hidden], .modal-closing');
+    const restored = buildNotebookCard(result.item, result.item.stage >= window.Review.INTERVALS_MIN.length, Date.now());
+    card.replaceWith(restored);
+    if (restoreFocus) restored.querySelector('.memory-answer.' + grade)?.focus({ preventScroll: true });
+    renderNotebookSummary();
     updateSrsUI();
   }
 
@@ -2566,14 +2670,16 @@
       const data = await r.json(); const events = Array.isArray(data.events) ? data.events : [];
       const snapshot = data.reset && Array.isArray(data.snapshot) ? data.snapshot : [];
       const user = window.Store.currentUser();
-      const localAnswers = events.some(event => event.srsApplied && user && Number(event.userId) === user.id);
+      const localAnswers = snapshot.concat(events).some(event => event.srsApplied && user && Number(event.userId) === user.id);
       if (localAnswers && !await window.Store.refreshKey('review')) return;
       if (events.length && user && !await window.Store.refreshKey('learningActivity')) return;
       let quizApplied = 0;
       let sentences = 0;
+      let mastered = 0;
       snapshot.concat(events).forEach(event => {
         if (!event.word || !event.library) return;
         if (event.userId && (!user || Number(event.userId) !== user.id)) return;
+        if(event.action==='mastered'){mastered++;return;}
         recordDailyActivity(Object.assign({ action: 'learn' }, event), data.streamId);
         // 造句练习:只统计,不改艾宾浩斯阶段(造句是输出练习,不是回忆测试)。
         if (event.action === 'sentence') { sentences++; return; }
@@ -2601,7 +2707,8 @@
       window.Store.write('petMemoryCursor', { streamId: String(data.streamId || ''), lastId: Number(data.lastId) || 0 });
       if (events.length || snapshot.length) {
         updateSrsUI(); if ($('#memory-modal') && !$('#memory-modal').hidden) renderMemoryNotebook();
-        if (sentences) toast(`派大星批改了 ${sentences} 个造句`);
+        if (mastered) toast(`已标熟 ${mastered} 个单词，不再安排复习`);
+        else if (sentences) toast(`派大星批改了 ${sentences} 个造句`);
         else if (quizApplied) toast(`派大星抽查已记录 ${quizApplied} 个作答`);
         else toast(data.reset ? `已从小词灵恢复 ${snapshot.length} 个首轮记录` : `小词灵已记录 ${events.length} 个首轮词并自动补位`);
       }
@@ -2665,7 +2772,7 @@
             anchorReminders: settings.anchorReminders,
             offWords: settings.offWords,
             offReminders: settings.offReminders,
-            petTransition: window.Store.read('petTransition', 'dissolve-pop'),
+            petTransition: settings.petTransition || 'dissolve-pop',
             petWallpaperSync: settings.petWallpaperSync !== false,
             webOrigin: window.location.origin,
             knownWords: Array.from(window.Store.getKnownWords(settings.library)),
@@ -2760,6 +2867,23 @@
     openDlModal();
   }
 
+  let petStatusSeq = 0, petMutation = false, confirmedPetMode = '';
+  function updatePetInputs() {
+    const active = companionUp && companionAction === 'control' && !!confirmedPetMode;
+    const mode = $('#sel-pet-mode'), fx = $('#sel-pet-transition'), shortcuts = $('#btn-pet-shortcuts');
+    if (mode) {
+      mode.disabled = !active || petMutation;
+      mode.value = active ? confirmedPetMode : '';
+      if (!active) {
+        const checking = $('#pet-dock').dataset.state === 'checking';
+        mode.options[0].textContent = checking ? '读取中' : (companionAction === 'start' ? '待启动' : '未连接');
+      }
+    }
+    if (fx) fx.closest('label').hidden = !active || confirmedPetMode !== 'card';
+    if (shortcuts) shortcuts.hidden = !active || confirmedPetMode !== 'patrick';
+    const toggle = $('#btn-pet-toggle');
+    if (toggle) toggle.disabled = !active || petMutation;
+  }
   function setPetDockState(state, status, label, disabled) {
     const dock = $('#pet-dock');
     const dockBtn = $('#btn-pet-dock');
@@ -2769,6 +2893,7 @@
       dock.hidden = false;
       dock.dataset.state = state;
     }
+    updatePetInputs();
     if (dockStatus) dockStatus.textContent = status;
     if (dockBtn) {
       dockBtn.textContent = label;
@@ -2800,7 +2925,6 @@
       if (j.already) toast('桌面伴侣已在运行 ✓');
       else toast('桌面伴侣已启动 ✓ 桌面壁纸已换好，角落的小窗也开了');
       await syncCompanionButton();
-      syncCompanionLearningContext();
     } catch (e) {
       toast('启动失败：' + e.message + '（请用 node server.js 打开本站）');
     } finally {
@@ -2810,13 +2934,16 @@
     }
   }
 
-  async function syncCompanionButton() {
+  async function syncCompanionButton(quiet = false) {
+    if (petMutation) return;
+    const seq = ++petStatusSeq;
     const btn = $('#btn-companion');
-    setPetDockState('checking', '正在检查这台 Mac 上的小词灵…', '检查中…', true);
+    if (!quiet) setPetDockState('checking', '正在检查这台 Mac 上的小词灵…', '检查中…', true);
     try {
-      const response = await fetch('status.json');
+      const response = await fetch('status.json', { cache: 'no-store' });
       if (!response.ok) throw new Error('status unavailable');
       const j = await response.json();
+      if (seq !== petStatusSeq) return;
       if (j && j.available === false) {
         petOn = false;
         companionUp = false;
@@ -2845,6 +2972,7 @@
       }
       // 伴侣页（8771）给 config；主 server（8770）探测到伴侣后给 companion:true
       const running = !!(j && (j.config || j.companion));
+      const wasRunning = companionUp;
       companionUp = running;
       companionAction = running ? 'control' : 'start';
       if (running) {
@@ -2852,13 +2980,7 @@
         const topBtn = $('#btn-companion-top');
         if (topBtn) { topBtn.textContent = '桌面宠物已开启'; topBtn.disabled = true; }
         syncPetControls(j);
-        // 形态下拉对齐伴侣实际形态(可能被另一个标签页/菜单栏切换过)。
-        const petModeSel = $('#sel-pet-mode');
-        if (petModeSel && j.petMode) petModeSel.value = j.petMode;
-        // 伴侣在线即把当前特效同步过去:特效值变了 companion 会重建小窗,无需手动刷新。
-        syncCompanionLearningContext();
-        // 立即拉一次小词灵当前页词，让预览/壁纸尽快对齐（不等首个 5s tick）。
-        syncPetCurrent();
+        if (!quiet || !wasRunning) { syncCompanionLearningContext(); syncPetCurrent(); }
       } else {
         petOn = false;
         petSyncedSel = null;
@@ -2866,6 +2988,7 @@
         setPetDockState('ready', '已整合到工作台，点一下把今日单词带到 Mac 桌面', '启动小词灵 ↗', false);
       }
     } catch (_) {
+      if (seq !== petStatusSeq) return;
       // 静态托管(无后端)时 status.json 拿到的是 SPA 兜底的 HTML,json() 抛错进这里。
       // 此时桌面上没有可控制的对象,正确动作是引导下载独立 App,而不是"启动"。
       // 本机 8770 的 status.json 始终返回 JSON,不会走到这个分支。
@@ -2881,44 +3004,41 @@
   function syncPetControls(j) {
     const box = $('#pet-controls');
     if (box) box.style.display = 'block';
-    petOn = !!(j && j.pet);
+    petOn = !!j.pet;
+    confirmedPetMode = ['card', 'patrick'].includes(j.petMode) ? j.petMode : '';
     companionAction = 'control';
+    const name = confirmedPetMode === 'patrick' ? '派大星' : confirmedPetMode === 'card' ? '词卡' : '小词灵';
+    const label = (petOn ? '隐藏' : '显示') + name;
     const btn = $('#btn-pet-toggle');
-    if (btn) btn.textContent = petOn ? '隐藏宠物' : '召唤宠物';
-    setPetDockState(
-      petOn ? 'active' : 'ready',
-      petOn ? '小词灵正在桌面陪你背词，点这里可以收起它' : '桌面伴侣已经开启，点这里让小词灵出现',
-      petOn ? '隐藏小词灵' : '召唤小词灵 ↗',
-      false
-    );
+    if (btn) btn.textContent = label;
+    setPetDockState(petOn ? 'active' : 'ready', petOn ? name + '已显示在桌面' : name + '已隐藏', label, petMutation);
     const hint = $('#pet-hint');
-    if (hint) hint.textContent = '点击词卡＝记住 · 按住空白处拖动 · 拖右下角 ⤡ 调大小';
+    if (hint) hint.textContent = confirmedPetMode === 'patrick' ? '点击派大星朗读，右键可打开学习菜单' : '点击词卡完成首轮学习，拖动右下角调整大小';
   }
 
-  async function togglePet() {
-    const btn = $('#btn-pet-toggle');
-    const dockBtn = $('#btn-pet-dock');
-    [btn, dockBtn].filter(Boolean).forEach(button => { button.disabled = true; });
+  async function mutatePetWindow(path) {
+    if (petMutation || !companionUp) return;
+    petMutation = true;
+    ++petStatusSeq;
+    updatePetInputs();
+    const button = $('#btn-pet-dock');
+    if (button) button.disabled = true;
     try {
-      const action = petOn ? 'close' : 'open';
-      const r = await fetch('pet.php?action=' + action, { method: 'POST' });
-      const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || '桌面伴侣没有响应');
-      petOn = !!j.pet;
-      if (btn) btn.textContent = petOn ? '隐藏宠物' : '召唤宠物';
-      setPetDockState(
-        petOn ? 'active' : 'ready',
-        petOn ? '小词灵正在桌面陪你背词，点这里可以收起它' : '桌面伴侣已经开启，点这里让小词灵出现',
-        petOn ? '隐藏小词灵' : '召唤小词灵 ↗',
-        false
-      );
-      toast(petOn ? '小词灵已召唤 ✓（点击单词即可记住）' : '小词灵已隐藏');
-    } catch (e) {
-      toast('操作失败：' + e.message);
-      await syncCompanionButton();
+      const response = await fetch(path, { method: 'POST' });
+      const state = await response.json();
+      if (!response.ok || !state.ok) throw new Error(state.error || '桌面伴侣没有响应');
+      syncPetControls(state);
+    } catch (error) {
+      toast('桌面小词灵操作失败：' + error.message);
+    } finally {
+      petMutation = false;
+      updatePetInputs();
+      if (button) button.disabled = false;
+      await syncCompanionButton(true);
     }
-    [btn, dockBtn].filter(Boolean).forEach(button => { button.disabled = false; });
   }
+
+  function togglePet() { return mutatePetWindow('pet.php?action=' + (petOn ? 'close' : 'open')); }
 
   /* ---------- live (interactive) mode ---------- */
   let liveActive = false;
@@ -3155,18 +3275,90 @@
     const status = $('#sync-status');
     const accountName = $('#account-name');
     const legacyButton = $('#btn-import-legacy');
+    const conflictButton = $('#btn-sync-conflicts');
+    const retry = $('#btn-sync-retry');
+    if (retry) retry.onclick = () => location.reload();
+    let saveStatus = { state: 'saving' };
     const setStatus = detail => {
       if (!status) return;
-      const state = detail && detail.state || 'saved';
+      if (detail) saveStatus = detail;
+      const upstream = window.Store?.upstreamStatus?.();
+      const hasConflicts = window.Store?.hasConflicts?.();
+      if (conflictButton) conflictButton.hidden = !hasConflicts;
+      let state = saveStatus.state;
+      if (state === 'conflict' && !hasConflicts) state = 'saved';
+      if (state === 'saving' || state === 'saved') {
+        if (window.Store?.serviceAvailable?.() === false) state = 'unavailable';
+        else if (upstream === 'reauth') state = 'reauth';
+        else if (window.Store?.hasMirrorPending?.()) state = 'queued';
+        else if (upstream === 'offline') state = 'offline';
+        else if (hasConflicts) state = 'conflict';
+      }
       status.dataset.state = state;
       status.textContent = state === 'saving' ? '保存中…'
         : state === 'error' ? '未保存'
         : state === 'conflict' ? '有冲突'
+        : state === 'reauth' ? '主账号需验证'
+        : state === 'offline' ? '主账号离线'
+        : state === 'queued' ? '已存本机 · 待同步'
+        : state === 'unavailable' ? '账号数据暂不可用'
         : state === 'local' ? '本机保存'
         : '已同步';
-      if (state === 'local') status.title = '演示版没有账号和云同步:数据只保存在这个浏览器里,清缓存会丢;下载 Mac 版或登录公网站可持久保存。';
-      else if (detail && detail.message) status.title = detail.message;
+      if (state === 'reauth') status.title = '当前改动保存在本机。请在账号绑定中重新验证主账号。';
+      else if (state === 'offline') status.title = '当前改动保存在本机，连接主账号后会自动同步。';
+      else if (state === 'local') status.title = '当前数据保存在这个浏览器里。';
+      else status.title = saveStatus.message || '';
+      if (retry) retry.hidden = state !== 'unavailable';
     };
+    if (conflictButton) conflictButton.onclick = async () => {
+      const dialog = $('#sync-conflicts-dialog');
+      const list = $('#sync-conflict-list');
+      const message = $('#sync-conflict-message');
+      dialog.showModal();
+      message.textContent = '正在读取…';
+      list.replaceChildren();
+      const labels = { settings: '壁纸设置', uiTheme: '界面主题', customWords: '我的词库', reminders: '提醒',
+        review: '复习排期', learningActivity: '学习记录', dailyPlan: '学习目标', knownWords: '熟词' };
+      try {
+        const copies = await Store.conflictCopies();
+        message.textContent = copies.length ? '' : '当前账号没有冲突副本。';
+        for (const copy of copies) {
+          const row = document.createElement('section');
+          const title = document.createElement('h3');
+          title.textContent = (labels[copy.namespace] || copy.namespace) + ' · ' + new Date(copy.savedAt || copy.at).toLocaleString();
+          row.append(title);
+          const download = document.createElement('button');
+          download.className = 'btn soft small'; download.textContent = '下载 JSON';
+          download.onclick = () => {
+            const url = URL.createObjectURL(new Blob([JSON.stringify(copy, null, 2)], { type: 'application/json' }));
+            const link = document.createElement('a'); link.href = url; link.download = 'wordpaper-' + copy.namespace + '-conflict.json';
+            link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+          };
+          const restore = document.createElement('button');
+          restore.className = 'btn soft small'; restore.textContent = '恢复这个版本';
+          restore.onclick = async () => {
+            if (!confirm('要用这份副本替换当前账号的「' + (labels[copy.namespace] || copy.namespace) + '」吗？')) return;
+            restore.disabled = true;
+            try {
+              if (!await Store.refreshKey(copy.namespace)) throw new Error('无法确认当前版本，请稍后重试');
+              Store.write(copy.namespace, copy.value);
+              if (!await Store.flush()) throw new Error('恢复时出现新的改动，请再次核对副本');
+              await Store.dismissConflict(copy);
+              location.reload();
+            } catch (error) { message.textContent = error.message; restore.disabled = false; }
+          };
+          const dismiss = document.createElement('button');
+          dismiss.className = 'btn ghost small'; dismiss.textContent = '保留当前版本';
+          dismiss.onclick = async () => {
+            if (!confirm('保留当前账号的数据并移除这份冲突副本吗？')) return;
+            try { await Store.dismissConflict(copy); row.remove(); if (!list.children.length) dialog.close(); }
+            catch (error) { message.textContent = error.message; }
+          };
+          row.append(download, restore, dismiss); list.append(row);
+        }
+      } catch (error) { message.textContent = error.message; }
+    };
+    window.addEventListener('wordpaper:upstream-status', () => setStatus());
     window.addEventListener('wordpaper:sync-status', event => {
       setStatus(event.detail);
       if (event.detail && event.detail.message) toast(event.detail.message);
@@ -3200,8 +3392,8 @@
     if (!trigger || !dialog || Store.isLocalMode()) return;
     trigger.hidden = false;
     const status = $('#account-status');
+    const cancelGoogle = $('#account-google-cancel');
     const say = (message, error = false) => { status.textContent = message; status.dataset.error = String(error); };
-    const names = { google: 'Google', wechat: '微信' };
     const callbackErrors = {
       identity_in_use: '这个第三方账号已绑定其他 WordPaper 账号。请先在原账号中解除绑定，再回来重试。',
       binding_changed: '绑定状态已变化，或验证时选择了不同账号，请重新尝试。',
@@ -3211,6 +3403,7 @@
       oauth_failed: '授权未完成，原有绑定保持不变，请稍后重试。',
     };
     let busy = false;
+    let googleAttempt = null;
     async function request(url, body) {
       const response = await fetch(url, body === undefined ? { cache: 'no-store' } : {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': Store.csrfToken() },
@@ -3227,47 +3420,96 @@
       return el;
     }
     async function load() {
-      $('#account-providers').replaceChildren();
+      const providers = $('#account-providers');
+      const scope = $('#account-scope');
+      providers.replaceChildren();
       $('#account-verify').hidden = true;
       const data = await request('/api/account');
-      const health = await request('/healthz');
-      $('#account-connect-cloud').hidden = health.mode !== 'local';
+      providers.dataset.managedExternally = String(data.managedExternally === true);
+      $('#account-connect-cloud').hidden = !data.managedExternally;
+      $('#account-retention').hidden = Boolean(data.managedExternally);
       if (data.managedExternally) {
-        $('#account-identity').textContent = '当前使用同步账号，登录方式在账号中心统一管理。';
-        button('打开账号中心', $('#account-providers'), () => {
-          if (window.WordPaperDesktop) WordPaperDesktop.openExternal(data.accountUrl);
-          else window.open(data.accountUrl, '_blank', 'noopener');
-        });
+        $('#account-identity').textContent = '当前使用同步账号';
+        scope.textContent = '词库、提醒和学习进度由账号服务器同步。登录方式在账号中心管理。';
+        if (window.WordPaperDesktop) {
+          const manual = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.textContent = '手动打开地址';
+          const address = document.createElement('input');
+          address.type = 'url'; address.readOnly = true; address.value = data.accountUrl;
+          address.setAttribute('aria-label', '账号中心地址');
+          address.addEventListener('focus', () => address.select());
+          manual.className = 'account-center-address';
+          manual.append(summary, address);
+          const launch = button('打开账号中心', providers, async () => {
+            launch.disabled = true;
+            say('正在打开系统浏览器…');
+            try {
+              await request('/api/account/open-center', {});
+              say('已请求系统浏览器打开账号中心。');
+            } catch (error) {
+              manual.open = true;
+              say(error.message, true);
+            } finally { launch.disabled = false; }
+          });
+          providers.appendChild(manual);
+        } else {
+          const link = document.createElement('a');
+          link.className = 'btn'; link.textContent = '打开账号中心';
+          link.href = data.accountUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
+          providers.appendChild(link);
+        }
         return;
       }
+      const health = await request('/healthz');
+      $('#account-connect-cloud').hidden = health.mode !== 'local';
       $('#account-identity').textContent = `当前账号：${data.user.username}${data.hasPassword ? ' · 保留原密码登录' : ''}`;
+      scope.textContent = health.mode === 'local'
+        ? '在这台 Mac 管理本机账号的登录方式。更换绑定会保留词库、提醒和学习记录。'
+        : '管理当前账号的登录方式。更换绑定会保留词库、提醒和学习记录。';
       $('#account-verify').hidden = !data.reauthRequired;
       $('#account-password-form').hidden = !data.hasPassword;
       const verify = $('#account-verify-providers');
       verify.replaceChildren();
-      data.providers.forEach(provider => {
-        const name = names[provider.provider];
+      data.providers.filter(provider => provider.provider === 'google').forEach(provider => {
         if (provider.bound && provider.enabled) {
-          button(`用已绑定的${name}验证`, verify, () => act(provider, 'reauth'));
+          button('用已绑定的 Google 验证', verify, () => act(provider, 'reauth'));
         }
         const row = document.createElement('section'); row.className = 'account-provider';
         row.dataset.provider = provider.provider;
-        const title = document.createElement('strong'); title.textContent = name;
-        const detail = document.createElement('p');
-        detail.textContent = provider.bound ? `已绑定 · ${provider.label}` : provider.enabled ? '尚未绑定' : '暂未开放，完成平台配置后即可绑定';
+        row.dataset.available = String(provider.enabled);
+        const mark = document.createElement('span'); mark.className = 'account-provider-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        mark.textContent = 'G';
+        const copy = document.createElement('div'); copy.className = 'account-provider-copy';
+        const heading = document.createElement('div'); heading.className = 'account-provider-heading';
+        const title = document.createElement('strong'); title.textContent = 'Google';
+        const state = document.createElement('span'); state.className = 'account-provider-state';
+        state.dataset.bound = String(provider.bound);
+        state.textContent = provider.bound ? '已绑定' : provider.enabled ? '尚未绑定' : '暂未开放';
+        heading.append(title, state);
+        copy.appendChild(heading);
+        const detail = provider.bound ? provider.label
+          : provider.localDesktop ? '用于登录这台 Mac 上的账号'
+          : provider.enabled ? '' : '完成平台配置后可绑定';
+        if (detail) {
+          const note = document.createElement('p'); note.textContent = detail;
+          copy.appendChild(note);
+        }
         const actions = document.createElement('div'); actions.className = 'account-actions';
-        button(provider.bound ? '更换绑定' : `绑定 ${name}`, actions, () => act(provider, provider.bound ? 'replace' : 'link'), !provider.enabled || data.reauthRequired);
+        const bind = button(provider.bound ? '更换绑定' : '绑定 Google', actions, () => act(provider, provider.bound ? 'replace' : 'link'), !provider.enabled || data.reauthRequired);
+        if (!provider.bound) bind.classList.add('account-bind-action');
         if (provider.bound) {
           const unlink = button('解除绑定', actions, () => act(provider, 'unlink'), !provider.canUnlink || data.reauthRequired);
           if (!provider.canUnlink) unlink.title = '这是当前唯一可用的登录方式，请先绑定另一种方式';
         }
-        row.append(title, detail, actions); $('#account-providers').appendChild(row);
+        row.append(mark, copy, actions); providers.appendChild(row);
       });
     }
-    async function run(action) {
+    async function run(action, waitsForBrowser = false) {
       if (busy) return;
       busy = true;
-      dialog.setAttribute('aria-busy', 'true');
+      if (!waitsForBrowser) dialog.setAttribute('aria-busy', 'true');
       dialog.querySelectorAll('button, input').forEach(el => { if (el.id !== 'btn-close-account') el.disabled = true; });
       try { await action(); }
       catch (error) { say(error.message, true); }
@@ -3278,18 +3520,43 @@
         try { await load(); } catch (error) { say(error.message, true); }
       }
     }
+    async function authorizeLocalGoogle(action) {
+      if (!dialog.open) return;
+      googleAttempt = new AbortController();
+      cancelGoogle.disabled = false;
+      cancelGoogle.hidden = false;
+      say('正在打开系统浏览器…');
+      try {
+        const completed = await window.LocalGoogle.authorize(action, Store.csrfToken(), googleAttempt.signal, () => {
+          say('请在系统浏览器完成 Google 授权。完成后即可回到 WordPaper。');
+        });
+        if (!completed) say('已取消 Google 授权。');
+        else if (action === 'reauth') say('身份已验证，可以管理绑定。');
+        else say('绑定成功，今后可以用 Google 登录这台 Mac 的当前账号。');
+      } finally {
+        googleAttempt = null;
+        cancelGoogle.hidden = true;
+      }
+    }
     function act(provider, action) {
       if (busy) return;
-      if (action === 'unlink' && !window.confirm(`解除 ${names[provider.provider]}（${provider.label}）绑定？之后请使用其他已绑定方式或原密码登录。`)) return;
-      if (action === 'replace' && !window.confirm(`更换 ${names[provider.provider]} 绑定？新账号授权成功后才会替换「${provider.label}」，所有数据保留。`)) return;
+      if (action === 'unlink' && !window.confirm(`解除 Google（${provider.label}）绑定？之后请使用其他已绑定方式或原密码登录。`)) return;
+      if (action === 'replace' && !window.confirm(`更换 Google 绑定？新账号授权成功后才会替换「${provider.label}」，所有数据保留。`)) return;
+      const localGoogle = provider.localDesktop && action !== 'unlink';
       run(async () => {
         if (!await Store.flush()) throw new Error('当前改动尚未同步，请稍后再试');
+        if (localGoogle) { await authorizeLocalGoogle(action); return; }
         say(action === 'unlink' ? '正在解除绑定…' : '正在准备授权…');
-        const data = await request(`/api/account/${provider.provider}/${action}`, {});
+        const data = await request(`/api/account/google/${action}`, {});
         if (data.authorizationUrl) location.assign(data.authorizationUrl);
         else say('已解除绑定，账号数据已保留。');
-      });
+      }, localGoogle);
     }
+    cancelGoogle.addEventListener('click', () => {
+      cancelGoogle.disabled = true;
+      say('正在取消授权…');
+      googleAttempt?.abort();
+    });
     $('#account-password-form').addEventListener('submit', event => {
       event.preventDefault();
       const input = $('#account-password');
@@ -3302,7 +3569,12 @@
     }
     trigger.addEventListener('click', () => { say(''); open(); });
     $('#btn-close-account').addEventListener('click', () => dialog.close());
-    dialog.addEventListener('close', () => { $('#account-password').value = ''; trigger.focus(); });
+    dialog.addEventListener('close', () => {
+      googleAttempt?.abort();
+      $('#account-password').value = '';
+      const focusTarget = trigger.getClientRects().length ? trigger : $('#workspace-tools-toggle');
+      focusTarget.focus({ preventScroll: true });
+    });
     const params = new URLSearchParams(location.search);
     if (location.hash === '#account' || params.has('accountError') || params.has('accountSuccess')) {
       if (params.has('accountError')) say(callbackErrors[params.get('accountError')] || '授权失败，请重新尝试。', true);
@@ -3445,12 +3717,20 @@
   async function init() {
     const showAccount = bindPersistenceUI();
     bindUpdateUI();
-    await window.Store.init();
+    try { await window.Store.init(); }
+    catch (error) {
+      if (error.message !== 'authentication required') {
+        window.dispatchEvent(new CustomEvent('wordpaper:sync-status', { detail: { state: 'unavailable', message: error.message } }));
+      }
+      return;
+    }
     if (!Store.currentUser()) { const review = Store.getReview(); if (SrsPolicy.apply(review).length) Store.saveReview(review); }
     const plan = readPlan();
     if (!plan.activityStartedAt) { plan.activityStartedAt = Date.now(); writePlan(plan); }
     showAccount();
     bindAccountUI();
+    window.ModelSettings?.init();
+    window.SpeechSettings?.init();
     loadSettings();
     seedOnce();
     fillSizeSelect();
@@ -3473,15 +3753,17 @@
     const canApplyRemote = () => !document.hidden && !syncPointerDown && !moduleEditing
       && !document.querySelector('dialog[open], .modal-overlay:not([hidden])')
       && !document.activeElement?.matches('input, textarea, [contenteditable="true"]');
-    const syncRemote = async () => {
-      if (!canApplyRemote()) return;
-      const changed = await Store.refreshRemote(canApplyRemote);
+    const applyRemote = async changed => {
       if (!changed.length) return;
       loadSettings(); applySettingsToUI(); renderReminderUI(); updateSrsUI();
       if (changed.includes('settings')) loadBgImage();
       await refresh(false);
       syncCompanionLearningContext();
     };
+    const syncRemote = async () => {
+      if (canApplyRemote()) await applyRemote(await Store.refreshRemote(canApplyRemote));
+    };
+    window.addEventListener('wordpaper:state-applied', event => applyRemote(event.detail.keys));
     setInterval(syncRemote, 30000);
     window.addEventListener('focus', syncRemote);
     initAdminPanel();   // 管理员才显示;失败静默

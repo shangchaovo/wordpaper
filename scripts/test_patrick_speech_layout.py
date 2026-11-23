@@ -45,7 +45,7 @@ def verify(out):
     if platform.system() != 'Darwin':
         print('SKIP native speech test (macOS only)')
         return
-    for name in ('dark', 'long'):
+    for name in ('dark', 'long', 'ai-choice'):
         subprocess.run(['sips', '-s', 'format', 'png', str(out / (name + '.svg')), '--out', str(out / (name + '.png'))], check=True, capture_output=True)
     source = (out / 'patrick.jxa.js').read_text()
     methods = source[source.index('  // 朗读气泡独立于 quizWin'):source.index('  var answerHideAt = 0;')]
@@ -54,6 +54,7 @@ def verify(out):
     grip_source = source[source.index("var GripClass = ObjC.registerSubclass({ name: 'DWPatrickGrip'"):]
     sprite_draw = grip_source[grip_source.index("    'drawRect:':"):grip_source.index("    'acceptsFirstMouse:'")]
     geom = json.loads((out / 'dark.json').read_text())
+    choice_geom = json.loads((out / 'ai-choice.json').read_text())
     with wave.open(str(out / 'silent.wav'), 'wb') as wav:
         wav.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
         wav.writeframes(b'\0\0' * 48000)
@@ -80,6 +81,9 @@ function run(){
   function rgba(r,g,b,a){return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r,g,b,a);}
   function fontAt(s,b){return $.NSFont.systemFontOfSizeWeight(s,b?0.5:0);}
   function postUrl(u,b){calls.push({url:u,body:JSON.parse(b)});}
+  ObjC.registerSubclass({name:'DWPatrickWindow',superclass:'NSPanel',methods:{canBecomeKeyWindow:{types:['bool',[]],implementation:function(){return true;}}}});
+  function returnPatrickFocus(){} function focusPatrickWindow(){}
+  function sendPatrickKey(action){calls.push({action:action});}
   function assert(ok,msg){if(!ok)throw new Error(msg);}
   function tick(seconds){ $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(seconds || .35)); }
   function snapshot(file){
@@ -152,6 +156,24 @@ function run(){
   assert(speakView.frame.size.height===1600,'long speech content was clipped');
   speakView.scrollPoint($.NSMakePoint(0,0)); tick();
   assert(speakView.visibleRect.origin.y<1,'cannot scroll to end of speech');
+  // A newly generated example changes both image and content height. Confirm
+  // native rendering sends the matching revision ACK without replaying audio.
+  M.speakPng=PNG;
+  handleSpeakCommand({cmd:'speak-update',id:'speech-long',version:2,w:GEOM.w,h:GEOM.h,lines:GEOM.lines,exampleCount:1,exampleIndex:0});tick();
+  assert(speakView.frame.size.height===GEOM.h,'generated example did not resize its native view');
+  assert(speakWin.frame.size.height===Math.min(GEOM.h,440),'generated example did not resize its viewport');
+  tickSpeakCard(Date.now()+150);
+  assert(calls[calls.length-1].body.version===2,'generated example ACK lost its render revision');
+  assert(speakSession.exampleCount===1 && !speakPlayer,'generated example started audio before server acknowledgement');
+  M.speakPng=CHOICEPNG;
+  handleSpeakCommand(Object.assign({cmd:'speak-update',id:'speech-long',version:3},CHOICEGEOM));tick();
+  var b=speakSession.generateButton;
+  assert(b && b.h>0,'AI choice did not publish a clickable button');
+  var p=speakView.convertPointToView($.NSMakePoint(b.x+b.w/2,speakView.bounds.size.height-b.y-b.h/2),$());
+  var event=$.NSEvent.mouseEventWithTypeLocationModifierFlagsTimestampWindowNumberContextEventNumberClickCountPressure($.NSLeftMouseDown,p,0,0,speakWin.windowNumber,$(),0,1,1);
+  speakView.mouseDown(event);
+  assert(calls[calls.length-1].action==='example-generate','AI choice click did not request generation');
+  snapshot(CHOICESHOT);
   hideSpeakCard(); quizWin.orderOut($());win.orderOut($());
   return 'PASS native audio / actual mouth metering and silence / shared word clock / all face poses / completion / replay / scrolling / reduced motion';
 }'''
@@ -159,6 +181,7 @@ function run(){
                        'AUDIO':json.dumps(str(out/'silent.wav')),'SHEET':json.dumps(str(ROOT/'assets/patrick/sheet.png')),
                        'SYLLABLES':json.dumps(str(out/'syllables.wav')),'MOUTHSHOTS':json.dumps(str(out/'mouth-poses.png')),
                        'LONGPNG': json.dumps(str(out / 'long.png')), 'PNG': json.dumps(str(out / 'dark.png')),
+                       'CHOICEGEOM':json.dumps(choice_geom),'CHOICEPNG':json.dumps(str(out/'ai-choice.png')),'CHOICESHOT':json.dumps(str(out/'native-ai-choice.png')),
                        'SNAPSHOT': json.dumps(str(out / 'native-speech.png'))}.items():
         harness = re.sub(r'\b' + key + r'\b', lambda _: value, harness)
     script = out / 'native-speech.jxa.js'

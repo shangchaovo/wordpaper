@@ -1,0 +1,140 @@
+:root {
+  color-scheme: light dark;
+  --paper: #e9eff8;
+  --ink: #142742;
+  --secondary: #495e78;
+  --glass: rgb(249 252 255 / 72%);
+  --glass-edge: rgb(255 255 255 / 88%);
+  --divider: rgb(51 85 125 / 15%);
+  --accent: #0066d6;
+  --accent-soft: rgb(0 102 214 / 10%);
+  --shadow: 0 26px 75px rgb(41 82 146 / 19%), 0 4px 16px rgb(57 92 141 / 8%);
+  --wash: radial-gradient(ellipse at 91% 18%, #fed7af 0%, transparent 39%),
+    radial-gradient(ellipse at 12% 88%, #76a9f7 0%, transparent 58%),
+    radial-gradient(ellipse at 61% 24%, #c0ddfd 0%, transparent 59%);
+  font: 100%/1.55 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 5vw, 3rem);
+  color: var(--ink);
+  background: var(--wash), var(--paper);
+}
+
+.return-sheet {
+  position: relative;
+  isolation: isolate;
+  inline-size: min(100%, 33rem);
+  padding: clamp(1.5rem, 6vw, 3rem);
+  border: 1px solid var(--glass-edge);
+  border-radius: clamp(1.35rem, 6vw, 2rem);
+  background: var(--glass);
+  box-shadow: var(--shadow), inset 0 1px 0 var(--glass-edge);
+  -webkit-backdrop-filter: blur(24px) saturate(128%);
+  backdrop-filter: blur(24px) saturate(128%);
+  animation: arrive 360ms cubic-bezier(.2, .72, .35, 1) both;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-block-end: clamp(1.75rem, 6vw, 2.5rem);
+  font-size: 1.125rem;
+  font-weight: 670;
+  letter-spacing: -.035em;
+}
+
+.brand img {
+  display: block;
+  inline-size: 3.125rem;
+  block-size: 3.125rem;
+  flex: none;
+  margin-inline-start: -.25rem;
+}
+
+.return-mark {
+  display: grid;
+  place-items: center;
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  margin-block-end: .9rem;
+  border: 1px solid var(--divider);
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 680;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+:is([data-result="cancelled"], [data-result="error"]) .return-mark {
+  color: var(--secondary);
+  background: var(--divider);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.625rem, 5.4vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.038em;
+  text-wrap: balance;
+}
+
+.return-message {
+  margin: .7rem 0 0;
+  color: var(--secondary);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.return-note {
+  margin: 1.75rem 0 0;
+  padding-block-start: 1rem;
+  border-block-start: 1px solid var(--divider);
+  color: var(--secondary);
+  font-size: .875rem;
+}
+
+@keyframes arrive {
+  from { opacity: .5; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #111b2c;
+    --ink: #f2f7ff;
+    --secondary: #b3c7e3;
+    --glass: rgb(20 33 53 / 79%);
+    --glass-edge: rgb(184 212 255 / 24%);
+    --divider: rgb(184 212 255 / 18%);
+    --accent: #88bcff;
+    --accent-soft: rgb(103 167 255 / 16%);
+    --shadow: 0 28px 85px rgb(0 0 0 / 42%), 0 4px 16px rgb(0 0 0 / 16%);
+    --wash: radial-gradient(ellipse at 92% 10%, #49382f 0%, transparent 40%),
+      radial-gradient(ellipse at 7% 92%, #263e69 0%, transparent 59%),
+      radial-gradient(ellipse at 61% 16%, #233b5b 0%, transparent 62%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .return-sheet { animation: none; }
+}
+
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  body { background: var(--paper); }
+  .return-sheet {
+    background: var(--paper);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

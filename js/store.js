@@ -8,6 +8,7 @@
   ];
   let cache = {};
   let revisions = {};
+  let confirmed = {};
   let pending = {};
   let currentUser = null;
   let csrfToken = '';
@@ -15,6 +16,11 @@
   let availableLegacy = {};
   let localMode = false;   // 静态托管本地模式:只写 localStorage,无任何同步
   let mirrored = false;
+  let upstreamState = 'ok';
+  let mirrorPending = 0;
+  let mirrorConflictCount = 0;
+  let serviceAvailable = true;
+  let speechSettingsAvailable = false;
   let stateEpoch = 0;
   const syncing = new Map();
   const timers = new Map();
@@ -83,6 +89,71 @@
     try { window.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); } catch (_) {}
   }
 
+  function updateUpstream(state) {
+    if (!mirrored || !['ok', 'offline', 'reauth'].includes(state) || upstreamState === state) return;
+    upstreamState = state;
+    emit('wordpaper:upstream-status');
+  }
+
+  function updateMirror(response) {
+    if (Number.isSafeInteger(response.pending)) mirrorPending = response.pending;
+    if (Number.isSafeInteger(response.conflictCount)) mirrorConflictCount = response.conflictCount;
+    if (response.queued === true) mirrorPending = Math.max(1, mirrorPending);
+    updateUpstream(response.upstream);
+    emit('wordpaper:upstream-status');
+  }
+
+  function localConflicts() {
+    if (!userPrefix || !currentUser) return [];
+    const prefix = userPrefix + 'conflict:';
+    const copies = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const id = localStorage.key(i);
+      if (!id?.startsWith(prefix)) continue;
+      const copy = localGet(id, null);
+      const namespace = copy?.namespace || id.slice(prefix.length);
+      if (copy && STATE_KEYS.includes(namespace)) copies.push({ ...copy, namespace, id, source: 'browser' });
+    }
+    return copies;
+  }
+
+  async function conflictCopies() {
+    const local = localConflicts();
+    if (!mirrored) return local;
+    const response = await fetch('/api/sync/conflicts', { cache: 'no-store' });
+    if (!response.ok) throw new Error('无法读取这台设备的冲突副本');
+    const { conflicts } = await response.json();
+    return local.concat(conflicts.map(copy => ({ ...copy, source: 'device' })));
+  }
+
+  async function dismissConflict(copy) {
+    if (copy.source === 'device') {
+      const response = await fetch('/api/sync/conflicts?id=' + encodeURIComponent(copy.id), {
+        method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken },
+      });
+      if (!response.ok) throw new Error('冲突副本未移除');
+      mirrorConflictCount = Math.max(0, mirrorConflictCount - 1);
+    } else if (copy.id.startsWith(userPrefix + 'conflict:')) localStorage.removeItem(copy.id);
+    emit('wordpaper:upstream-status');
+  }
+
+  function connectionAvailable(available) {
+    if (available === serviceAvailable) return;
+    serviceAvailable = available;
+    emit('wordpaper:upstream-status');
+  }
+
+  function stateRequest() {
+    return fetch('/api/state', { cache: 'no-store', signal: AbortSignal.timeout(45000),
+      headers: { 'X-WordPaper-Revisions': JSON.stringify(revisions) } });
+  }
+
+  function validState(remote) {
+    return !remote?.missing?.length && currentUser && remote?.user?.id === currentUser.id && remote.state && typeof remote.state === 'object' &&
+      !Array.isArray(remote.state) && remote.revisions && typeof remote.revisions === 'object' &&
+      Object.keys(remote.state).every(key => Number.isSafeInteger(remote.revisions[key]) && remote.revisions[key] > 0);
+  }
+
   function localSet(storageKey, value) {
     try {
       localStorage.setItem(storageKey, JSON.stringify(value));
@@ -113,7 +184,7 @@
   async function syncKey(key) {
     if (syncing.has(key)) return syncing.get(key);
     if (!pending[key] || !csrfToken) return true;
-    const snapshot = pending[key];
+    const snapshot = { ...pending[key] };
     const serialized = JSON.stringify(snapshot.value);
     emit('wordpaper:sync-status', { state: 'saving' });
 
@@ -123,31 +194,59 @@
       body: JSON.stringify({ value: snapshot.value, expectedRevision: snapshot.expectedRevision }),
     }).then(async function (response) {
       const body = await response.json().catch(function () { return {}; });
+      if (body.upstream) updateMirror(body);
+      else if (body.queued === true && upstreamState !== 'reauth') updateUpstream('offline');
+      else if (body.queued === false) updateUpstream('ok');
       if (response.status === 401) {
         location.assign('/login.html');
         throw new Error('登录已过期');
       }
-      if (response.status === 409) {
+      if (response.status === 409 && body.conflict === true && Number.isSafeInteger(body.revision) && Object.hasOwn(body, 'value')) {
+        if (body.revision < snapshot.expectedRevision && !mirrored) throw new Error('云端版本早于本机记录，请先核对迁移结果');
+        confirmed[key] = structuredClone(body.value);
         stateEpoch++;
         revisions[key] = Number(body.revision) || 0;
-        if (sameJSON(body.value, snapshot.value)) {
+        if (JSON.stringify(body.value) === serialized) {
           const latest = pending[key];
           if (latest && JSON.stringify(latest.value) === serialized) delete pending[key];
-          else if (latest) { latest.expectedRevision = revisions[key]; scheduleSync(key, 0); }
+          else if (latest) { latest.expectedRevision = revisions[key]; latest.baseValue = body.value; scheduleSync(key, 0); }
           persistPending();
           emit('wordpaper:sync-status', { state: Object.keys(pending).length ? 'saving' : 'saved' });
           return true;
         }
-        localSet(userPrefix + 'conflict:' + key, { value: snapshot.value, at: Date.now(), serverRevision: revisions[key] });
+        const latest = pending[key];
+        if (!body.archived && Object.hasOwn(latest, 'baseValue')) {
+          const merged = window.StateMerge.merge(key, latest.baseValue, latest.value, body.value);
+          if (!merged.conflict) {
+            cache[key] = merged.value;
+            pending[key] = { value: merged.value, baseValue: confirmed[key], expectedRevision: revisions[key] };
+            localSet(userPrefix + key, merged.value); persistPending();
+            emit('wordpaper:state-applied', { keys: [key] });
+            scheduleSync(key, 100);
+            return true;
+          }
+        }
+        // The mirror already archived exactly the version it received. Preserve
+        // any newer edit still present in the browser as a separate copy.
+        const archived = body.archived && JSON.stringify(latest.value) === serialized;
+        if (body.archived) mirrorConflictCount = Math.max(1, mirrorConflictCount);
+        const id = Date.now() + '-' + Math.random().toString(36).slice(2);
+        if (!archived && !localSet(userPrefix + 'conflict:' + id, { namespace: key, value: latest.value, at: Date.now(), serverRevision: revisions[key] })) {
+          throw new Error('请先释放浏览器空间以保存冲突副本');
+        }
+        cache[key] = body.value;
+        localSet(userPrefix + key, body.value);
         delete pending[key];
         persistPending();
-        emit('wordpaper:sync-status', { state: 'conflict', message: '另一台设备已修改这份数据；服务器版本未被覆盖，本机冲突副本已保留。请刷新后再操作。' });
+        emit('wordpaper:sync-status', { state: 'conflict', message: '另一台设备也修改了这份数据。打开「冲突副本」可查看并取回本机版本。' });
+        emit('wordpaper:state-applied', { keys: [key] });
         return false;
       }
-      if (!response.ok) throw new Error(body.error || '保存失败');
+      if (!response.ok || !Number.isSafeInteger(body.revision) || body.revision <= 0) throw new Error(body.error || '保存失败');
       stateEpoch++;
       revisions[key] = Number(body.revision) || snapshot.expectedRevision + 1;
       const latest = pending[key];
+      confirmed[key] = Object.hasOwn(body, 'value') ? structuredClone(body.value) : JSON.parse(serialized);
       if (key === 'learningActivity' && body.value) {
         cache[key] = window.LearningActivity.merge(body.value, latest?.value);
         localSet(userPrefix + key, cache[key]);
@@ -155,8 +254,20 @@
       }
       if (latest && JSON.stringify(latest.value) === serialized && latest.expectedRevision === snapshot.expectedRevision) {
         delete pending[key];
+        if (Object.hasOwn(body, 'value') && key !== 'learningActivity') {
+          cache[key] = body.value; localSet(userPrefix + key, body.value);
+          emit('wordpaper:state-applied', { keys: [key] });
+        }
       } else if (latest) {
-        latest.expectedRevision = revisions[key];
+        // Rebase a browser edit made while the previous PUT was in flight.
+        // If the device also merged changes, retry against the old revision
+        // so the regular 409 recovery path can preserve competing edits.
+        if (key !== 'learningActivity' && Object.hasOwn(body, 'value') && JSON.stringify(body.value) !== serialized) {
+          latest.baseValue = JSON.parse(serialized);
+        } else {
+          latest.expectedRevision = revisions[key];
+          latest.baseValue = confirmed[key];
+        }
         scheduleSync(key, 0);
       }
       persistPending();
@@ -189,17 +300,22 @@
     if (pending[key] && !await syncKey(key)) return false;
     const epoch = stateEpoch;
     try {
-      const response = await fetch('/api/state', { cache: 'no-store' });
-      if (!response.ok) return false;
+      const response = await stateRequest();
+      if (!response.ok) { connectionAvailable(false); return false; }
       const remote = await response.json();
       if (!currentUser || epoch !== stateEpoch || !remote.user || remote.user.id !== currentUser.id || pending[key] || syncing.has(key)) return false;
+      if (!validState(remote)) { connectionAvailable(false); return false; }
+      connectionAvailable(true);
+      updateMirror(remote);
+      if (remote.partial && !Object.hasOwn(remote.state, key)) return true;
       if (!mirrored && (Number(remote.revisions && remote.revisions[key]) || 0) < (Number(revisions[key]) || 0)) return false;
       cache[key] = (remote.state || {})[key];
+      confirmed[key] = structuredClone(cache[key]);
       revisions[key] = Number(remote.revisions && remote.revisions[key]) || 0;
       localSet(userPrefix + key, cache[key]);
       stateEpoch++;
       return true;
-    } catch (e) { return false; }
+    } catch { connectionAvailable(false); return false; }
   }
 
   let remoteRefreshBusy = false;
@@ -209,23 +325,27 @@
     const userId = currentUser.id;
     const epoch = stateEpoch;
     try {
-      const response = await fetch('/api/state', { cache: 'no-store' });
+      const response = await stateRequest();
       if (response.status === 401) { location.assign('/login.html'); return []; }
-      if (!response.ok) return [];
+      if (!response.ok) { connectionAvailable(false); return []; }
       const remote = await response.json();
       if (epoch !== stateEpoch || !currentUser || currentUser.id !== userId || remote.user?.id !== userId || (canApply && !canApply())) return [];
+      if (!validState(remote)) { connectionAvailable(false); return []; }
+      connectionAvailable(true);
+      updateMirror(remote);
       const changed = [];
       STATE_KEYS.forEach(key => {
+        if (remote.partial && !Object.hasOwn(remote.state, key)) return;
         const revision = Number(remote.revisions?.[key]) || 0;
         if (pending[key] || syncing.has(key) || (!mirrored && revision < (Number(revisions[key]) || 0))) return;
         const value = remote.state?.[key];
         if (revision === (Number(revisions[key]) || 0) && sameJSON(value, cache[key])) return;
-        cache[key] = value; revisions[key] = revision;
+        cache[key] = value; confirmed[key] = structuredClone(value); revisions[key] = revision;
         localSet(userPrefix + key, value); changed.push(key);
       });
       if (changed.length) stateEpoch++;
       return changed;
-    } catch { return []; }
+    } catch { connectionAvailable(false); return []; }
     finally { remoteRefreshBusy = false; }
   }
 
@@ -257,9 +377,11 @@
     if (userPrefix) localDirty.add(key);
     if (key === 'uiTheme') localSet(NS + 'uiTheme', value); // harmless pre-paint preference, shared only on this browser
     if (currentUser) {
-      if (!pending[key]) pending[key] = { value: value, expectedRevision: Number(revisions[key]) || 0 };
+      if (!pending[key]) pending[key] = { value, expectedRevision: Number(revisions[key]) || 0,
+        ...(['settings', 'reminders', 'customWords', 'review'].includes(key) ? { baseValue: confirmed[key] ?? null } : {}) };
       else pending[key].value = value;
       pendingDirty = true;
+      if (['review', 'learningActivity', 'customWords', 'reminders'].includes(key)) persistPending();
       scheduleSync(key);
     }
     scheduleLocalFlush();
@@ -276,45 +398,44 @@
   }
 
   async function init() {
-    // 纯静态托管(无后端)时 /api/session 不存在:静态托管的 SPA 兜底会返回
-    // 200 + text/html 的首页。按 content-type 区分真假后端,非 JSON 即进入
-    // 「本地模式」:只读写 localStorage(wp: 命名空间,与旧版本地数据兼容),
-    // 不做账号同步,不跳转登录页。
-    let sessionResponse = null;
-    try {
-      sessionResponse = await fetch('/api/session', { cache: 'no-store' });
-    } catch (e) {
-      sessionResponse = null;
-    }
-    if (sessionResponse && sessionResponse.status === 401) {
+    const sessionResponse = await fetch('/api/session', { cache: 'no-store', signal: AbortSignal.timeout(15000) }).catch(() => null);
+    if (sessionResponse?.status === 401) {
       location.assign('/login.html?next=' + encodeURIComponent(location.pathname + location.search));
       throw new Error('authentication required');
     }
-    const sessionCT = sessionResponse ? String(sessionResponse.headers.get('content-type') || '') : '';
-    if (!sessionResponse || !sessionResponse.ok || sessionCT.indexOf('application/json') === -1) {
+    const contentType = sessionResponse?.headers.get('content-type') || '';
+    if (!sessionResponse?.ok || !contentType.includes('application/json')) {
+      const staticHost = location.hostname === 'wordpaper.pages.dev' ||
+        (location.hostname === 'shangchaovo.github.io' && location.pathname.startsWith('/wordpaper/'));
+      const staticIndex = sessionResponse?.ok && contentType.includes('text/html') &&
+        (await sessionResponse.text()).includes('id="preview-canvas"');
+      if (location.protocol !== 'file:' && !staticIndex && !(staticHost && sessionResponse?.status === 404)) {
+        throw new Error('账号服务暂时不可用，请稍后重试。');
+      }
       userPrefix = NS;
       cache = legacyState();
       localMode = true;
       return null;
     }
     const session = await sessionResponse.json();
+    if (!Number.isSafeInteger(session?.user?.id) || !session.csrfToken) throw new Error('账号会话暂时无法确认');
     currentUser = session.user;
+    speechSettingsAvailable = session.speechSettingsAvailable === true;
     mirrored = Boolean(session.mirrored);
+    updateUpstream(session.upstream);
     csrfToken = session.csrfToken;
     if (session.update && session.update.latest) {
       emit('wordpaper:storage-warning', { message: 'WordPaper 有新版本 v' + session.update.latest + ':在「支持与反馈」里点「一键更新」即可,数据不受影响' });
     }
-    if (session.mirrored && session.upstream && session.upstream !== 'ok') {
-      emit('wordpaper:storage-warning', { message: session.upstream === 'reauth'
-        ? '主账号连接已过期:退出登录后重新验证即可恢复同步(本机数据不丢)'
-        : '暂时连不上主账号:改动已存本机,恢复后自动补同步' });
-    }
     userPrefix = NS + 'user:' + currentUser.id + ':';
 
-    const stateResponse = await fetch('/api/state', { cache: 'no-store' });
+    const stateResponse = await fetch('/api/state', { cache: 'no-store', signal: AbortSignal.timeout(45000) });
     if (!stateResponse.ok) throw new Error('无法读取账号数据');
     const remote = await stateResponse.json();
+    if (!validState(remote) || remote.partial) throw new Error('账号数据暂时无法确认');
+    updateMirror(remote);
     cache = Object.assign({}, remote.state || {});
+    confirmed = structuredClone(cache);
     revisions = Object.assign({}, remote.revisions || {});
     pending = localGet(userPrefix + 'syncPending', {});
     if (!pending || typeof pending !== 'object' || Array.isArray(pending)) pending = {};
@@ -339,8 +460,8 @@
 
     let importingLegacy = false;
     if (!Object.keys(cache).length && !Object.keys(pending).length) {
-      const source = Object.keys(localUserState).length ? localUserState
-        : (session.allowLegacyImport ? availableLegacy : {});
+      if (Object.keys(localUserState).some(key => key !== 'uiTheme')) throw new Error('云端返回空数据，本机保有这个账号的历史记录。请先核对账号或迁移结果。');
+      const source = session.allowLegacyImport ? availableLegacy : {};
       importingLegacy = Object.keys(source).length > 0 && source !== localUserState;
       Object.keys(source).forEach(function (key) {
         cache[key] = source[key];
@@ -403,12 +524,26 @@
     flush,
     refreshKey,
     refreshRemote,
+    conflictCopies, dismissConflict,
+    hasConflicts() {
+      if (mirrorConflictCount) return true;
+      if (!currentUser) return false;
+      for (let i = 0; i < localStorage.length; i++) if (localStorage.key(i)?.startsWith(userPrefix + 'conflict:')) return true;
+      return false;
+    },
+    hasMirrorPending() { return mirrorPending > 0; },
+    serviceAvailable() { return serviceAvailable; },
     currentUser() { return currentUser; },
+    upstreamStatus() { return mirrored ? upstreamState : null; },
+    canConfigureSpeech() { return Boolean(currentUser) && speechSettingsAvailable; },
     csrfToken() { return csrfToken; },
     async logout() {
-      await flush();
-      await fetch('/api/session', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } }).catch(function () {});
-      cache = {}; revisions = {}; pending = {}; currentUser = null; csrfToken = ''; userPrefix = '';
+      if (!await flush() && Object.keys(pending).length) {
+        emit('wordpaper:storage-warning', { message: '还有待保存的数据，请恢复连接后再退出。' }); return;
+      }
+      const response = await fetch('/api/session', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } }).catch(() => null);
+      if (!response?.ok) { emit('wordpaper:storage-warning', { message: '暂时无法退出，请稍后重试。' }); return; }
+      cache = {}; confirmed = {}; revisions = {}; pending = {}; currentUser = null; csrfToken = ''; userPrefix = '';
       location.assign('/login.html');
     },
     getSettings() {

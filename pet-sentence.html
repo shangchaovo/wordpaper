@@ -291,6 +291,7 @@
   <div class="tabs">
     <button id="tab-write" class="tab on" type="button">造句</button>
     <button id="tab-notes" class="tab" type="button">错题集 <span id="notes-count" class="tabcount"></span></button>
+    <button id="model-settings" class="tab" type="button">模型接口</button>
   </div>
 
   <div id="pane-write">
@@ -335,6 +336,12 @@
   var wordEl = $('word'), phonEl = $('phonetic'), meanEl = $('meaning'), statusEl = $('status');
   var input = $('s'), sendBtn = $('send'), againBtn = $('again'), resultBox = $('result');
   var quiz = null, busy = false;
+
+  $('model-settings').addEventListener('click', function () {
+    fetch('/pet-model-settings.php', { method: 'POST' }).then(function (r) { return r.json(); })
+      .then(function (j) { if (!j.ok) showResult(j); })
+      .catch(function () { showResult({ ok: false, error: '请在 WordPaper 主窗口顶部点击「模型接口」。' }); });
+  });
 
   function stars(n) {
     if (!n) return '';

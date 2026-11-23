@@ -20,11 +20,13 @@ try {
   try { localStorage.setItem('wp:uiTheme', JSON.stringify(saved)); } catch (_) {}
 } catch (_) {}
 </script>
-<link rel="stylesheet" href="css/styles.css?v=20261029-overdue">
-<link rel="stylesheet" href="css/ui-themes.css?v=20261023d">
-<link rel="stylesheet" href="css/motion.css?v=20261023e">
+<link rel="stylesheet" href="css/styles.css?v=20261121a">
+<link rel="stylesheet" href="css/ui-themes.css?v=20261120">
+<link rel="stylesheet" href="css/motion.css?v=20261121b">
 <link rel="stylesheet" href="css/liquid-glass.css?v=2026102702">
 <link rel="stylesheet" href="css/library.css?v=20261028a">
+<link rel="stylesheet" href="css/workspace.css?v=20261120c">
+<link rel="stylesheet" href="css/account-glass.css?v=20261122-google">
 </head>
 <body>
 
@@ -84,7 +86,7 @@ try {
         <p class="tagline">把每天的单词和小提醒，变成你的电脑壁纸</p>
       </div>
     </div>
-    <div class="top-actions layout-actions">
+    <div id="workspace-tools" class="top-actions layout-actions">
       <div id="ui-theme-picker" class="ui-theme-picker" role="group" aria-label="界面主题">
         <span class="ui-theme-label">界面</span>
         <button class="ui-theme-option" type="button" aria-label="糖果动漫主题" title="糖果动漫" aria-pressed="false" data-ui-theme="anime"><i class="theme-orb anime" aria-hidden="true"></i>糖果</button>
@@ -97,12 +99,21 @@ try {
       <button id="btn-layout-edit" class="btn soft small" type="button">↕ 整理模块</button>
       <button id="btn-layout-reset" class="btn ghost small" type="button" hidden>恢复默认</button>
       <div class="account-tools" aria-label="账号与同步状态">
-        <span id="sync-status" class="sync-status" data-state="saved">已同步</span>
+        <span id="sync-status" class="sync-status" data-state="saving" role="status">正在读取…</span>
+        <button id="btn-sync-retry" class="account-link account-button" type="button" hidden>重试</button>
+        <button id="btn-sync-conflicts" class="account-link account-button" type="button" hidden>冲突副本</button>
         <span id="account-name" class="account-name"></span>
         <button id="btn-account" class="account-link account-button" type="button" hidden>账号绑定</button>
         <button id="btn-import-legacy" class="account-link account-button legacy-import" type="button" hidden>迁移旧数据</button>
-        <a class="account-link" href="/api/export" download="wordpaper-backup.json">备份</a>
         <button id="btn-logout" class="account-link account-button" type="button">退出</button>
+      </div>
+    </div>
+    <div class="workspace-preferences">
+      <button id="workspace-tools-toggle" class="btn soft small" type="button" aria-controls="workspace-settings-panel" aria-expanded="false"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>设置</button>
+      <div id="workspace-settings-panel" class="workspace-settings-panel" role="group" aria-label="工作台设置" hidden>
+        <button type="button" data-speech-settings hidden>语音设置</button>
+        <button id="btn-model" type="button" hidden>模型接口</button>
+        <a href="/api/export" download="wordpaper-backup.json">备份数据</a>
       </div>
     </div>
   </header>
@@ -178,12 +189,12 @@ try {
           <h2><span class="h-emoji"><svg class="ic" aria-hidden="true"><use href="#i-bookmark"/></svg></span>记忆复习</h2>
           <label class="srs-switch"><input id="chk-srs" type="checkbox" checked><span>艾宾浩斯</span></label>
         </div>
-        <p class="hint">在桌面小词灵点词卡完成首轮；该词会立即移出并自动补入新词，也可以前后翻页。到期后在记忆本完成后续轮次。</p>
+        <p class="hint">在桌面词卡上点词完成首轮，到期后在记忆本复习。</p>
         <div id="srs-status" class="srs-status">已记 0 词 · 待复习 0 词</div>
-        <div id="srs-records" class="srs-records" aria-live="polite"></div>
-        <div id="srs-overdue" class="srs-overdue" aria-live="polite" hidden></div>
-        <details class="srs-policy-help"><summary>逾期怎样处理</summary><p class="hint">到期后还有随本轮间隔变化的宽限期，临近结束会再次提醒。超过宽限期降一轮，同一次漏复习只降一次，仍可立即复习；第 1 轮不再降低。旧的逾期词从本版起同样处理，已完成的学习次数保留。</p><p class="hint">宽限期按记忆衰减模型估算，是本应用的排期规则，并非对你是否遗忘的测量。关闭复习提醒不会暂停逾期计时。</p><div id="srs-grace-table" class="hint"></div></details>
         <button id="btn-open-memory" class="btn primary srs-learn" type="button">打开艾宾浩斯记忆本 →</button>
+        <div id="srs-records" class="srs-records" aria-live="polite"></div>
+        <details id="srs-overdue" class="srs-overdue" hidden><summary class="srs-overdue-title"></summary><div class="srs-overdue-list"></div></details>
+        <details class="srs-policy-help"><summary>逾期怎样处理</summary><p class="hint">到期后还有随本轮间隔变化的宽限期，临近结束会再次提醒。超过宽限期降一轮，同一次漏复习只降一次，仍可立即复习；第 1 轮不再降低。旧的逾期词从本版起同样处理，已完成的学习次数保留。</p><p class="hint">宽限期按记忆衰减模型估算，是本应用的排期规则，并非对你是否遗忘的测量。关闭复习提醒不会暂停逾期计时。</p><div id="srs-grace-table" class="hint"></div></details>
         <div id="srs-countdown" class="srs-countdown" hidden>
           <span class="srs-cd-icon"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg></span>
           <span class="srs-cd-text">下次复习 <b id="srs-cd-time">--:--</b></span>
@@ -250,15 +261,31 @@ try {
     </aside>
 
     <!-- ============ preview (主区域：大画布 + 交互) ============ -->
-    <section class="preview">
+    <section class="preview" aria-labelledby="preview-title">
       <div class="preview-top">
-        <span id="meta"></span>
+        <div class="preview-heading"><h2 id="preview-title">壁纸预览</h2><span id="meta"></span></div>
         <div class="meta-actions">
           <button id="btn-refresh2" class="btn primary small" type="button"><svg class="ic btn-ic" aria-hidden="true"><use href="#i-refresh"/></svg>换一组</button>
           <button id="btn-download2" class="btn soft small" type="button">↓ 下载</button>
           <button id="btn-set-wallpaper2" class="btn soft small" type="button">▣ 设壁纸</button>
           <button id="btn-live" class="btn ghost small" type="button" title="全屏网页壁纸，不写入系统照片">实时</button>
         </div>
+      </div>
+      <div id="preview-stage" class="stage">
+        <canvas id="preview-canvas"></canvas>
+        <div id="drag-legend" class="drag-legend" hidden aria-live="polite">
+          <span>背景：空白处拖动</span><span>⇧ + 拖动：移动单词组</span>
+        </div>
+        <div id="drag-state" class="drag-state" hidden></div>
+        <section id="word-inspector" class="word-inspector" hidden aria-live="polite">
+          <div class="word-inspector-head"><span class="inspector-kicker">正在编辑</span><b id="selected-word-label">—</b><span>会同步整组单词</span></div>
+          <label id="word-scale-control">字号 <input id="sel-word-scale" type="range" min="0.7" max="1.7" step="0.05" value="1"><input id="sel-word-scale-number" type="number" min="70" max="170" step="5" value="100" aria-label="整组字号百分比"><em>%</em></label>
+          <span id="multi-word-scale-note" class="scale-auto-note" hidden>6 词起自动适配字号</span>
+          <label>粗细 <select id="sel-word-weight"><option value="500">细</option><option value="600">中</option><option value="700">粗</option><option value="800">特粗</option></select></label>
+          <label>字体 <select id="sel-word-font"><option value="yuan">圆体</option><option value="hei">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="heiti">粗黑</option></select></label>
+          <label>颜色 <input id="sel-word-color" type="color" value="#4a3b2e"></label>
+          <button id="btn-reset-word-style" class="chip" type="button">恢复默认</button>
+        </section>
       </div>
       <section id="pet-dock" class="pet-dock" data-state="checking" aria-label="桌面小词灵">
         <span class="pet-dock-face" aria-hidden="true">
@@ -272,46 +299,34 @@ try {
           </svg>
         </span>
         <div class="pet-dock-copy"><b>桌面小词灵</b><span id="pet-dock-status" aria-live="polite">正在检查这台 Mac 上的小词灵…</span></div>
-        <label class="pet-dock-fx" title="小词灵点词换词时的过渡动画">
-          <span>换词特效</span>
-          <select id="sel-pet-transition" aria-label="换词特效">
-            <option value="dissolve-pop">轻盈切换</option>
-            <option value="dissolve">柔和淡入</option>
-            <option value="pop">轻弹</option>
-            <option value="none">无动画</option>
-          </select>
-        </label>
-        <label class="pet-dock-fx" title="词卡=经典学习卡;派大星=在桌面自由散步、悬停打招呼、点击朗读">
-          <span>形态</span>
-          <select id="sel-pet-mode" aria-label="小词灵形态">
-            <option value="card">词卡</option>
-            <option value="patrick">派大星</option>
-          </select>
-        </label>
-        <label class="pet-dock-sync" title="开启后：点词/翻页立即换桌面壁纸，网页预览跟随小词灵，「换一组」推动小词灵翻页；关闭则壁纸/预览各自独立随机">
-          <input type="checkbox" id="chk-pet-sync" checked>
-          <span>同步壁纸</span>
-        </label>
+        <div class="pet-dock-options">
+          <label class="pet-dock-fx" title="词卡=经典学习卡;派大星=在桌面自由散步、悬停打招呼、点击朗读">
+            <span>形态</span>
+            <select id="sel-pet-mode" aria-label="小词灵形态" disabled>
+              <option value="" disabled selected>读取中</option>
+              <option value="card">词卡</option>
+              <option value="patrick">派大星</option>
+            </select>
+          </label>
+          <label class="pet-dock-fx" title="小词灵点词换词时的过渡动画">
+            <span>换词特效</span>
+            <select id="sel-pet-transition" aria-label="换词特效">
+              <option value="dissolve-pop">轻盈切换</option>
+              <option value="dissolve">柔和淡入</option>
+              <option value="pop">轻弹</option>
+              <option value="none">无动画</option>
+            </select>
+          </label>
+          <label class="pet-dock-sync" title="开启后：点词/翻页立即换桌面壁纸，网页预览跟随小词灵，「换一组」推动小词灵翻页；关闭则壁纸/预览各自独立随机">
+            <input type="checkbox" id="chk-pet-sync" checked>
+            <span>同步壁纸</span>
+          </label>
+        </div>
         <div class="pet-dock-actions">
+          <button id="btn-pet-shortcuts" class="btn" type="button" hidden>快捷键设置</button>
           <button id="btn-pet-memory" class="btn pet-memory-shortcut" type="button">记忆本 <span id="pet-memory-badge" hidden>0</span></button>
           <button id="btn-pet-dock" class="btn pet-dock-main" type="button">召唤小词灵 ↗</button>
         </div>
-      </section>
-      <div id="preview-stage" class="stage">
-        <canvas id="preview-canvas"></canvas>
-        <div id="drag-legend" class="drag-legend" hidden aria-live="polite">
-          <span>背景：空白处拖动</span><span>⇧ + 拖动：移动单词组</span>
-        </div>
-        <div id="drag-state" class="drag-state" hidden></div>
-      </div>
-      <section id="word-inspector" class="word-inspector" hidden aria-live="polite">
-        <div class="word-inspector-head"><span class="inspector-kicker">正在编辑</span><b id="selected-word-label">—</b><span>会同步整组单词</span></div>
-        <label id="word-scale-control">字号 <input id="sel-word-scale" type="range" min="0.7" max="1.7" step="0.05" value="1"><input id="sel-word-scale-number" type="number" min="70" max="170" step="5" value="100" aria-label="整组字号百分比"><em>%</em></label>
-        <span id="multi-word-scale-note" class="scale-auto-note" hidden>6 词起自动适配字号</span>
-        <label>粗细 <select id="sel-word-weight"><option value="500">细</option><option value="600">中</option><option value="700">粗</option><option value="800">特粗</option></select></label>
-        <label>字体 <select id="sel-word-font"><option value="yuan">圆体</option><option value="hei">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="heiti">粗黑</option></select></label>
-        <label>颜色 <input id="sel-word-color" type="color" value="#4a3b2e"></label>
-        <button id="btn-reset-word-style" class="chip" type="button">恢复默认</button>
       </section>
     </section>
 
@@ -329,7 +344,10 @@ try {
             <input id="inp-ch" type="number" min="100" max="8000" value="1080">
           </div>
         </div>
-        <div class="row"><span>壁纸配色</span><div id="theme-swatches" class="swatches"></div></div>
+        <details id="wallpaper-palette" class="wallpaper-palette">
+          <summary><span>壁纸配色</span><span class="palette-current"><i id="palette-sample" aria-hidden="true"></i><b id="palette-name"></b></span></summary>
+          <div id="theme-swatches" class="swatches" role="group" aria-label="选择壁纸配色"></div>
+        </details>
         <div class="bg-photo">
           <div class="mini-label">背景纹理</div>
           <div id="pattern-picker" class="pattern-picker"></div>
@@ -456,14 +474,101 @@ try {
 </div>
 
 <!-- ============ Ebbinghaus memory notebook ============ -->
-<dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
+<dialog id="sync-conflicts-dialog" class="account-dialog" aria-labelledby="conflicts-title">
   <div class="modal-head">
-    <h2 id="account-title"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>账号绑定</h2>
-    <button id="btn-close-account" class="modal-close" type="button" aria-label="关闭账号绑定">✕</button>
+    <h2 id="conflicts-title">同步冲突副本</h2>
+    <form method="dialog"><button type="submit" class="modal-close" aria-label="关闭冲突副本">✕</button></form>
   </div>
-  <p id="account-identity" class="hint"></p>
-  <p class="hint">绑定后，Google 和微信都可以登录当前账号。更换绑定不会改变词库、提醒和学习记录。</p>
-  <p id="account-status" class="account-status" role="status" aria-live="polite"></p>
+  <p class="hint">多台设备同时修改同一份数据时，这里保留本机版本。可以下载完整副本，或选择一份恢复到当前账号。</p>
+  <div id="sync-conflict-list"></div>
+  <p id="sync-conflict-message" class="hint" role="status"></p>
+</dialog>
+
+<dialog id="pet-shortcuts-dialog" class="account-dialog" aria-labelledby="pet-shortcuts-title">
+  <div class="modal-head">
+    <h2 id="pet-shortcuts-title"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>派大星快捷键</h2>
+    <button id="pet-shortcuts-close" class="modal-close" type="button" aria-label="关闭快捷键设置">✕</button>
+  </div>
+  <p class="hint">先单击派大星或词卡，再使用快捷键。点击下方按键即可重新录入，也可以搭配 Shift、Control、Option 或 Command。</p>
+  <p class="hint">背词和走动可以复用同一按键；同一场景内不能重复。设置保存在这台 Mac，保存后立即生效。</p>
+  <div id="pet-shortcuts-list"></div>
+  <p id="pet-shortcuts-status" class="hint" role="status" aria-live="polite"></p>
+  <div class="account-actions shortcut-actions">
+    <button id="pet-shortcuts-reset" class="btn" type="button">恢复默认</button>
+    <button id="pet-shortcuts-cancel-key" class="btn" type="button" hidden>取消录入</button>
+    <button id="pet-shortcuts-save" class="btn primary" type="button">保存快捷键</button>
+  </div>
+</dialog>
+<dialog id="speech-dialog" class="account-dialog" aria-labelledby="speech-title">
+  <div class="modal-head">
+    <h2 id="speech-title">朗读语音</h2>
+    <button id="speech-close" class="modal-close" type="button" aria-label="关闭语音设置">✕</button>
+  </div>
+  <p id="speech-current" class="hint"></p>
+  <form id="speech-form" class="model-form">
+    <label for="speech-provider">语音服务</label>
+    <select id="speech-provider"><option value="openai">OpenAI 官方</option><option value="custom">自定义兼容接口</option></select>
+    <label for="speech-url">接口地址</label>
+    <input id="speech-url" type="url" required maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1">
+    <label for="speech-model">语音模型</label>
+    <input id="speech-model" required maxlength="200" autocomplete="off" spellcheck="false" placeholder="gpt-4o-mini-tts">
+    <label for="speech-voice">声音</label>
+    <input id="speech-voice" required maxlength="200" list="speech-voices" autocomplete="off" spellcheck="false" placeholder="coral">
+    <datalist id="speech-voices"><option value="coral"></option><option value="marin"></option><option value="cedar"></option><option value="alloy"></option><option value="nova"></option><option value="onyx"></option><option value="sage"></option><option value="shimmer"></option></datalist>
+    <label for="speech-key">API Key</label>
+    <input id="speech-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
+    <p class="hint">朗读由 AI 合成。密钥按账号加密保存在这台 Mac，试听和朗读按所选服务的价格计费。</p>
+    <p id="speech-status" class="account-status" role="status" aria-live="polite"></p>
+    <audio id="speech-audio" controls hidden aria-label="语音试听"></audio>
+    <div class="account-actions">
+      <button id="speech-save" class="btn primary" type="submit">保存并使用</button>
+      <button id="speech-preview" class="btn" type="button">试听</button>
+      <button id="speech-remove" class="btn" type="button" disabled>移除接口并恢复微软语音</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="model-dialog" class="account-dialog" aria-labelledby="model-title">
+  <div class="modal-head">
+    <h2 id="model-title"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>模型接口</h2>
+    <button id="btn-close-model" class="modal-close" type="button" aria-label="关闭模型接口">✕</button>
+  </div>
+  <p id="model-identity" class="hint"></p>
+  <p class="hint">为造句批改和派大星对话绑定自己的模型。练习内容会发送到你填写的服务商，调用费用由该接口账户承担。</p>
+  <form id="model-form" class="model-form">
+    <label for="model-protocol">接口格式</label>
+    <select id="model-protocol"><option value="openai">OpenAI 兼容（含 DeepSeek）</option><option value="anthropic">Anthropic Messages（Claude）</option></select>
+    <div class="account-actions"><button id="model-deepseek" class="btn" type="button">填入 DeepSeek 官方配置</button></div>
+    <label for="model-base-url">接口地址（Base URL）</label>
+    <input id="model-base-url" type="url" required maxlength="2048" placeholder="https://api.deepseek.com" autocomplete="off" spellcheck="false">
+    <label for="model-name">模型名称</label>
+    <input id="model-name" type="text" required maxlength="200" placeholder="服务商提供的模型名称" autocomplete="off" spellcheck="false">
+    <label for="model-key">API Key</label>
+    <input id="model-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="粘贴 API Key" spellcheck="false">
+    <p class="hint">密钥加密保存在账号服务器，不在页面回显，也不放入浏览器缓存或数据导出。</p>
+    <p id="model-status" class="account-status" role="status" aria-live="polite"></p>
+    <div class="account-actions">
+      <button id="model-save" class="btn primary" type="submit">验证并绑定</button>
+      <button id="model-test" class="btn" type="button">测试连接</button>
+      <button id="model-remove" class="btn danger" type="button" disabled>解除绑定</button>
+    </div>
+  </form>
+  <p class="hint">本机账号的设置保存在这台 Mac。连接主账号后，由主账号服务器统一保管和调用模型。</p>
+</dialog>
+
+<dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
+  <header class="modal-head account-glass-head">
+    <img class="account-glass-brand" src="assets/favicon-128.png?v=20261022" width="64" height="64" alt="" decoding="async">
+    <div>
+      <h2 id="account-title">账号绑定</h2>
+      <p id="account-identity" class="hint"></p>
+    </div>
+    <button id="btn-close-account" class="modal-close" type="button" aria-label="关闭账号绑定">✕</button>
+  </header>
+  <p id="account-scope" class="hint"></p>
+  <div class="account-feedback">
+    <p id="account-status" class="account-status" role="status" aria-live="polite"></p>
+    <button id="account-google-cancel" class="btn" type="button" hidden>取消授权</button>
+  </div>
   <section id="account-verify" hidden aria-label="验证当前账号">
     <p class="hint">为保护你的账号，请先验证身份。验证后 10 分钟内可管理绑定。</p>
     <form id="account-password-form" hidden>
@@ -476,8 +581,10 @@ try {
     <div id="account-verify-providers" class="account-actions"></div>
   </section>
   <div id="account-providers" class="account-providers"></div>
-  <a id="account-connect-cloud" class="account-link" href="/login.html?sync=1" hidden>连接同步账号 / 更换同步服务器</a>
-  <p class="hint">更换或解绑后，其他设备需要重新登录。至少保留一种可用的登录方式。</p>
+  <footer class="account-glass-footer">
+    <p id="account-retention" class="hint">更换或解绑后，其他设备需要重新登录。至少保留一种可用的登录方式。</p>
+    <a id="account-connect-cloud" class="account-link" href="/login.html?sync=1" hidden>连接同步账号 / 更换同步服务器</a>
+  </footer>
 </dialog>
 
 <div id="memory-modal" class="modal-overlay memory-modal" hidden>
@@ -625,7 +732,8 @@ try {
 <!-- ?v= busts browser cache — bump after any js/ change -->
 <script src="js/srs-policy.js?v=20261029a"></script>
 <script src="js/learning-activity.js?v=20261029a"></script>
-<script src="js/store.js?v=20261028-activity"></script>
+<script src="js/state-merge.js?v=20261123"></script>
+<script src="js/store.js?v=20261123"></script>
 <script src="js/words.js?v=20260810j"></script>
 <script src="js/importer.js?v=20260810f"></script>
 <script src="js/ocr.js?v=20260810f"></script>
@@ -633,7 +741,12 @@ try {
 <script src="js/review.js?v=20261029-policy"></script>
 <script src="js/render.js?v=20261019b"></script>
 <script src="js/engine.js?v=20260816a"></script>
-<script src="js/app.js?v=20261029-v267"></script>
+<script src="js/patrick-shortcuts.js?v=20261030-mastery-examples"></script>
+<script src="js/pet-shortcut-settings.js?v=20261030-mastery-examples"></script>
+<script src="js/model-settings.js?v=20261030-mastery-examples"></script>
+<script src="js/speech-settings.js?v=20261120b"></script>
+<script src="js/local-google.js?v=20261123-local-google"></script>
+<script src="js/app.js?v=20261122-google"></script>
 <script src="js/support.js?v=20260814a"></script>
 </body>
 </html>

@@ -1,0 +1,225 @@
+#account-dialog {
+  --account-base: #f3f8ffed;
+  --account-solid: #f5f9ff;
+  --account-ink: #173252;
+  --account-muted: #415979;
+  --account-line: #7398bd36;
+  --account-rim: #d9ecff;
+  --account-highlight: #ffffffec;
+  --account-sky: #8cbaff54;
+  --account-warmth: #ffdabd62;
+  --account-surface: #ffffff9e;
+  --account-recess: #eaf3fdc9;
+  --account-control: linear-gradient(168deg, #fff, #e8f2ff);
+  --account-focus: #0064cf;
+  --account-link: #0057b7;
+  --account-error: #9a3029;
+  --account-success: #185e4c;
+  --account-success-surface: #e4f2ec;
+  width: min(550px, calc(100% - 32px));
+  max-height: calc(100dvh - 40px);
+  box-sizing: border-box;
+  padding: clamp(18px, 4vw, 26px);
+  color: var(--account-ink);
+  border: 1px solid var(--account-rim);
+  border-radius: 27px;
+  background:
+    radial-gradient(ellipse at 8% 0%, var(--account-sky), transparent 57%),
+    radial-gradient(ellipse at 103% 13%, var(--account-warmth), transparent 41%),
+    linear-gradient(153deg, var(--account-highlight), transparent 19%),
+    var(--account-base);
+  box-shadow:
+    inset 0 1px 0 var(--account-highlight), inset 0 -2px 0 var(--account-line),
+    0 2px 7px #112f5814, 0 22px 56px #10244543;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+:root[data-ui-theme="darkliquid"] #account-dialog {
+  --account-base: #172638ef;
+  --account-solid: #1c2a3a;
+  --account-ink: #f2f7ff;
+  --account-muted: #c0d3e9;
+  --account-line: #97bcdf3f;
+  --account-rim: #94bff465;
+  --account-highlight: #d6e9ff3a;
+  --account-sky: #4986d43b;
+  --account-warmth: #c67d4d29;
+  --account-surface: #1a2b40bc;
+  --account-recess: #263e56bd;
+  --account-control: linear-gradient(168deg, #39536d, #283d55);
+  --account-focus: #a8d1ff;
+  --account-link: #add2ff;
+  --account-error: #ffb1a7;
+  --account-success: #b6eed8;
+  --account-success-surface: #214638;
+}
+
+#account-dialog::backdrop { background: #101e387a; }
+#account-dialog:open { animation: account-glass-enter .2s cubic-bezier(.2,.75,.25,1) both; }
+@keyframes account-glass-enter {
+  from { opacity: 0; transform: translateY(7px) scale(.99); }
+}
+
+#account-dialog .account-glass-head {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  margin: 0 0 10px;
+  border: 0;
+}
+#account-dialog .account-glass-brand { display: block; }
+#account-dialog #account-title {
+  margin: 0 0 4px;
+  color: var(--account-ink);
+  font: 720 24px/1.16 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  letter-spacing: -.025em;
+}
+#account-dialog .hint { margin: 0; color: var(--account-muted); font-size: 13px; overflow-wrap: anywhere; }
+#account-dialog #account-scope { margin: 0 2px 14px; }
+#account-dialog #btn-close-account {
+  align-self: start;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transform: none;
+}
+
+#account-dialog :is(.btn, #btn-close-account) {
+  color: var(--account-ink);
+  border: 1px solid var(--account-line);
+  background: var(--account-control);
+  box-shadow: inset 0 1px 0 var(--account-highlight), 0 2px 4px #10244512;
+  transition: box-shadow .16s ease, transform .16s ease, border-color .16s ease;
+}
+#account-dialog .btn { min-height: 36px; padding: 6px 12px; border-radius: 11px; white-space: nowrap; }
+#account-dialog :is(.btn, #btn-close-account):hover:not(:disabled) {
+  border-color: var(--account-focus);
+  box-shadow: inset 0 1px 0 var(--account-highlight), 0 4px 9px #10244520;
+}
+#account-dialog :is(.btn, #btn-close-account):active:not(:disabled) { transform: translateY(1px); }
+#account-dialog :is(button, summary, a, input):focus-visible { outline: 2px solid var(--account-focus); outline-offset: 3px; }
+#account-dialog .btn:disabled { opacity: 1; color: var(--account-muted); background: var(--account-recess); box-shadow: none; }
+#account-dialog :is(.account-bind-action, #account-providers[data-managed-externally="true"] > .btn):not(:disabled) {
+  color: #fff;
+  background: linear-gradient(163deg, #0066d6, #0054b4);
+  border-color: #004faaa0;
+  box-shadow: inset 0 1px 0 #ffffff60, 0 3px 8px #0066d633;
+}
+
+#account-dialog .account-feedback { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
+#account-dialog #account-status { min-height: 0; margin: 0; color: var(--account-link); }
+#account-dialog #account-status:not(:empty) {
+  flex: 1 1 210px;
+  padding: 7px 9px;
+  margin: 0 0 8px;
+  border-radius: 9px;
+  background: var(--account-recess);
+  border-inline-start: 2px solid currentColor;
+}
+#account-dialog #account-status[data-error="true"] { color: var(--account-error); }
+#account-dialog #account-google-cancel { margin-bottom: 8px; }
+#account-dialog #account-verify {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--account-line);
+  border-radius: 14px;
+  background: var(--account-recess);
+}
+#account-dialog #account-password-form label { display: block; margin: 7px 0 4px; font-size: 12px; font-weight: 650; }
+#account-dialog :is(#account-password, .account-center-address input) {
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  color: var(--account-ink);
+  background: var(--account-surface);
+  border: 1px solid var(--account-line);
+  border-radius: 9px;
+  font: 13px var(--font);
+}
+#account-dialog #account-verify-providers:empty { display: none; }
+
+#account-dialog #account-providers { gap: 0; margin: 0 0 14px; }
+#account-dialog #account-providers[data-managed-externally="false"]:not(:empty) {
+  border: 1px solid var(--account-rim);
+  border-radius: 17px;
+  overflow: hidden;
+  background: var(--account-surface);
+  box-shadow: inset 0 1px 0 var(--account-highlight), 0 5px 16px #1024450d;
+}
+#account-dialog .account-provider {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 12px;
+  border: 0;
+  border-radius: 0;
+}
+#account-dialog .account-provider + .account-provider { border-top: 1px solid var(--account-line); }
+#account-dialog .account-provider-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; font-size: 14px; }
+#account-dialog .account-provider-state { color: var(--account-muted); font-size: 11px; line-height: 1.45; white-space: nowrap; }
+#account-dialog .account-provider-state[data-bound="true"] {
+  padding: 2px 6px;
+  color: var(--account-success);
+  background: var(--account-success-surface);
+  border-radius: 6px;
+}
+#account-dialog .account-provider p { margin: 3px 0 0; color: var(--account-muted); font-size: 12px; line-height: 1.45; }
+#account-dialog .account-provider .account-actions { justify-content: end; }
+#account-dialog .account-provider .btn { padding-inline: 9px; }
+#account-dialog .account-provider-mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--account-link);
+  background: var(--account-control);
+  border: 1px solid var(--account-line);
+  border-radius: 11px;
+  font: 760 18px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+}
+#account-dialog [data-available="false"] .account-provider-mark { color: var(--account-muted); background: var(--account-recess); }
+#account-dialog #account-providers[data-managed-externally="true"] { gap: 8px; }
+#account-dialog .account-center-address summary { color: var(--account-muted); }
+#account-dialog .account-glass-footer { display: grid; gap: 8px; }
+#account-dialog .account-glass-footer .hint { font-size: 12px; }
+#account-dialog #account-connect-cloud { width: fit-content; margin: 0; color: var(--account-link); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 440px) {
+  #account-dialog .account-glass-head { grid-template-columns: 52px minmax(0, 1fr) auto; gap: 8px; }
+  #account-dialog .account-glass-brand { width: 52px; height: 52px; }
+  #account-dialog #account-title { font-size: 21px; }
+  #account-dialog .account-provider { grid-template-columns: 36px minmax(0, 1fr); gap: 8px 10px; }
+  #account-dialog .account-provider .account-actions { grid-column: 2; justify-content: start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #account-dialog:open { animation: none; }
+  #account-dialog :is(.btn, #btn-close-account) { transition: none; }
+  #account-dialog :is(.btn, #btn-close-account):active:not(:disabled) { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #account-dialog {
+    --account-surface: var(--account-solid);
+    --account-line: var(--account-muted);
+    background: var(--account-solid);
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+@media (forced-colors: active) {
+  #account-dialog {
+    --account-ink: CanvasText;
+    --account-muted: CanvasText;
+    --account-focus: Highlight;
+    --account-link: LinkText;
+    --account-line: CanvasText;
+    --account-rim: CanvasText;
+    background: Canvas;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}

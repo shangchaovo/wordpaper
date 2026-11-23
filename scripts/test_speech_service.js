@@ -45,12 +45,11 @@ const prepare=(service,text,voice)=>new Promise((resolve,reject)=>service.prepar
 
   const failed=prepare(service,'Offline sample','sonia');
   jobs.at(-1)[3](new Error('offline'));
-  const fallback=jobs.at(-1);assert.equal(fallback[0],'/usr/bin/say');
-  fs.writeFileSync(fallback[1][fallback[1].indexOf('-o')+1],'aiff');fallback[3](null);
-  const offline=await failed;assert.equal(offline.fallback,true);assert.deepEqual(offline.cues,[]);
+  await assert.rejects(failed, /offline/);
+  assert.equal(jobs.length,3,'offline errors must not launch a system voice');
   assert.equal(fs.existsSync(service.cacheFile('Offline sample','sonia')),false);
   const retry=prepare(service,'Offline sample','sonia');finish(jobs.at(-1));
   assert.equal((await retry).fallback,false);
   await assert.rejects(prepare(service,'anything','not-a-voice'));
-  console.log('PASS honest offline fallback / online recovery / voice allowlist');
+  console.log('PASS no unsolicited system voice / online recovery / voice allowlist');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>fs.rmSync(temp,{recursive:true,force:true}));

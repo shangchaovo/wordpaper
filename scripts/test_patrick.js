@@ -16,6 +16,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { once } = require('events');
 
 async function freePort() {
   return await new Promise((resolve, reject) => {
@@ -71,15 +72,17 @@ async function waitQuizGeom(base, predicate = () => true) {
     `);
     runtimeArgs.push('--require', preload);
   }
-  const child = spawn(process.execPath, [...runtimeArgs, path.join(__dirname, '..', 'companion.js')], {
+  const start = () => spawn(process.execPath, [...runtimeArgs, path.join(__dirname, '..', 'companion.js')], {
     cwd: path.join(__dirname, '..'), stdio: 'ignore',
     env: Object.assign({}, process.env, {
       WORDPAPER_TEST_MODE: '1', WORDPAPER_PORT: String(port),
+      WORDPAPER_DATA_DIR: temp,
       WORDPAPER_COMPANION_DATA_DIR: temp,
       WORDPAPER_STATE_PATH: statePath, WORDPAPER_CONFIG_PATH: configPath,
       WORDPAPER_CUSTOM_WORDS_PATH: path.join(temp, 'custom-words.json'),
     }),
   });
+  let child = start();
   try {
     await waitForServer(base);
 
@@ -274,6 +277,43 @@ async function waitQuizGeom(base, predicate = () => true) {
       body: JSON.stringify({ action: 'nope' }),
     });
     assert.equal(badAction.status, 400, 'unknown quiz action must 400');
+
+    // All keyboard SRS writes use an isolated real account/database.
+    const storage=require('../lib/storage').openStorage(temp);
+    storage.createUser('shortcut-test','shortcut-test','unused');storage.close();
+    // Real HTTP keyboard route: method/origin validation and stale identities.
+    assert.equal((await fetch(base + '/pet-key.php')).status, 405);
+    assert.equal((await fetch(base + '/pet-key.php', {method:'POST',headers:{Origin:'https://evil.example'}})).status, 403);
+    const keyPost = payload => json(base, '/pet-key.php', {
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),
+    });
+    const defaults=(await json(base,'/pet-shortcuts.php')).data.bindings;
+    assert.equal(defaults.answer0.code,'KeyA');assert.equal(defaults.answer1.code,'KeyS');
+    assert.equal(defaults.answer2.code,'KeyD');assert.equal(defaults.answer3.code,'KeyF');
+    const settingsPost = bindings => json(base,'/pet-shortcuts.php',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bindings})});
+    assert.equal((await settingsPost({...defaults,answer0:{code:'KeyS',mods:0}})).status,400);
+    const custom={...defaults,answer0:{code:'KeyJ',mods:0}};
+    assert.equal((await settingsPost(custom)).data.ok,true);
+    assert.equal(JSON.parse(fs.readFileSync(configPath,'utf8')).patrickShortcuts.answer0.code,'KeyJ');
+    assert.equal((await json(base,'/pet-patrick.json')).data.shortcuts.answer0.code,'KeyJ');
+    assert.equal((await fetch(base+'/pet-shortcuts.php',{method:'POST',headers:{Origin:'https://evil.example'}})).status,403);
+    const exited=once(child,'exit');child.kill();await exited;child=start();await waitForServer(base);
+    assert.equal((await json(base,'/pet-shortcuts.php')).data.bindings.answer0.code,'KeyJ','custom shortcuts survive companion restart');
+    assert.equal((await settingsPost(defaults)).data.ok,true);
+    assert.equal((await keyPost({action:'nope'})).status,400);
+    await postQuiz({action:'offer',library:'cet4',words:[wordA]});
+    const keyboardQuiz = await waitQuizGeom(base);
+    assert.equal((await keyPost({action:'remember',quizId:'old-card'})).status,409);
+    const firstExample = await keyPost({action:'replay',quizId:keyboardQuiz.id});
+    assert.equal(firstExample.data.ok,true);
+    const nextExample = await keyPost({action:'example-next',quizId:keyboardQuiz.id});
+    assert.equal(nextExample.data.exampleIndex,firstExample.data.exampleCount>1?1:0);
+    const beforeKeyEvents = (await json(base,'/pet-memory-events.json')).data.events.length;
+    assert.equal((await keyPost({action:'remember',quizId:keyboardQuiz.id})).data.mastered,true);
+    assert.equal((await keyPost({action:'remember',quizId:keyboardQuiz.id})).data.duplicate,true);
+    assert.equal((await json(base,'/pet-memory-events.json')).data.events.length,beforeKeyEvents+1);
+    assert.equal((await keyPost({action:'next',quizId:keyboardQuiz.id})).data.ok,true);
+    assert.equal((await keyPost({action:'remember',quizId:keyboardQuiz.id})).status,409);
 
     console.log('PASS patrick mode/quiz/tts endpoints (mode persistence, command seq, quiz event stream, concurrency guard, queueing + skip)');
   } finally {

@@ -20,14 +20,14 @@
   const errorBox = document.querySelector('#auth-error');
   const authStatus = document.querySelector('#auth-status');
   const providerStatus = document.querySelector('#provider-status');
-  const providerButtons = Array.from(document.querySelectorAll('[data-provider]'));
+  const googleButton = document.querySelector('#auth-google');
   let mode = 'login';
   let emailRegistrationEnabled = null;
   let codeTimer = 0;
 
   const oauthErrors = {
     google_not_configured: 'Google 登录尚未配置，请暂时使用邮箱登录。',
-    wechat_not_configured: '微信登录尚未配置，请暂时使用其他方式登录。',
+    wechat_not_configured: '该登录方式未启用，请使用 Google 或邮箱登录。',
     oauth_cancelled: '你取消了授权，可以重新尝试或改用邮箱。',
     oauth_expired: '登录请求已过期或不是从当前浏览器发起，请重新尝试。',
     oauth_failed: '第三方登录暂时失败，请稍后重试。',
@@ -36,7 +36,14 @@
 
   function destination() {
     const value = new URLSearchParams(location.search).get('next') || '/';
-    return value.startsWith('/') && !value.startsWith('//') && !value.includes('\\\\') ? value : '/';
+    if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/';
+    try {
+      const parsed = new URL(value, location.origin);
+      if (parsed.origin !== location.origin || parsed.pathname.startsWith('//')) return '/';
+      return parsed.pathname + parsed.search + parsed.hash;
+    } catch {
+      return '/';
+    }
   }
 
   function showError(message, invalid) {
@@ -161,17 +168,13 @@
     }
     if (providers.pairingAllowed) pairSection.hidden = false;
 
-    let anyEnabled = false;
-    providerButtons.forEach(function (button) {
-      const enabled = Boolean(providers[button.dataset.provider]?.enabled);
-      anyEnabled = anyEnabled || enabled;
-      button.style.display = enabled ? '' : 'none';
-      button.disabled = !enabled;
-      button.setAttribute('aria-disabled', String(!enabled));
-      button.querySelector('[data-provider-state]').textContent = enabled ? '首次使用将自动创建账号' : '';
-    });
+    const enabled = Boolean(providers.google?.enabled);
+    googleButton.style.display = enabled ? '' : 'none';
+    googleButton.disabled = !enabled;
+    googleButton.setAttribute('aria-disabled', String(!enabled));
+    googleButton.querySelector('[data-provider-state]').textContent = enabled ? '首次使用将自动创建账号' : '';
     const divider = document.querySelector('.auth-divider');
-    if (divider) divider.style.display = anyEnabled ? '' : 'none';
+    if (divider) divider.style.display = enabled ? '' : 'none';
   }
 
   // ── 配对 / 继续 / 断开 ──────────────────────────────────
@@ -225,14 +228,12 @@
     }
   });
 
-  providerButtons.forEach(function (button) {
-    button.addEventListener('click', function () {
-      if (button.disabled) return;
-      button.disabled = true;
-      button.setAttribute('aria-busy', 'true');
-      providerStatus.textContent = `正在连接${button.dataset.provider === 'google' ? ' Google' : '微信'}…`;
-      location.assign(`/api/auth/${button.dataset.provider}/start?next=${encodeURIComponent(destination())}`);
-    });
+  googleButton.addEventListener('click', function () {
+    if (googleButton.disabled) return;
+    googleButton.disabled = true;
+    googleButton.setAttribute('aria-busy', 'true');
+    providerStatus.textContent = '正在连接 Google…';
+    location.assign(`/api/auth/google/start?next=${encodeURIComponent(destination())}`);
   });
 
   function startCodeCountdown(seconds) {

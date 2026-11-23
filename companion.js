@@ -330,7 +330,8 @@ function learnedSnapshot() {
   Object.keys(state.petLearnedByLibrary).forEach(library => {
     Object.keys(state.petLearnedByLibrary[library] || {}).forEach(key => {
       const record = state.petLearnedByLibrary[library][key];
-      if (record && record.word) out.push({ library, word: record.word, at: record.at || 0, userId: record.userId, activityId: record.activityId });
+      if (record && record.word) out.push({ library, word: record.word, at: record.at || 0, userId: record.userId, activityId: record.activityId,
+        ...(record.mastered ? { action:'mastered', srsApplied:true } : {}) });
     });
   });
   return out;
@@ -760,10 +761,8 @@ const PATRICK_FRAME = { idle0: 0, idle1: 1, blink: 2, lookL: 3, lookR: 4, wave0:
 const PET_MODES = new Set(['card', 'patrick']);
 const PATRICK_DEFAULT = { w: 190, h: 206 };   // 派大星显示尺寸(pt, 2x 位图清晰;太小看不清表情)
 const PATRICK_MIN = 90, PATRICK_MAX = 420;
-/* 语音:优先 edge-tts(微软神经语音,接近真人),不可用时回退系统 say。
- * 按用户要求**只朗读英文**(单词与英文例句),中文释义不出声。 */
+/* 未绑定账号语音时使用微软英语音色。 */
 const PATRICK_TTS = {
-  engine: 'edge',                       // 'edge' | 'say'
   // edge-tts 可执行文件:优先 App 内自带,其次仓库里的 venv(同机)。
   // venv 的 shebang 是绝对路径,复制到别处会失效,所以按顺序探测真实可用的那个。
   edgeBin: (() => {
@@ -773,41 +772,21 @@ const PATRICK_TTS = {
     ];
     return candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } }) || candidates[0];
   })(),
-  edgeVoice: process.env.WORDPAPER_TTS_VOICE || 'en-US-AriaNeural',
   edgeRate: process.env.WORDPAPER_TTS_RATE || '+0%',
-  fallbackVoice: 'Samantha',
-  fallbackRate: 165,
 };
-/* 答题音效:用 macOS 内置音效(零依赖、无需打包音频)。
- * 对 = Glass(清脆上扬) + Hero(短促胜利感);错 = Basso(低沉) + Sosumi(经典"错误"音)。 */
-const QUIZ_SFX = {
-  correct: ['/System/Library/Sounds/Glass.aiff', '/System/Library/Sounds/Hero.aiff'],
-  wrong: ['/System/Library/Sounds/Basso.aiff', '/System/Library/Sounds/Sosumi.aiff'],
-};
-function playSfx(kind, cb) {
-  const files = QUIZ_SFX[kind] || [];
-  if (!files.length || !isMac) return cb && cb();
-  const playOne = (i) => {
-    if (i >= files.length) return cb && cb();
-    execFile('/usr/bin/afplay', [files[i]], { timeout: 8000 }, () => playOne(i + 1));
-  };
-  playOne(0);
-}
-
-/* 本地 TTS 串行队列:词(英文,略慢)+释义(中文)。say 是本机合成,离线可用;
- * 一次朗读 = 词 → 短停 → 释义/例句,经 -w /tmp 文件播放避免 say 阻塞前台。 */
+/* 英文朗读队列。切词、换形态或结束学习时取消旧播放。 */
 const ttsQueue = [];
 let ttsBusy = false;
 let ttsProc = null;            // 正在跑的 afplay / edge-tts 子进程(可被 ttsStopNow 掐断)
 let ttsGen = 0;                // 代际:每次掐断 +1,旧的异步回调看到代际变了就自我作废
-/* 朗读一段英文:edge-tts 合成 mp3 → afplay 播放。失败回退 macOS say。
+/* 朗读一段英文：使用当前账号的语音设置合成，再用 afplay 播放。
  * 只用于英文(单词/例句);中文释义不朗读。
  * opts.gen:调用时的代际;播放前若代际已变(用户掐断了)就丢弃,绝不播旧内容。 */
 function ttsSpeak(text, cb, opts) {
   const safe = String(text || '').trim();
   if (!safe || !isMac) return cb && cb(new Error('empty text'));
   const myGen = opts && typeof opts.gen === 'number' ? opts.gen : ttsGen;
-  speechAudio.prepare(safe, selectedVoice().id, (err, audio) => {
+  prepareSpeech(safe, selectedVoice().id, (err, audio) => {
     if (myGen !== ttsGen) return;
     if (err) return cb && cb(err);
     const child = execFile('/usr/bin/afplay', [audio.file], {timeout:120000}, error => {
@@ -835,17 +814,45 @@ function ttsStopNow(reason = 'cancelled') {
 const TTS_CACHE_DIR = path.join(RUNTIME_ROOT, 'tts-cache');
 const speechModule = require('./lib/speech');
 const mouthModule = require('./lib/patrick-mouth');
+const speechProvider = require('./lib/speech-provider');
+const desktopSpeechRoutes = new Set(['/pet-voices.json', '/pet-voice.php', '/pet-voice-preview.php', '/pet-voice-audio.php', '/pet-speak.php']);
+function accountSpeech(expectedId) {
+  const userId = Number(CFG.srsUserId);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+  const db = openSrsDb();
+  if (!db) return null;
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_speech'").get()) return null;
+    const store = speechProvider.createSpeechStore(db, process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'));
+    const summary = store.summary(userId);
+    if (!summary.configured) return null;
+    const id = 'api-' + require('node:crypto').createHash('sha256').update(JSON.stringify([userId, summary])).digest('hex').slice(0, 20);
+    const voice = { id, name: summary.voice, accent: summary.baseUrl === speechProvider.defaults.baseUrl ? 'OpenAI' : '自定义接口',
+      gender: summary.model, color: 'sage', tone: '账号朗读设置', custom: true };
+    if (expectedId === id) return { ...store.get(userId), id };
+    return voice;
+  } finally { db.close(); }
+}
 function selectedVoice() {
-  return speechModule.voiceById(CFG.speechVoice)
+  return accountSpeech() || speechModule.voiceById(CFG.speechVoice)
     || speechModule.VOICES.find(v => v.voice === process.env.WORDPAPER_TTS_VOICE)
     || speechModule.VOICES[0];
 }
-const speechAudio = speechModule.createSpeechService({
-  cacheDir:TTS_CACHE_DIR, edgeBin:PATRICK_TTS.edgeBin, execFile,
-  rate:PATRICK_TTS.edgeRate, fallbackVoice:PATRICK_TTS.fallbackVoice, fallbackRate:PATRICK_TTS.fallbackRate,
-});
-function ttsPrewarm(text, cb) {
-  speechAudio.prepare(String(text || '').trim(), selectedVoice().id, (err,audio) => cb && cb(err,audio && audio.file));
+const speechAudio = speechModule.createSpeechService({ cacheDir: TTS_CACHE_DIR, edgeBin: PATRICK_TTS.edgeBin, execFile, rate: PATRICK_TTS.edgeRate });
+function prepareSpeech(text, voiceId, done) {
+  let account;
+  try { account = accountSpeech(voiceId); } catch (err) { return done(err); }
+  if (account ? account.id !== voiceId : !speechModule.voiceById(voiceId)) return done(new Error('朗读设置已更改'));
+  speechAudio.prepare(text, account || voiceId, done);
+}
+function prewarmEdge(text, voiceId) {
+  if (speechModule.voiceById(voiceId)) speechAudio.prepare(text, voiceId, () => {});
+}
+function resetSpeechPlayback() {
+  ttsStopNow();
+  voicePreviewUntil = 0;
+  voicePreviewId = '';
+  voicePreviewClips.clear();
 }
 
 /* 切词/提问时同时结束当前播放与气泡,避免队列换代后完成回调失效而悬挂。 */
@@ -934,6 +941,8 @@ function pumpTts() {
 /* 词→例句:优先读预生成 data/examples_<lib>.json(离线词典缓存);custom 词库
  * 词条自带 example 字段。返回 {en, zh} 或 null。 */
 const examplesCache = {};
+const wordExamples = require('./lib/word-examples');
+const generatedExamples = wordExamples.createExampleService({ openDb: openSrsDb, complete: accountCompletion });
 function examplesForLibrary(library) {
   if (examplesCache[library]) return examplesCache[library];
   let data = null;
@@ -941,21 +950,37 @@ function examplesForLibrary(library) {
   examplesCache[library] = data || {};
   return examplesCache[library];
 }
-function exampleForWord(library, word) {
-  if (word && word.example) return { en: String(word.example), zh: '' };
+function examplesForWord(library, word, userId = CFG.srsUserId) {
   const lib = examplesForLibrary(library);
-  const hit = lib[word && word.word] || lib[(word && word.word || '').toLowerCase()];
-  if (!hit || !hit.length) return null;
-  const s = String(hit[0]);
-  // "to be amused at or by sth 被某事物逗乐" → 英文段 + 中文段(第一个 CJK 字符处切)
-  const m = s.match(/^(.*?[a-zA-Z'”’\)\]])\s*([\u4e00-\u9fff].*)$/);
-  return m ? { en: m[1].trim(), zh: m[2].trim() } : { en: s, zh: '' };
+  const hit = word?.examples || (word?.example ? [word.example] : lib[word?.word] || lib[(word?.word || '').toLowerCase()] || []);
+  const seen = new Set();
+  const existing = (Array.isArray(hit) ? hit : [hit]).map(value => {
+    if (value && typeof value === 'object') return { en: String(value.en || '').trim(), zh: String(value.zh || '').trim() };
+    const s = String(value || '').trim();
+    // Split at the first Chinese character, including after !/?/periods.
+    const m = s.match(/^([\s\S]*?)([\u3400-\u9fff][\s\S]*)$/);
+    return m ? { en: m[1].trim(), zh: m[2].trim() } : { en: s, zh: '' };
+  }).filter(example => {
+    if (!example.en || !/[a-z]/i.test(example.en) || seen.has(example.en)) return false;
+    seen.add(example.en); return true;
+  });
+  try {
+    for(const saved of generatedExamples.list(userId, library, word)){
+      if(!seen.has(saved.en)){existing.push(saved);seen.add(saved.en);}
+    }
+  } catch {} // Dictionary examples remain available offline.
+  return existing;
+}
+function exampleForWord(library, word, index = 0, userId = CFG.srsUserId) {
+  const examples = examplesForWord(library, word, userId);
+  return examples.length ? examples[((index % examples.length) + examples.length) % examples.length] : null;
 }
 
 /* 派大星漫游窗状态(伴侣进程侧):TTS 播放中的高亮、当前悬停词由 JXA 窗口本地
  * 管理;这里只保存 config 与尺寸/位置持久化路径。 */
 const PATRICK_POS_PATH = path.join(RUNTIME_ROOT, 'patrick-position.json');
 const patrickIdle = require('./lib/patrick-idle');
+const patrickShortcuts = require('./js/patrick-shortcuts');
 
 function buildPatrickJXA(opts) {
   const meta = {
@@ -983,6 +1008,7 @@ function buildPatrickJXA(opts) {
     roam: CFG.petRoam !== false && featureOn('betaCompanionRoam'),
     dark: opts.dark === true,
     exampleLines: opts.exampleLines || [],
+    shortcuts: patrickShortcuts.normalize(CFG.patrickShortcuts),
   };
   return `ObjC.import('Cocoa');
 ObjC.import('AVFoundation');
@@ -1007,8 +1033,15 @@ function run(argv){
   } catch (e) {}
   x = Math.max(screen.origin.x + 4, Math.min(x, screen.origin.x + screen.size.width - W - 4));
   y = Math.max(screen.origin.y + 4, Math.min(y, screen.origin.y + screen.size.height - H - 4));
-  var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(x, y, W, H), $.NSWindowStyleMaskBorderless, $.NSBackingStoreBuffered, false);
+  ObjC.registerSubclass({ name: 'DWPatrickWindow', superclass: 'NSPanel', methods: {
+    canBecomeKeyWindow: { types: ['bool', []], implementation: function(){ return true; } },
+    'keyDown:': function(e){ patrickKeyEvent(e, true); },
+    'keyUp:': function(e){ patrickKeyEvent(e, false); },
+    'flagsChanged:': function(e){ patrickFlagsChanged(e); },
+  }});
+  var win = $.DWPatrickWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+    $.NSMakeRect(x, y, W, H), $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
+  win.hidesOnDeactivate = false;
   win.opaque = false; win.backgroundColor = $.NSColor.clearColor;
   win.level = $.NSFloatingWindowLevel;
   win.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
@@ -1242,6 +1275,10 @@ function run(argv){
   });
 
   var GripClass = ObjC.registerSubclass({ name: 'DWPatrickGrip', superclass: 'NSView', methods: {
+    'acceptsFirstResponder': function(){ return true; },
+    'keyDown:': function(e){ patrickKeyEvent(e, true); },
+    'keyUp:': function(e){ patrickKeyEvent(e, false); },
+    'flagsChanged:': function(e){ patrickFlagsChanged(e); },
     'mouseDownCanMoveWindow': function(){ return false; },
     'drawRect:': function(rect){
       // 不 fill 背景:窗口 backgroundColor=clear、视图不画底色即保持透明。
@@ -1311,6 +1348,8 @@ function run(argv){
     },
     'acceptsFirstMouse:': function(){ return true; },
     'mouseDown:': function(e){
+      focusPatrickWindow(win);
+      clearWalkKeys();
       // 拖动必须用**屏幕坐标** NSEvent.mouseLocation:e.locationInWindow 是窗口局部坐标,
       // 窗口一移动局部坐标就变,会形成负反馈 → 拖动跟不上鼠标(卡片形态同款坑)。
       var m = $.NSEvent.mouseLocation;
@@ -1404,7 +1443,7 @@ function run(argv){
       });
     }
     if (fresh.length) lines.push({ text: '🆕 还没背：' + fresh.slice(0, 3).join('、'), size: 11 });
-    lines.push({ text: '摸摸我抽查 · 点击开对话', size: 9, color: 'sub' });
+    lines.push({ text: '单击选中 · ' + keyboardLabel('start') + ' 背词 · ' + keyboardLabel('help') + ' 快捷键', size: 9, color: 'sub' });
     return lines;
   }
   function showHoverBubble(){
@@ -1448,7 +1487,7 @@ function run(argv){
       $.NSMakeRect(ax, ay, AW, AH),
       $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
       $.NSBackingStoreBuffered, false);
-    w.title = '问派大星（DeepSeek）';
+    w.title = '问派大星';
     w.level = $.NSFloatingWindowLevel + 1;
     w.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces;
     var content = w.contentView;
@@ -1506,12 +1545,7 @@ function run(argv){
   }
 
   var lastClickAt = 0;
-  /* 有题卡时点击 = 抖动 + 当前词/例句;空闲时保留打开对话的交互。
-   * 动效编排(与浮窗的出场动画对齐):
-   *   0ms    派大星先做一个「蓄力」下沉(缩放 1.0→0.94,向下 6pt)
-   *   90ms   弹起(跳跃弧线)+ 挥手两帧 —— 这是"它把窗口递给你"的感觉
-   *   90ms   同时请求伴侣开窗;窗口自己在 260ms 内从派大星身旁弹出来
-   * 之前是瞬间切到 jump 帧 + 立刻开窗,两个动作各走各的,显得很突变。 */
+  /* 有题卡时点击重听；空闲时选中派大星，键盘可直接控制走动。 */
   function handleClick(){
     var now = Date.now();
     if (st.quiz && !quizWin && typeof revealIdleQuiz === 'function') { revealIdleQuiz(now); return; }
@@ -1525,24 +1559,11 @@ function run(argv){
       postUrl(M.speakUrl, JSON.stringify({ quizId: lastQuizGeom.id }));
       return;
     }
-    if (st.quiz) return;  // 题卡尚未上屏时不切走对话。
-    if (now - lastClickAt < 400) return;    // 防连点:一次点击只开一个窗
-    lastClickAt = now;
-    st.animSeq = null;
-    st.clickFx = { start: now, dur: 420 };  // 蓄力→弹起的缩放/位移,在 drawRect 里应用
-    // 先蓄力 90ms,再跳 + 挥手并请求开窗
-    st.mode = 'idle';
-    st.idleHoldUntil = now + 500;
-    bubble = null;
+    if (st.quiz) return;
+    st.mode = 'idle'; st.target = null; st.animSeq = null; st.frame = FR.wave0;
+    st.idleHoldUntil = now + 1200;
+    showKeyboardHelp(false);
     grip.setNeedsDisplay(true);
-    $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.09, true, function(tm){
-      tm.invalidate;
-      st.mode = 'jump'; st.jumpStart = Date.now(); st.jumpY0 = y;
-      playSeq([FR.wave0, FR.wave1, FR.wave0], 110, true, function(){ st.frame = FR.idle0; grip.setNeedsDisplay(true); });
-      bubble = { lines: [{ text: '来，聊聊这个词～', size: 11 }], until: Date.now() + 2200 };
-      grip.setNeedsDisplay(true);
-      postUrl('http://127.0.0.1:' + M.port + '/pet-chat-window.php?action=toggle', '');
-    });
   }
   /* 组装某个词的语音气泡行(词 + 音标 / 释义 / 例句)。 */
   function wordBubbleLines(idx, withHint){
@@ -1557,7 +1578,7 @@ function run(argv){
       lines.push({ text: s.length > 44 ? s.substring(0, 42) + '…' : s, size: 10, color: 'sub' });
     }
     if (withHint && M.words.length > 1) {
-      lines.push({ text: '第 ' + (idx + 1) + '/' + M.words.length + ' 个 · 再点一下读下一个', size: 9.5, color: 'sub' });
+      lines.push({ text: '第 ' + (idx + 1) + '/' + M.words.length + ' 个 · ' + keyboardLabel('next') + ' 下一个', size: 9.5, color: 'sub' });
     }
     return lines;
   }
@@ -1570,19 +1591,26 @@ function run(argv){
     var qRect = $.NSMakeRect(qx, qy - viewportH - 4, cardW, viewportH);
     qRect.origin.x = Math.max(visible.origin.x + 4, Math.min(qRect.origin.x, visible.origin.x + visible.size.width - cardW - 4));
     qRect.origin.y = Math.max(visible.origin.y + 4, Math.min(qRect.origin.y, visible.origin.y + visible.size.height - viewportH - 4));
-    var qw = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(qRect, $.NSWindowStyleMaskBorderless, $.NSBackingStoreBuffered, false);
+    var qw = $.DWPatrickWindow.alloc.initWithContentRectStyleMaskBackingDefer(qRect, $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
+    qw.hidesOnDeactivate = false;
     qw.opaque = false; qw.backgroundColor = $.NSColor.clearColor;
     qw.level = $.NSFloatingWindowLevel + 1;
     qw.hasShadow = true;
     qw.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
     var QuizName = 'DWQuizGrip' + Date.now();
     ObjC.registerSubclass({ name: QuizName, superclass: 'NSView', methods: {
+      'acceptsFirstResponder': function(){ return true; },
+      'keyDown:': function(e){ patrickKeyEvent(e, true); },
+      'keyUp:': function(e){ patrickKeyEvent(e, false); },
+      'flagsChanged:': function(e){ patrickFlagsChanged(e); },
       'mouseDownCanMoveWindow': function(){ return false; },
+      'acceptsFirstMouse:': function(){ return true; },
       'drawRect:': function(rect){
         var qimg = $.NSImage.alloc.initWithContentsOfFile(pngPath);
         if (qimg && !qimg.isNil()) qimg.drawInRectFromRectOperationFraction(this.bounds, $.NSZeroRect, $.NSCompositeSourceOver, 1);
       },
       'mouseDown:': function(e){
+        focusPatrickWindow(qw);
         var p = this.convertPointFromView(e.locationInWindow, $());
         var f = this.bounds;
         if (cardKind !== 'quiz') return;
@@ -1596,7 +1624,7 @@ function run(argv){
         // 底部两颗按钮(作答后才有意义;没作答时伴侣侧会拒绝)
         if (topDown >= btnTop && topDown <= btnBottom) {
           if (!g.done) return;
-          if (p.x <= M.quizBtnSkipX1) skipPost(); else sentencePost();
+          if (p.x <= M.quizBtnSkipX1) skipPost(); else if(!g.manualMastered) sentencePost();
           return;
         }
         // 展开/收起条(仅超长释义折叠时存在)
@@ -1670,6 +1698,7 @@ function run(argv){
       var vh = Math.min(lastQuizGeom.h, scr0.size.height - 16);
       if (Math.round(f0.size.width) === lastQuizGeom.w && Math.round(f0.size.height) === vh && Math.round(quizGripView.frame.size.height) === lastQuizGeom.h) return;
       var oldTop = Math.max(0, quizGripView.frame.size.height - quizScrollView.contentView.bounds.origin.y - quizScrollView.contentView.bounds.size.height);
+      var wasKey = quizWin.isKeyWindow;
       quizWin.orderOut($());
       quizWin.setContentSize($.NSMakeSize(lastQuizGeom.w, vh));
       quizScrollView.setFrameSize($.NSMakeSize(lastQuizGeom.w, vh));
@@ -1678,7 +1707,8 @@ function run(argv){
       var nx = Math.max(scr0.origin.x + 4, Math.min(f0.origin.x, scr0.origin.x + scr0.size.width - lastQuizGeom.w - 4));
       var ny = Math.max(scr0.origin.y + 4, Math.min(f0.origin.y + f0.size.height - vh, scr0.origin.y + scr0.size.height - vh - 4));
       quizWin.setFrameOrigin($.NSMakePoint(nx, ny));
-      quizWin.orderFrontRegardless();
+      quizWin.orderFrontRegardless;
+      if (wasKey) focusPatrickWindow(quizWin);
       quizGripView.setNeedsDisplay(true);
     } catch (e) {}
   }
@@ -1752,6 +1782,17 @@ function run(argv){
     speakWin.setFrameOrigin($.NSMakePoint(target.x, target.y));
   }
   ObjC.registerSubclass({ name:'DWPatrickSpeakView', superclass:'NSView', methods:{
+    'acceptsFirstResponder': function(){ return true; },
+    'keyDown:': function(e){ patrickKeyEvent(e, true); },
+    'keyUp:': function(e){ patrickKeyEvent(e, false); },
+    'flagsChanged:': function(e){ patrickFlagsChanged(e); },
+    'acceptsFirstMouse:': function(){ return true; },
+    'mouseDown:': function(e){
+      focusPatrickWindow(speakWin);
+      if(!speakSession || !speakSession.generateButton)return;
+      var p=this.convertPointFromView(e.locationInWindow,$()), top=this.bounds.size.height-p.y, b=speakSession.generateButton;
+      if(p.x>=b.x && p.x<=b.x+b.w && top>=b.y && top<=b.y+b.h)sendPatrickKey('example-generate');
+    },
     'drawRect:': function(rect){
       if (!speakImage || !speakSession) return;
       speakImage.drawInRectFromRectOperationFraction(this.bounds, $.NSZeroRect, $.NSCompositeSourceOver, 1);
@@ -1763,7 +1804,7 @@ function run(argv){
         var bh = playing && !reduceMotion() ? 4 + (1 + Math.sin(Date.now()/130 + i*1.3))*4 : [5,10,13,7][i];
         $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(23+i*4.5,h-25-bh/2,2.5,bh),1.25,1.25).fill;
       }
-      var labels = { preparing:'准备朗读', word:'正在读单词', example:'正在读例句', done:'读完啦', error:'暂时无法播放' };
+      var labels = { preparing:'准备朗读', choice:'AI 例句', generating:'AI 正在补充例句', word:'正在读单词', example:'正在读例句', done:'读完啦', error:'暂时无法播放' };
       var attrs = $.NSMutableDictionary.alloc.init;
       attrs.setObjectForKey(fontAt(10,true), $.NSFontAttributeName);
       attrs.setObjectForKey(mint, $.NSForegroundColorAttributeName);
@@ -1850,6 +1891,7 @@ function run(argv){
   }
   function hideSpeakCard(){
     stopSpeakAudio();
+    returnPatrickFocus(speakWin);
     if (speakWin) speakWin.orderOut($());
     speakWin = null; speakView = null; speakImage = null; speakSession = null;
     speakCloseAt = 0; speakExitAt = 0; speakAckAt = 0; speakPendingUntil = 0;
@@ -1865,8 +1907,9 @@ function run(argv){
     speakSession = c; speakImage = img; speakPhase = 'preparing';
     if (c.holdResult) st.quizResultHideAt = 0;
     bubble = null;
-    speakWin = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-      $.NSMakeRect(x,y,cw,vh), $.NSWindowStyleMaskBorderless,$.NSBackingStoreBuffered,false);
+    speakWin = $.DWPatrickWindow.alloc.initWithContentRectStyleMaskBackingDefer(
+      $.NSMakeRect(x,y,cw,vh), $.NSWindowStyleMaskNonactivatingPanel,$.NSBackingStoreBuffered,false);
+    speakWin.hidesOnDeactivate = false;
     speakWin.opaque = false; speakWin.backgroundColor = $.NSColor.clearColor;
     speakWin.level = $.NSFloatingWindowLevel + 2; speakWin.hasShadow = true;
     speakWin.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorIgnoresCycle;
@@ -1893,7 +1936,7 @@ function run(argv){
     if (!speakWin || !speakSession) return;
     if (speakAckAt && now >= speakAckAt) {
       speakAckAt = 0;
-      postUrl(M.speakShownUrl,JSON.stringify({ id:speakSession.id }));
+      postUrl(M.speakShownUrl,JSON.stringify({ id:speakSession.id, version:speakSession.version }));
     }
     if (speakPlayer) {
       // One playback sample drives lips, body and highlighting in this frame.
@@ -1924,6 +1967,22 @@ function run(argv){
   function handleSpeakCommand(c){
     if (c.cmd === 'speak-card') { showSpeakCard(c); return; }
     if (!speakSession || speakSession.id !== c.id) return;
+    if (c.cmd === 'speak-update') {
+      var updatedImage = $.NSImage.alloc.initWithContentsOfFile(M.speakPng);
+      if (updatedImage && !updatedImage.isNil()) {
+        speakImage = updatedImage; speakSession.lines = c.lines; speakSession.h = c.h;
+        speakSession.version = c.version; speakSession.exampleCount = c.exampleCount; speakSession.exampleIndex = c.exampleIndex;
+        speakSession.generateButton = c.generateButton;
+        var screen = screenForPet(), vh = Math.min(c.h,440,screen.size.height-16), cw = Math.min(c.w,screen.size.width-16);
+        speakWin.setContentSize($.NSMakeSize(cw,vh));
+        var scroll = speakView.enclosingScrollView;
+        scroll.setFrame($.NSMakeRect(0,0,cw,vh));
+        speakView.setFrameSize($.NSMakeSize(c.w,c.h)); speakView.setNeedsDisplay(true);
+        speakView.scrollPoint($.NSMakePoint(0,Math.max(0,c.h-vh)));
+        syncSpeakWinPosition(); speakAckAt = Date.now()+80;
+      }
+      return;
+    }
     if (c.cmd === 'speak-audio') { startNativeAudio(c); return; }
     if (c.cmd === 'speak-phase') speakPhase = c.phase;
     if (c.cmd === 'speak-end') {
@@ -1944,7 +2003,7 @@ function run(argv){
     answerHideAt = Date.now() + 15000;
   }
   function showQuizCard(){
-    if (quizWin) { quizWin.orderOut($()); quizWin = null; }
+    if (quizWin) { returnPatrickFocus(quizWin); quizWin.orderOut($()); quizWin = null; }
     var qw = lastQuizGeom ? lastQuizGeom.w : M.quizW;
     var qh = lastQuizGeom ? lastQuizGeom.h : M.quizH;
     quizWin = makeCardWin(x, y, M.quizPng, qw, qh);
@@ -1955,6 +2014,7 @@ function run(argv){
     quizMtime = 0;   // 子窗重建后重置 mtime 基线,保证新 PNG 一定会触发一次重绘
   }
   function hideQuizCard(){
+    returnPatrickFocus(quizWin);
     if (quizWin) { quizWin.orderOut($()); quizWin = null; }
     quizGripView = null;
     quizScrollView = null;
@@ -1979,13 +2039,18 @@ function run(argv){
     } catch (e) {}
   });
 
+  var shortcutApi = (${patrickShortcuts.createShortcuts.toString()})();
+  ${fs.readFileSync(path.join(ROOT, 'lib', 'patrick-keyboard-native.js'), 'utf8')}
+
   // ---- 主循环 50ms ----
   $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.05, true, function(){
     var now = Date.now();
+    var walkingByKey = tickPatrickKeyboard(now);
     tickPatrickIdle(now);
     tickSpeakCard(now);
     tickSpeakMotion(now);
     if (bubble && now > bubble.until) { bubble = null; grip.setNeedsDisplay(true); }
+    if (walkingByKey) { grip.setNeedsDisplay(true); return; }
     // 动画序列推进
     if (st.animSeq) {
       if (now - st.animLast >= st.animTickMs) {
@@ -2069,7 +2134,7 @@ function run(argv){
     }
     // idle
     if (now >= st.idleHoldUntil) {
-      if (M.roam && !reduceMotion() && !idleLocked && !idleSleeping && Math.random() < 0.5) {
+      if (M.roam && !keyboardPaused && !reduceMotion() && !idleLocked && !idleSleeping && Math.random() < 0.5) {
         var margin = 24;
         // screen 可能是兜底矩形,无碍;但唤醒后宽高会变,每圈现取
         var ms2 = $.NSScreen.mainScreen;
@@ -2120,6 +2185,7 @@ function run(argv){
         var d = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
         if (!d || !d.ok) return;
         if (d.idle) updateIdleContext(d.idle, Date.now());
+        if (d.shortcuts) keyboardBindings = d.shortcuts;
         lastCmdSeq = Math.max(Number(d.seq) || 0, lastCmdSeq);
         if (d.quizGeom) {
           lastQuizGeom = d.quizGeom; syncQuizWinSize();
@@ -2138,7 +2204,7 @@ function run(argv){
             st.quiz = true; st.mode = 'idle'; st.animSeq = null; bubble = null;
             // A pending question never pins the pet. Hover reveals the existing
             // question, and the shown acknowledgement is sent once per quiz.
-            if (st.hover) revealIdleQuiz(Date.now());
+            if ((st.hover && !walkKeysActive()) || (c.keyboard && patrickKeyboardFocused())) revealIdleQuiz(Date.now());
             grip.setNeedsDisplay(true);
           } else if (c.cmd === 'quiz-end') {
             hideSpeakCard();
@@ -2157,7 +2223,7 @@ function run(argv){
               st.frame = FR.think0;
               grip.setNeedsDisplay(true);
             });
-          } else if (c.cmd === 'speak-card' || c.cmd === 'speak-phase' || c.cmd === 'speak-audio' || c.cmd === 'speak-end') {
+          } else if (c.cmd === 'speak-card' || c.cmd === 'speak-update' || c.cmd === 'speak-phase' || c.cmd === 'speak-audio' || c.cmd === 'speak-end') {
             handleSpeakCommand(c);
           } else if (c.cmd === 'quiz-result') {
             // 答题特效:答对撒星星+光环,答错抖动+红环
@@ -2249,7 +2315,7 @@ function run(argv){
         try {
           var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
           if (o && o.ok && o.ownerPid) {
-            if (String(o.ownerPid) !== String(M.ownerPid)) petSelfDestruct();
+            if (String(o.ownerPid) !== String(M.ownerPid) || o.petMode === 'card' || o.closed) petSelfDestruct();
             missTicks = 0;
           }
         } catch (e2) {}
@@ -2611,13 +2677,15 @@ function buildAnswerSVG(word, answer, dark) {
   parts.push(`<text x="${(W/2)*s}" y="${(H-10)*s}" text-anchor="middle" font-family="${fam}" font-size="${9*s}" fill="${sub}">再双击可以换个问题 · 点一下继续背词</text>`);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join('')}</svg>`;
 }
-function buildSpeakSVG(word, example, dark, nativeText = false) {
+function buildSpeakSVG(word, example, dark, nativeText = false, exampleInfo = {}) {
   const W = SPEAK_CARD_W, pad = 22;
   const pink = dark ? '#f5a5b5' : '#b65a73';
   const ink = dark ? '#fff0f4' : '#382532';
   const sub = dark ? '#bda9c4' : '#876b7b';
   const fam = 'Avenir Next, PingFang SC, Hiragino Sans GB, sans-serif';
   const body = [];
+  const bindings = patrickShortcuts.normalize(CFG.patrickShortcuts);
+  const keyLabel = id => patrickShortcuts.label(bindings[id]);
   const text = (value, x, y, size, color, weight = 400, extra = '') =>
     `<text x="${x}" y="${y}" font-family="${fam}" font-size="${size}" font-weight="${weight}" fill="${color}" ${extra}>${esc(value)}</text>`;
   // 顶部左侧为原生绘制的声波/实时状态预留空间,右侧是安静的署名。
@@ -2636,7 +2704,8 @@ function buildSpeakSVG(word, example, dark, nativeText = false) {
   y += 2;
   const panelTop = y;
   y += 23;
-  body.push(text(example?.en ? '例句  /  EXAMPLE' : '单词发音', pad + 14, y, 9, sub, 600, 'letter-spacing="1"'));
+  body.push(text(exampleInfo.choice ? 'AI 生成新例句' : example?.en ? (example.source === 'ai' ? 'AI 例句 · 已保存' : '例句  /  EXAMPLE') : exampleInfo.pending ? 'AI 正在生成例句' : '单词发音', pad + 14, y, 9, sub, 600, 'letter-spacing="1"'));
+  if (example?.en) body.push(text(`${(exampleInfo.index || 0) + 1} / ${exampleInfo.count || 1}`, W - pad - 14, y, 9, sub, 500, 'text-anchor="end"'));
   y += 27;
   // 只强调完整匹配的目标词,不高亮另一个单词里的相同字母。
   const target = String(word.word || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2653,7 +2722,24 @@ function buildSpeakSVG(word, example, dark, nativeText = false) {
     if (!nativeText) body.push(`<text x="${pad + 14}" y="${y}" font-family="${fam}" font-size="15" fill="${ink}">${markup}</text>`);
     y += 22;
   }
-  if (!enLines.length) { body.push(text('暂无例句 · 先听单词发音', pad + 14, y, 12, sub)); y += 20; }
+  let generateButton=null;
+  if (!enLines.length) {
+    const status = exampleInfo.choice ? '已有例句已看完，可用 AI 再生成一条。'
+      : exampleInfo.pending ? '正在生成 AI 例句，完成后自动保存…'
+      : exampleInfo.error || '暂无例句 · 先听单词发音';
+    for (const line of wrapText(status, 12, W - pad * 2 - 28)) {
+      body.push(text(line, pad + 14, y, 12, sub)); y += 20;
+    }
+    if(exampleInfo.choice || exampleInfo.error && exampleInfo.canGenerate){
+      generateButton={x:pad+14,y:y-3,w:W-pad*2-28,h:34};
+      body.push(`<rect x="${generateButton.x}" y="${generateButton.y}" width="${generateButton.w}" height="34" rx="8" fill="${dark?'#433047':'#f5dce4'}"/>`);
+      body.push(text(exampleInfo.error?'重试 AI 生成例句':'AI 生成新例句',W/2,y+18,12,ink,600,'text-anchor="middle"'));
+      y+=48;
+      for(const line of wrapText(keyLabel('example-next')+' 生成 · '+keyLabel('example-prev')+' 返回已有例句',10,W-pad*2-28)){
+        body.push(text(line,pad+14,y,10,sub));y+=17;
+      }
+    }
+  }
   if (example?.zh) {
     y += 3;
     for (const line of wrapText(example.zh, 11.5, W - pad * 2 - 28)) {
@@ -2661,7 +2747,13 @@ function buildSpeakSVG(word, example, dark, nativeText = false) {
     }
   }
   const panelBottom = y + 2;
-  const H = Math.ceil(panelBottom + 44);
+  const footer = [
+    ...(example?.en && exampleInfo.canGenerate && (exampleInfo.index||0)===(exampleInfo.count||1)-1
+      ? ['已到最后一条 · '+keyLabel('example-next')+' 打开 AI 新例句'] : []),
+    keyLabel('remember') + ' 标熟 · ' + keyLabel('next') + ' 下一个 · ' + keyLabel('example-prev') + ' / ' + keyLabel('example-next') + ' 换例句',
+    keyLabel('replay') + ' 重听 · ' + keyLabel('dismiss') + ' 收起 · ' + keyLabel('settings') + ' 设置',
+  ].flatMap(line => wrapText(line, 10, W - pad * 2));
+  const H = Math.ceil(panelBottom + 27 + footer.length * 17);
   const shell = `<defs><linearGradient id="speech-paper" x1="0" y1="0" x2="1" y2="1">
     <stop stop-color="${dark ? '#302536' : '#fffaf7'}"/><stop offset="1" stop-color="${dark ? '#211b2b' : '#f9edf1'}"/>
     </linearGradient></defs>
@@ -2669,9 +2761,8 @@ function buildSpeakSVG(word, example, dark, nativeText = false) {
     <rect x="4" y="4" width="${W - 8}" height="${H - 8}" rx="16" fill="none" stroke="${dark ? '#ffffff' : '#ffffff'}" stroke-opacity="${dark ? '.045' : '.7'}"/>
     <rect x="${pad}" y="${panelTop}" width="${W - pad * 2}" height="${panelBottom - panelTop}" rx="11" fill="${dark ? '#1a1522' : '#fffdfb'}" fill-opacity=".65"/>
     <path d="M ${pad} ${panelTop + 15} V ${panelBottom - 15}" stroke="${pink}" stroke-width="2" stroke-linecap="round" opacity=".65"/>`;
-  body.push(text('轻点派大星 · 再听一遍', pad, H - 18, 9.5, sub));
-  body.push(text('读完自动收起', W - pad, H - 18, 9.5, sub, 400, 'text-anchor="end"'));
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W * 2}" height="${H * 2}" viewBox="0 0 ${W} ${H}">${shell}${body.join('')}</svg>`, geom: { w: W, h: H, lines: nativeText ? lines : [] } };
+  footer.forEach((line, i) => body.push(text(line, pad, panelBottom + 24 + i * 17, 10, sub)));
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W * 2}" height="${H * 2}" viewBox="0 0 ${W} ${H}">${shell}${body.join('')}</svg>`, geom: { w: W, h: H, generateButton, lines: nativeText ? lines : [] } };
 }
 
 /* Cocoa 坐标(y 向上)。候选位置先钳到当前屏幕,再按遮挡面积选择,
@@ -2816,6 +2907,8 @@ function buildStatusBubbleSVG(status, dark) {
 }
 
 function buildQuizSVG(word, options, dark) {
+  const bindings = patrickShortcuts.normalize(CFG.patrickShortcuts);
+  const keyLabel = id => patrickShortcuts.label(bindings[id]);
   const s = 2, W = PET_QUIZ_W;
   // 派大星配色:粉身体 #f79ba6 / 海绿短裤 #a8d94f / 紫斑 #8b6bd9 / 描边 #2b1d2e
   const pink = '#f79ba6', pinkDeep = '#e87f8d', seaGreen = '#a8d94f', seaDeep = '#8cba3a';
@@ -2834,8 +2927,8 @@ function buildQuizSVG(word, options, dark) {
 
   // 顶部小旗标:按类别换色换字 —— 一眼看出这词属于哪一类
   const cat = word.category || 'other';
-  const flagFill = cat === 'review' ? '#f2a03d' : cat === 'fresh' ? seaGreen : '#c5b5ef';
-  const flagText = cat === 'review' ? '⏰ 复习到期' : (cat === 'fresh' ? '🆕 桌面新词' : '词库新词');
+  const flagFill = word.manualMastered ? seaGreen : cat === 'review' ? '#f2a03d' : cat === 'fresh' ? seaGreen : '#c5b5ef';
+  const flagText = word.manualMastered ? '✓ 已标熟' : cat === 'review' ? '⏰ 复习到期' : (cat === 'fresh' ? '🆕 桌面新词' : '词库新词');
   const flagW = cat ? 92 : 74;
   body.push(`<path d="M ${14*s} ${10*s} h ${flagW*s} a ${6*s} ${6*s} 0 0 1 ${6*s} ${6*s} v ${14*s} a ${6*s} ${6*s} 0 0 1 ${-6*s} ${6*s} h ${-flagW*s} Z" fill="${flagFill}" stroke="${outline}" stroke-width="${1.4*s}" stroke-linejoin="round"/>`);
   body.push(`<text x="${20*s}" y="${24*s}" font-family="${fam}" font-size="${9.5*s}" font-weight="800" fill="${outline}">${esc(flagText)}</text>`);
@@ -2868,7 +2961,7 @@ function buildQuizSVG(word, options, dark) {
   }
 
   // 复习中的词:显示「第 N/8 轮」+「下轮时间」
-  const ri = (cat === 'review' && word.roundInfo) ? word.roundInfo : null;
+  const ri = (!word.manualMastered && cat === 'review' && word.roundInfo) ? word.roundInfo : null;
   if (ri) {
     const next = ri.nextIn ? `答对后 ${ri.nextIn}复习` : '答对后完成全部周期';
     const roundText = word.done ? (word.correct ? (ri.nextIn ? `下次复习：${ri.nextIn}后` : '已完成全部复习周期') : '本轮未通过 · 20 分钟后复习') : `第 ${ri.stage + 1}/${ri.total} 轮 · ${next}`;
@@ -2888,14 +2981,16 @@ function buildQuizSVG(word, options, dark) {
   const startY = lineY + 8;
 
   // 选项:每行按自己的折行数定高,折行数不限 —— 释义一字不少
-  const optTextX = 48, optTextW = W - optTextX - 24;
+  const optionKeys = options.map((_, i) => keyLabel('answer' + i));
+  const keyWidth = Math.min(96, Math.max(34, ...optionKeys.map(key => Math.ceil(measureText(key, 9, .75) + 14))));
+  const optTextX = 48, optTextW = W - optTextX - 28 - keyWidth;
   const measureLayout = (optFs, cap) => {
     const wrapped = options.map(o => wrapText(o === undefined || o === null ? '' : String(o), optFs, optTextW, cap));
     const heights = wrapped.map(ls => Math.max(29, ls.length * 15 + 14));
     const total = heights.reduce((a, b) => a + b, 0) + 5 * (options.length - 1);
     return { wrapped, heights, total };
   };
-  const chromeH = 5 + 32 + 5 + 20;                       // 按钮间隙+按钮+提示
+  const chromeH = 5 + 32 + 5 + 38;                       // 按钮间隙+按钮+两行提示
   const optFs = 12;
   let lay = measureLayout(optFs, 0);                      // cap 0 = 不限行数
   let collapsed = false, chipLabel = null;
@@ -2930,6 +3025,10 @@ function buildQuizSVG(word, options, dark) {
     const cy = oy + Math.min(rowH / 2, 22);
     body.push(`<circle cx="${31*s}" cy="${cy*s}" r="${8.5*s}" fill="${letterBg}"/>`);
     body.push(`<text x="${31*s}" y="${(cy+3.5)*s}" text-anchor="middle" font-family="Avenir Next, ${fam}" font-size="${10*s}" font-weight="800" fill="${letterInk}">${letter}</text>`);
+    const key = optionKeys[i];
+    const keyFs = fitFont(key, 9, keyWidth - 10, 7, .75);
+    body.push(`<rect x="${(W-20-keyWidth)*s}" y="${(cy-10)*s}" width="${keyWidth*s}" height="${20*s}" rx="${5*s}" fill="${letterBg}"/>`);
+    body.push(`<text x="${(W-20-keyWidth/2)*s}" y="${(cy+3)*s}" text-anchor="middle" font-family="${fam}" font-size="${keyFs*s}" fill="${letterInk}">${esc(key)}</text>`);
     const lines = lay.wrapped[i];
     const padTop = (rowH - lines.length * 15) / 2;
     lines.forEach((ln, li) => {
@@ -2960,19 +3059,23 @@ function buildQuizSVG(word, options, dark) {
   body.push(`<text x="${((QUIZ_BTN_SKIP_X0+QUIZ_BTN_SKIP_X1)/2)*s}" y="${(btnTop+20)*s}" text-anchor="middle" font-family="${fam}" font-size="${11*s}" font-weight="800" fill="${canAct ? ink : sub}">${canAct ? '下一个 ›' : '答完题可选'}</text>`);
   // 右:造个句子
   body.push(`<rect x="${QUIZ_BTN_SENT_X0*s}" y="${btnTop*s}" width="${(QUIZ_BTN_SENT_X1-QUIZ_BTN_SENT_X0)*s}" height="${btnH*s}" rx="${10*s}" fill="${btnFill(true)}" stroke="${btnStroke()}" stroke-width="${1.6*s}"/>`);
-  body.push(`<text x="${((QUIZ_BTN_SENT_X0+QUIZ_BTN_SENT_X1)/2)*s}" y="${(btnTop+20)*s}" text-anchor="middle" font-family="${fam}" font-size="${11*s}" font-weight="800" fill="${canAct ? outline : sub}">${canAct ? '造个句子' : '—'}</text>`);
+  body.push(`<text x="${((QUIZ_BTN_SENT_X0+QUIZ_BTN_SENT_X1)/2)*s}" y="${(btnTop+20)*s}" text-anchor="middle" font-family="${fam}" font-size="${11*s}" font-weight="800" fill="${canAct ? outline : sub}">${word.manualMastered ? '已熟悉' : canAct ? '造个句子' : '—'}</text>`);
   y = btnBottom;
 
   // 底部提示
-  const tip = word.done
+  const tip = word.manualMastered ? '已标熟 · 不再安排复习' : word.done
     ? (word.correct ? (ri && !ri.nextIn ? '答对了！已完成全部复习周期' : '答对了！已安排下次复习') : '没关系，20 分钟后它会回来找你')
     : (collapsed ? '释义尚未展开 · 点击长选项可看全文' : '点选项作答 · 点派大星听例句');
-  body.push(`<text x="${(W/2)*s}" y="${(y+12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.8*s}" font-weight="600" fill="${word.done ? (word.correct ? good : bad) : sub}">${esc(tip)}</text>`);
-  const H = Math.round(y + 20);
+  body.push(`<text x="${(W/2)*s}" y="${(y+12)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.8*s}" font-weight="600" fill="${word.manualMastered ? good : word.done ? (word.correct ? good : bad) : sub}">${esc(tip)}</text>`);
+  const shortcutTip = word.manualMastered ? `${keyLabel('next')} 下一个 · ${keyLabel('settings')} 设置` : word.done ? `${keyLabel('next')} 下一个 · ${keyLabel('sentence')} 造句 · ${keyLabel('settings')} 设置`
+    : `${[0,1,2,3].map(i=>keyLabel('answer'+i)).join(' / ')} 作答 · ${keyLabel('remember')} 标熟 · ${keyLabel('settings')} 设置`;
+  const shortcutLines = wrapText(shortcutTip, 9.3, W - 28);
+  shortcutLines.forEach((line,i)=>body.push(`<text x="${(W/2)*s}" y="${(y+28+i*14)*s}" text-anchor="middle" font-family="${fam}" font-size="${9.3*s}" fill="${sub}">${esc(line)}</text>`));
+  const H = Math.round(y + 24 + shortcutLines.length * 14);
 
   const geom = { w: W, h: H, optTop: optTops[0], optH: optHs[0], optTops, optHs, optCount: options.length,
     btnTop: Math.round(btnTop), btnBottom: Math.round(btnBottom), chipTop, chipBottom,
-    collapsed, collapsedOptions, expanded: needsExpansion && word.expand === true, done: !!word.done };
+    collapsed, collapsedOptions, expanded: needsExpansion && word.expand === true, done: !!word.done, manualMastered: !!word.manualMastered };
   const wpx = W * s, hpx = H * s;
   const parts = [`<defs>
     <linearGradient id="qpaper" x1="0" y1="0" x2="0" y2="1">
@@ -3324,7 +3427,7 @@ function run(argv){
         try {
           var o = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);
           if (o && o.ok && o.ownerPid) {
-            if (OWNER && String(o.ownerPid) !== OWNER) petSelfDestruct();
+            if ((OWNER && String(o.ownerPid) !== OWNER) || o.petMode === 'patrick' || o.closed) petSelfDestruct();
             missTicks = 0;
           }
         } catch (e2) {}
@@ -3338,10 +3441,12 @@ function run(argv){
 
 let petChild = null;
 let petGeneration = 0;
+let petStarting = false;
 let petVisible = false;   // whether the floating pet window is currently shown
 let petWords = [];        // 当前小词灵实际展示的词，供点击命中和记忆事件使用
 function stopPet() {
   petGeneration++;
+  petStarting = false;
   petVisible = false;
   if (petChild) { try { petChild.kill(); } catch {} petChild = null; }
 }
@@ -3350,6 +3455,7 @@ function stopPet() {
 let patrickChild = null;
 let patrickGeneration = 0;
 let patrickVisible = false;
+let patrickBubbleTimer = null;
 let patrickCrashCount = 0;
 let patrickLastCrashAt = 0;
 let patrickQuizState = null;   // {word, options, answerIndex, pickedIndex, lib, key, dueWordRef, askedAt}
@@ -3366,6 +3472,9 @@ function clearQuizCard() {
 function stopPatrickPet() {
   ttsStopNow();
   patrickGeneration++;
+  clearInterval(patrickBubbleTimer);
+  patrickBubbleTimer = null;
+  patrickCmds.length = 0;
   patrickVisible = false;
   clearQuizCard();
   pendingQuiz = null;
@@ -3387,6 +3496,7 @@ function petWordsForPatrick() {
   }));
 }
 function startPatrickPet() {
+  stopPetAll();
   // 崩溃风暴退避:连续崩 ≥3 次后按 1s×2^n 退避(上限 10 分钟),10 分钟无崩溃自动清零。
   if (patrickCrashCount >= 3) {
     const backoff = Math.min(600000, 1000 * Math.pow(2, patrickCrashCount));
@@ -3395,7 +3505,6 @@ function startPatrickPet() {
       return;
     }
   }
-  stopPetAll();
   const generation = patrickGeneration;
   if (!isMac || !CFG.petEnabled) return;
   if (process.env.WORDPAPER_TEST_MODE === '1') return;   // 测试模式不开真实窗口(端点/逻辑全在)
@@ -3431,8 +3540,8 @@ function startPatrickPet() {
   });
   patrickChild.unref();
   renderStatusBubble();
-  setInterval(() => { if (patrickVisible) renderStatusBubble(); }, 300000).unref();
-  console.log('[companion] 派大星已在桌面散步(悬停=挥手打招呼,点击=跳跃+朗读,拖动=摆放;点 ⭐ 可切回词卡)');
+  patrickBubbleTimer = setInterval(() => { if (patrickVisible) renderStatusBubble(); }, 300000).unref();
+  console.log('[companion] 派大星已在桌面散步(单击选中，方向键走动，Enter 背词，C 聊天，? 快捷键；拖动可摆放)');
 }
 
 
@@ -4156,8 +4265,7 @@ function menuStatusPayload() {
   return {
     ok: true,
     ownerPid: process.pid,   // 菜单栏 JXA 靠它校验归属:对不上号 = 我是幽灵,自毁
-    pet: petVisible || patrickVisible,
-    petMode: CFG.petMode || 'card',
+    ...petWindowStatus(),
     appMode: APP_MODE,
     version: BUNDLED_VERSION,
     dark: petSkin(CFG.uiTheme).dark === true,
@@ -4213,15 +4321,14 @@ function handleMenuCommand(cmd, res) {
       });
     case 'pet-open':
       try { fs.unlinkSync(PET_CLOSED_PATH); } catch {}
-      startPet();
-      return jsonOut({ ok: true, pet: petVisible });
+      if (!petWindowStatus().pet) startPet();
+      return jsonOut({ ok: true, ...petWindowStatus() });
     case 'pet-close':
       try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}
       stopPetAll();
-      return jsonOut({ ok: true, pet: false });
+      return jsonOut({ ok: true, ...petWindowStatus() });
     case 'pet-mode':   // 菜单栏:两种形态互切
-      setPetMode(CFG.petMode === 'patrick' ? 'card' : 'patrick');
-      return jsonOut({ ok: true, mode: CFG.petMode });
+      return setPetMode(CFG.petMode === 'patrick' ? 'card' : 'patrick', err => jsonOut(err ? { ok: false, error: err.message } : { ok: true, ...petWindowStatus() }, err ? 500 : 200));
     case 'next': {
       const now = Date.now();
       if (now - lastAdvanceAt >= 500) { lastAdvanceAt = now; bumpDelta(1); if (advancing) pendingDir = 1; else runAdvance(1); }
@@ -4369,13 +4476,16 @@ function resolvePetSize() {
 /* 形态切换:card ⇄ patrick。config 持久化(CFG.petMode);重启伴侣保持上次形态。 */
 function setPetMode(mode, cb) {
   if (!PET_MODES.has(mode)) return cb && cb(new Error('bad mode'));
-  const changed = CFG.petMode !== mode;
-  CFG.petMode = mode;
-  saveConfig();
-  if (!changed) return cb && cb(null, false);
-  if (mode === 'patrick') startPatrickPet(); else startPet();
-  console.log('[companion] 小词灵形态已切换 → ' + (mode === 'patrick' ? '派大星' : '词卡'));
-  cb && cb(null, true);
+  const previous = CFG.petMode;
+  if (previous !== mode) {
+    CFG.petMode = mode;
+    if (!saveConfig()) { CFG.petMode = previous; return cb && cb(new Error('无法保存桌面形态')); }
+    stopPetAll();
+  }
+  if (mode === 'patrick' && (petChild || petStarting)) stopPet();
+  if (mode === 'card' && patrickChild) stopPetAll();
+  if (!petWindowStatus().pet && !fs.existsSync(PET_CLOSED_PATH)) startPet();
+  if (cb) cb(null, previous !== mode);
 }
 
 /* 伴侣 → 派大星窗命令队列(单向;窗口 0.8s 轮询 /pet-patrick.json)。 */
@@ -4400,19 +4510,35 @@ function finishSpeakCard(reason = 'done') {
   pushPatrickCmd({ cmd: 'speak-end', id: speech.id, reason, resumeQuizMs });
   try { fs.unlinkSync(CARD_PNG.speak); } catch {}
 }
-function patrickSpeakWord(index, quizId) {
+function patrickSpeakWord(index, quizId, options = {}) {
   const q = patrickQuizState || displayedQuiz;
   if (quizId && (!q || q.id !== quizId)) return { ok: false, error: 'stale-quiz' };
   if (!featureOn('betaPatrickVoice')) return { ok: false, error: 'voice-disabled' };
   const words = q ? [] : petFirstPassWords();
   const word = q ? q.word : words[Math.max(0, Math.min(index || 0, words.length - 1))];
   if (!word) return { ok: false, error: 'no-word' };
-  const example = exampleForWord(q ? q.library : CFG.library, word);
+  const library = q ? q.library : CFG.library;
+  const userId = q?.srsUserId || modelAccount();
+  if (q?.srsUserId && modelAccount() !== userId) return { ok: false, error: 'stale-account' };
+  const examples = examplesForWord(library, word, userId);
+  const previousIndex = q ? q.exampleIndex || 0 : Number.isInteger(options.exampleIndex) ? options.exampleIndex : 0;
+  const canGenerate = wordExamples.supports(library,word);
+  const lastIndex = Math.max(0,examples.length - (canGenerate ? 0 : 1));
+  const exampleIndex = examples.length ? Math.max(0,Math.min(lastIndex,previousIndex+(options.exampleDelta||0))) : 0;
+  const choice = canGenerate && examples.length>0 && exampleIndex===examples.length;
+  const generate = canGenerate && (!examples.length || (choice && (options.generate || options.exampleDelta>0 && previousIndex>=examples.length)));
+  const example = examples[exampleIndex] || null;
+  if (q) q.exampleIndex = exampleIndex;
   ttsStopNow();
   const speech = speakCardState = {
     id: `${process.pid}-speech-${++speakSequence}`, word, example,
     voiceId: selectedVoice().id, part: -1, audioIssued: false,
     quizId: q ? q.id : null, ready: false, started: false,
+    library, wordIndex: index || 0, wordKey: petWordKey(word), exampleIndex, exampleCount: examples.length,
+    userId, examplePending: generate && !!userId, exampleChoice: choice && !generate,
+    exampleError: generate && !userId ? '请先登录并绑定模型接口，再生成例句。' : '',
+    examples, canGenerate,
+    exampleShown: !!example, wordFinished: false,
     resultHeld: !!q && q.pickedIndex >= 0 && !q.hold,
   };
   if (speech.resultHeld) quizResultUntil = Date.now() + 120000;
@@ -4420,13 +4546,51 @@ function patrickSpeakWord(index, quizId) {
   speech.timer = setTimeout(() => { if (speakCardState === speech) ttsStopNow('error'); }, 120000);
   speech.timer.unref?.();
   renderSpeakCard(speech);
-  speechAudio.prepare(word.word,speech.voiceId,()=>{});
-  if (example?.en) speechAudio.prepare(example.en,speech.voiceId,()=>{});
-  return { ok: true, id: speech.id, word: word.word, hasExample: !!example?.en };
+  prewarmEdge(word.word, speech.voiceId);
+  if (example?.en) prewarmEdge(example.en, speech.voiceId);
+  if (speech.examplePending) fillSpeakExample(speech);
+  return { ok: true, id: speech.id, word: word.word, hasExample: !!example?.en, exampleIndex, exampleCount: examples.length, examplePending: speech.examplePending, exampleChoice:speech.exampleChoice };
 }
-function startSpeakCardAudio(id) {
+async function fillSpeakExample(speech) {
+  let example, error;
+  try { example = await generatedExamples.ensure(speech.userId, speech.library, speech.word,
+    {additional:speech.examples.length>0,avoid:speech.examples.map(value=>value.en)}); }
+  catch (failure) { error = failure.message; }
+  // Saving is useful even after navigation; displaying or speaking a stale result is not.
+  if (speakCardState !== speech) return;
+  if (modelAccount() !== speech.userId) { ttsStopNow(); return; }
+  speech.examplePending = false;
+  speech.exampleError = error || '';
+  if (example) {
+    const existing=speech.examples.findIndex(value=>value.en===example.en);
+    if(existing<0)speech.examples.push(example);
+    speech.example = example; speech.exampleCount = speech.examples.length;
+    speech.exampleIndex = existing<0 ? speech.examples.length-1 : existing; speech.exampleShown = false;
+    if(displayedQuiz?.id===speech.quizId)displayedQuiz.exampleIndex=speech.exampleIndex;
+    prewarmEdge(example.en, speech.voiceId);
+    if (patrickVisible) pushPatrickCmd({ cmd: 'words', words: petWordsForPatrick(), keys: currentPetKeys() });
+  }
+  renderSpeakCard(speech, true);
+}
+function startSpeakCardAudio(id, version) {
   const speech = speakCardState;
-  if (!speech || speech.id !== id || !speech.ready || speech.started) return false;
+  if (!speech || speech.id !== id || !speech.ready || (version != null && version !== speech.renderVersion)) return false;
+  if(speech.exampleChoice || speech.exampleError && speech.wordFinished){
+    speech.started=true;
+    pushPatrickCmd({cmd:'speak-phase',id:speech.id,phase:speech.exampleChoice?'choice':'error'});
+    return true;
+  }
+  if (speech.example && !speech.exampleShown) {
+    if (version !== speech.renderVersion) return false;
+    speech.exampleShown = true;
+  }
+  if (speech.started) {
+    if (speech.wordFinished && speech.part === 0 && !speech.audioIssued) {
+      if (speech.example?.en) { prepareSpeakPart(speech, 1); return true; }
+      if (!speech.examplePending) finishSpeakCard('done');
+    }
+    return false;
+  }
   if (speech.quizId && displayedQuiz?.id !== speech.quizId) { ttsStopNow(); return false; }
   speech.started = true;
   prepareSpeakPart(speech,0);
@@ -4435,7 +4599,7 @@ function startSpeakCardAudio(id) {
 function prepareSpeakPart(speech,part) {
   speech.part = part; speech.audioIssued = false;
   const text = part ? speech.example.en : speech.word.word;
-  speechAudio.prepare(text,speech.voiceId,(err,audio)=>{
+  prepareSpeech(text,speech.voiceId,(err,audio)=>{
     if (speakCardState !== speech || speech.part !== part) return;
     if (err) { ttsStopNow('error'); return; }
     speech.audioIssued = true;
@@ -4448,8 +4612,13 @@ function completeSpeakPart(id,part,error) {
   if (!speech || speech.id !== id || speech.part !== part || !speech.audioIssued) return false;
   speech.audioIssued = false;
   if (error) ttsStopNow('error');
-  else if (part === 0 && speech.example?.en) prepareSpeakPart(speech,1);
-  else finishSpeakCard();
+  else if (part === 0) {
+    speech.wordFinished = true;
+    if (speech.example?.en && speech.exampleShown) prepareSpeakPart(speech,1);
+    else if (speech.examplePending || speech.example?.en) pushPatrickCmd({cmd:'speak-phase', id:speech.id, phase:'generating'});
+    else if(speech.exampleError)pushPatrickCmd({cmd:'speak-phase',id:speech.id,phase:'error'});
+    else finishSpeakCard();
+  } else finishSpeakCard();
   return true;
 }
 let answerCardState = null;
@@ -4464,70 +4633,64 @@ function renderAnswerCard() {
     if (err) console.error('[companion] 回答卡渲染失败:', err.message);
   });
 }
-function renderSpeakCard(speech) {
-  const out = buildSpeakSVG(speech.word, speech.example, petSkin(CFG.uiTheme).dark === true, true);
-  const pngPath = CARD_PNG.speak.replace(/\.png$/, `-${speakSequence}.png`);
+function renderSpeakCard(speech, refreshOnly = false) {
+  const revision = speech.renderVersion = (speech.renderVersion || 0) + 1;
+  const update = refreshOnly && speech.ready;
+  const out = buildSpeakSVG(speech.word, speech.example, petSkin(CFG.uiTheme).dark === true, true,
+    { index: speech.exampleIndex, count: speech.exampleCount, pending: speech.examplePending, error: speech.exampleError,
+      choice:speech.exampleChoice, canGenerate:speech.canGenerate });
+  const pngPath = CARD_PNG.speak.replace(/\.png$/, `-${speakSequence}-${revision}.png`);
   const svgPath = pngPath.replace(/\.png$/, '.svg');
   try { fs.writeFileSync(svgPath, out.svg); } catch { finishSpeakCard('error'); return; }
   execFile('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath], { timeout: 20000 }, (err) => {
     try { fs.unlinkSync(svgPath); } catch {}
-    if (err || speakCardState !== speech) {
+    if (err || speakCardState !== speech || speech.renderVersion !== revision) {
       try { fs.unlinkSync(pngPath); } catch {}
-      if (err && speakCardState === speech) finishSpeakCard('error');
+      if (err && speakCardState === speech && speech.renderVersion === revision) finishSpeakCard('error');
       return;
     }
     try {
       fs.renameSync(pngPath, CARD_PNG.speak);
       speech.ready = true;
-      pushPatrickCmd({ cmd: 'speak-card', id: speech.id, quizId: speech.quizId, holdResult: speech.resultHeld, ...out.geom });
+      pushPatrickCmd({ cmd: update ? 'speak-update' : 'speak-card', id: speech.id, version: revision, quizId: speech.quizId, holdResult: speech.resultHeld,
+        wordKey: speech.wordKey, wordIndex: speech.wordIndex, exampleIndex: speech.exampleIndex, exampleCount: speech.exampleCount, ...out.geom });
     } catch { finishSpeakCard('error'); }
   });
 }
 
 
 
-/* ── 本地 magpie(Windows WorkBuddy,经 Tailscale)的 DeepSeek-V4.1-Flash ──
- * 用来回答用户对单词的追问。密钥**不进仓库**:读运行时配置
- *   ~/Library/Application Support/WordPaper/companion/magpie.json
- * 也可用环境变量覆盖。不可达时静默降级(只朗读,不解释)。 */
-let magpieConfig = null;
-let magpieChatModel = '';   // 最近一次成功的模型(限流时自动换到的那个)
-function loadMagpie() {
-  if (magpieConfig) return magpieConfig;
-  const cfgPath = path.join(RUNTIME_ROOT, 'magpie.json');
-  let cfg = { enabled: false, models: [] };
+/* Models are selected by the account captured at request start. Never fall
+ * back to another user's key or the old machine-wide magpie.json. */
+const accountAI = require('./lib/ai-model');
+const modelRequests = new Set();
+function modelAccount(req) {
+  const db = openSrsDb();
+  if (!db) return null;
   try {
-    if (fs.existsSync(cfgPath)) {
-      const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      const primary = String(raw.model || 'workbuddy-ai/deepseek-v4.1-flash');
-      // magpie 同一网关下挂了几个模型别名:主模型限流(429)时换一个继续,别直接失败。
-      const extra = Array.isArray(raw.fallbackModels) ? raw.fallbackModels.map(String) : [];
-      cfg = {
-        enabled: raw.enabled !== false && Boolean(raw.apiKey),
-        baseUrl: String(raw.baseUrl || ''),
-        apiKey: String(raw.apiKey || ''),
-        model: primary,
-        models: [primary, ...extra].filter((m, i, a) => m && a.indexOf(m) === i),
-      };
-    }
-  } catch (e) { console.error('[companion] magpie 配置读取失败:', e.message); }
-  if (process.env.WORDPAPER_MAGPIE === '0') cfg.enabled = false;
-  magpieConfig = cfg;
-  return cfg;
+    const header = Number(req?.headers['x-wordpaper-user-id']);
+    return Number.isSafeInteger(header) && header > 0
+      ? (db.prepare('SELECT id FROM users WHERE id=?').get(header)?.id || null) : activeUserId(db);
+  } finally { db.close(); }
 }
-/* 把上游错误体翻译成一句人话(浮窗直接显示给用户)。
- * 实测最常见的两个:429 频率限制、401 key 失效。 */
-function magpieErrorText(status, raw) {
-  let msg = '';
-  try { msg = String((JSON.parse(raw).error || {}).message || ''); } catch {}
-  if (!msg) msg = String(raw || '').slice(0, 160);
-  if (status === 429 || /frequency limit|rate_limit/i.test(msg)) {
-    // 上游会带 "reset at 2026-10-26 08:05:06 UTC+8",取出来告诉用户什么时候恢复
-    const m = msg.match(/reset at ([^,\"]+)/i);
-    return '模型被限流了' + (m ? '，' + m[1].trim() + ' 后恢复' : '') + '（已自动换备用模型）';
-  }
-  if (status === 401 || status === 403) return 'magpie 的 API Key 不被接受（401/403），检查 magpie.json';
-  return 'magpie 返回 ' + status + (msg ? '：' + msg.slice(0, 120) : '');
+async function accountCompletion(messages, options = {}) {
+  const db = openSrsDb();
+  if (!db) throw accountAI.failure('model_not_configured', '请先登录账号并在「模型接口」中绑定 API Key。', 409);
+  let userId, config, connection;
+  try {
+    userId = Object.hasOwn(options, 'userId') ? options.userId : activeUserId(db);
+    if (!userId || !db.prepare('SELECT id FROM users WHERE id=?').get(userId)) throw accountAI.failure('account_required', '请先登录当前账号。', 401);
+    const raw = db.prepare("SELECT value FROM app_meta WHERE key='upstream_pairing'").get()?.value;
+    if (raw) connection = JSON.parse(raw);
+    if (connection && connection.localUserId !== userId) throw accountAI.failure('account_mismatch', '请重新登录当前同步账号。', 403);
+    if (!connection) config = accountAI.createModelStore(db, process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper')).get(userId);
+  } finally { db.close(); }
+  if (modelRequests.has(userId)) throw accountAI.failure('model_busy', '上一个模型请求仍在处理中，请稍候。', 429);
+  modelRequests.add(userId);
+  try {
+    return connection ? await require('./lib/model-pairing').pairedCompletion(connection, messages, options.maxTokens || 1000)
+      : await accountAI.complete(config, messages, { allowPrivate: true, maxTokens: options.maxTokens || 1000 });
+  } finally { modelRequests.delete(userId); }
 }
 /* 提问建议:针对当前在背的词,给几个「一问就学到东西」的角度。
  * 固定模板 × 当前词,离线生成(不耗 API);点击即填入输入框。
@@ -4630,9 +4793,8 @@ function chatExportMarkdown(sessions) {
 
 /* 多轮对话(带历史)。历史存在 state.chatHistory,最多保留 40 条。
  * 系统提示里带上当前单词,让它知道用户在背什么。 */
-function chatWithMagpie(userMessage, cb) {
-  const cfg = loadMagpie();
-  if (!cfg.enabled || !cfg.baseUrl) return cb && cb('', 'not-configured');
+function chatWithMagpie(userMessage, cb, userId) {
+  if (!userId) return cb('', '请先登录当前账号。');
   const sess = activeChatSession(true);
   if (!sess) return cb && cb('', 'no-session');
   if (!Array.isArray(sess.messages)) sess.messages = [];
@@ -4644,109 +4806,30 @@ function chatWithMagpie(userMessage, cb) {
     '如果用户问单词,解释要简短好记;可以给记忆法或常见搭配。',
   ].filter(Boolean).join('');
 
-  sess.messages.push({ role: 'user', content: String(userMessage), at: Date.now() });
+  sess.messages.push({ role: 'user', content: String(userMessage), at: Date.now(), userId });
   if (sess.messages.length > CHAT_MAX_MESSAGES) sess.messages = sess.messages.slice(-CHAT_MAX_MESSAGES);
   // 第一条用户消息自动成为会话标题(用户没手动改过才改)
   if (!sess.title || sess.title === '新对话') sess.title = chatTitleFrom(sess.messages);
   sess.updatedAt = Date.now();
   saveState();
 
-  let url;
-  try { url = new URL(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions'); } catch { return cb && cb('', 'bad-url'); }
   const messages = [{ role: 'system', content: sys }].concat(
-    sess.messages.slice(-12).map(m => ({ role: m.role, content: m.content }))
+    sess.messages.filter(m => m.userId === userId).slice(-12).map(m => ({ role: m.role, content: m.content }))
   );
-  // 依次尝试主模型与备用模型:429(限流)换下一个,其它错误直接报给用户。
-  const queue = cfg.models && cfg.models.length ? cfg.models.slice() : [cfg.model];
-  const attempt = (model, lastErr) => {
-    if (!model) return cb && cb('', lastErr || 'no-model');
-    const body = JSON.stringify({ model, messages, max_tokens: 400 });
-    const req = http.request({
-      hostname: url.hostname, port: url.port || 80, path: url.pathname, method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + cfg.apiKey,
-        'Content-Length': Buffer.byteLength(body),
-      },
-      timeout: 25000,
-    }, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          const reason = magpieErrorText(res.statusCode, data);
-          console.error('[companion] magpie', model, res.statusCode, data.slice(0, 200));
-          if ((res.statusCode === 429 || res.statusCode === 503) && queue.length) return attempt(queue.shift(), reason);
-          return cb && cb('', reason);
-        }
-        try {
-          const j = JSON.parse(data);
-          const text = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
-          if (text) {
-            magpieChatModel = model;   // 记住这次成功的模型给 /pet-ask.php 用
-            sess.messages.push({ role: 'assistant', content: text, at: Date.now() });
-            if (sess.messages.length > CHAT_MAX_MESSAGES) sess.messages = sess.messages.slice(-CHAT_MAX_MESSAGES);
-            sess.updatedAt = Date.now();
-            saveState();
-            cb && cb(text);
-          } else if (queue.length) attempt(queue.shift(), 'empty');
-          else cb && cb('', '模型返回了空内容（可能也在限流，稍后再试）');
-        } catch { cb && cb('', 'magpie 返回了无法解析的内容'); }
-      });
-    });
-    req.on('error', e => cb && cb('', '连不上 magpie：' + e.message));
-    req.on('timeout', () => { req.destroy(); cb && cb('', 'magpie 超时（25s）'); });
-    req.write(body); req.end();
-  };
-  attempt(queue.shift(), '');
+  accountCompletion(messages, { userId, maxTokens: 600 }).then(({ text }) => {
+    sess.messages.push({ role: 'assistant', content: text, at: Date.now(), userId });
+    if (sess.messages.length > CHAT_MAX_MESSAGES) sess.messages = sess.messages.slice(-CHAT_MAX_MESSAGES);
+    sess.updatedAt = Date.now(); saveState(); cb(text);
+  }, error => cb('', error.message));
 }
 
-/* 问 DeepSeek 一个关于单词的问题,返回纯文本;失败/未配置返回 ''。 */
-function askMagpie(prompt, cb) {
-  const cfg = loadMagpie();
-  if (!cfg.enabled || !cfg.baseUrl) return cb && cb('');
-  let url;
-  try { url = new URL(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions'); } catch { return cb && cb(''); }
-  const queue = cfg.models && cfg.models.length ? cfg.models.slice() : [cfg.model];
-  const attempt = (model) => {
-    if (!model) return cb && cb('');
-    const body = JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: '你是派大星,一个陪用户背单词的桌面宠物。回答要简短口语化,中文不超过两句话,像朋友聊天。' },
-        { role: 'user', content: String(prompt) },
-      ],
-      max_tokens: 220,
-    });
-    const req = http.request({
-      hostname: url.hostname, port: url.port || 80, path: url.pathname, method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + cfg.apiKey,
-        'Content-Length': Buffer.byteLength(body),
-      },
-      timeout: 12000,
-    }, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          console.error('[companion] magpie(ask)', model, res.statusCode, data.slice(0, 200));
-          if ((res.statusCode === 429 || res.statusCode === 503) && queue.length) return attempt(queue.shift());
-          return cb && cb('');
-        }
-        try {
-          const j = JSON.parse(data);
-          const text = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
-          cb && cb(text);
-        } catch { cb && cb(''); }
-      });
-    });
-    req.on('error', () => cb && cb(''));
-    req.on('timeout', () => { req.destroy(); cb && cb(''); });
-    req.write(body); req.end();
-  };
-  attempt(queue.shift());
+function askMagpie(prompt, cb, options = {}) {
+  accountCompletion([
+    { role: 'system', content: options.grading
+      ? '你是英语老师。严格按用户给定的 JSON 格式批改句子，不要添加 Markdown。'
+      : '你是派大星，一个陪用户背单词的桌面宠物。回答简短口语化，使用中文。' },
+    { role: 'user', content: String(prompt) },
+  ], options).then(({ text }) => cb(text), error => cb('', error));
 }
 
 /* ── 内置 SRS 引擎(独立 App 用)────────────────────────────────
@@ -4836,6 +4919,7 @@ function syncQuizUser(req) {
   if (!db) return;
   try {
     if (!db.prepare('SELECT id FROM users WHERE id=?').get(userId)) return;
+    resetSpeechPlayback();
     CFG.srsUserId = userId;
     patrickIdleCache.at = 0;
     saveConfig();
@@ -4888,7 +4972,7 @@ function writeReviewState(db, userId, all, namespace = 'review') {
     db.exec('SAVEPOINT quiz_review_write');
     const json = JSON.stringify(all);
     const now = Date.now();
-    const existing = db.prepare('SELECT revision FROM user_state WHERE user_id=? AND namespace=?').get(userId, namespace);
+    const existing = db.prepare('SELECT revision, value_json FROM user_state WHERE user_id=? AND namespace=?').get(userId, namespace);
     if (existing) {
       db.prepare('UPDATE user_state SET value_json=?, revision=revision+1, updated_at=? WHERE user_id=? AND namespace=?')
         .run(json, now, userId, namespace);
@@ -4903,7 +4987,8 @@ function writeReviewState(db, userId, all, namespace = 'review') {
     if (pairing && Number(pairing.localUserId) === Number(userId)) {
       const queued = db.prepare("SELECT value FROM app_meta WHERE key='upstream_queue'").get();
       const queue = queued ? JSON.parse(queued.value) : {};
-      queue[namespace] = { value: all, baseRevision: queue[namespace] ? queue[namespace].baseRevision : Number(existing?.revision || 0) };
+      const entry = queue[namespace] || { baseRevision: Number(existing?.revision || 0), baseValue: existing ? JSON.parse(existing.value_json) : null };
+      queue[namespace] = { ...entry, value: all };
       db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('upstream_queue', ?)").run(JSON.stringify(queue));
     }
     db.exec('RELEASE quiz_review_write');
@@ -5227,7 +5312,7 @@ function quizRoundInfo(stage) {
   return { stage, total: SRS_INTERVALS_MIN.length,
     nextIn: stage + 1 < SRS_INTERVALS_MIN.length ? fmtIntervalMin(SRS_INTERVALS_MIN[stage + 1]) : null };
 }
-function offerQuiz(dueWords, library, srsUserId) {
+function offerQuiz(dueWords, library, srsUserId, keyboard = false) {
   // Due reviews (including stage zero), then visible new words, then other new words.
   dueWords = dueWords.filter(w => !Number(w.due) || isQuizReviewDue(w));
   let visibleKeys = new Set();
@@ -5251,6 +5336,7 @@ function offerQuiz(dueWords, library, srsUserId) {
     // 复习类:第几轮 + 答对后的下次间隔(给卡片显示)
     roundInfo: isReviewDue(answer) ? quizRoundInfo(answer.stage) : null,
     srsUserId: srsUserId || null,
+    hold: keyboard,
   };
   // 上一题的朗读、点击派大星时在念的词/例句 —— 全部立刻掐断。
   // 用户要求:抽查弹出时**只有**这张卡上的这个词可以出声。
@@ -5263,10 +5349,10 @@ function offerQuiz(dueWords, library, srsUserId) {
   renderQuizCard(() => pushPatrickCmd({ cmd: 'quiz', lines: [
     { text: catLabel, size: 10, color: 'sub' },
     { text: '「' + answer.word + '」还记得吗？', size: 12, bold: true },
-  ], ms: 26000 }));
+  ], ms: 26000, keyboard }));
   // 先把考题词的音频**预合成**好(缓存);等卡片真正滑入上屏、派大星窗回报
   // 'quiz-shown' 的那一刻再播 —— 声音与弹卡同步,且只读这一个词。
-  ttsPrewarm(answer.word, () => {});   // 失败也无所谓:上屏那刻会回退到现场合成
+  prewarmEdge(answer.word, selectedVoice().id);
   return true;
 }
 function renderQuizCard(onReady) {
@@ -5276,7 +5362,8 @@ function renderQuizCard(onReady) {
     word: q.word.word, phonetic: q.word.phonetic || '', options: q.options,
     answerIndex: q.answerIndex,
     pickedIndex: q.pickedIndex,
-    done: q.pickedIndex >= 0,
+    done: q.pickedIndex >= 0 || !!q.manualMastered,
+    manualMastered: !!q.manualMastered,
     correct: q.pickedIndex === q.answerIndex,
     category: q.category || '',      // 'review' 复习到期 / 'fresh' 桌面新词
     roundInfo: q.roundInfo || null,  // {stage,total,nextIn} 仅复习类
@@ -5318,7 +5405,7 @@ function answerQuiz(picked, res) {
   }
   const correct = picked === q.answerIndex;
   q.pickedIndex = picked;
-  q.hold = q.expand === true;
+  q.hold = q.hold === true || q.expand === true;
   renderQuizCard();
   const now = Date.now();
   state.petMemorySeq = Math.max(0, Number(state.petMemorySeq) || 0) + 1;
@@ -5353,7 +5440,6 @@ function answerQuiz(picked, res) {
   // 作答只放对/错音效,**不念任何词**:这个单词在弹卡时已经读过一遍了。
   // (之前会念 "Nice!/Oops." + 再念一次单词,听起来像多余的声音。)
   ttsStopNow();
-  playSfx(correct ? 'correct' : 'wrong');
   const word = q.word;
   patrickQuizState = null;
   // 桌面联动:考完的这个词从桌面当前页**原位换成新词**(与点词卡补位同一套逻辑)。
@@ -5401,9 +5487,147 @@ function answerQuiz(picked, res) {
   return res.end(JSON.stringify({ ok: true, correct, word: word.word, meaning: word.meaning, queue: quizQueueState() }));
 }
 
+// Explicit keyboard navigation bypasses the automatic quiz interval, while
+// keeping the same account, due-review priority and SRS write path.
+function nextPatrickQuiz(excludeKey) {
+  let userId = null, candidates = [];
+  const db = openSrsDb();
+  try {
+    userId = db && activeUserId(db);
+    if (userId) {
+      candidates = quizDueCandidates(db, userId, CFG.library).filter(w => petWordKey(w) !== excludeKey);
+      if (!candidates.length) {
+        const known = readReviewState(db, userId)[CFG.library]?.words || {};
+        candidates = petFirstPassWords().filter(w => petWordKey(w) !== excludeKey && !known[wordKey(w)]);
+      }
+    } else candidates = petFirstPassWords().filter(w => petWordKey(w) !== excludeKey);
+  } finally { if (db) db.close(); }
+  clearQuizCard(); pendingQuiz = null; quizResultUntil = 0; ttsStopNow();
+  pushPatrickCmd({ cmd: 'quiz-end' });
+  return candidates.length > 0 && offerQuiz(candidates, CFG.library, userId, true);
+}
+function markPatrickMastered(word, library, userId) {
+  const db = openSrsDb();
+  if (!db || !userId) { if(db)db.close(); throw new Error('请先登录后标熟单词'); }
+  let duplicate = false;
+  const now = Date.now(), key = wordKey(word);
+  try {
+    if(activeUserId(db)!==userId)throw new Error('账号已切换，请重新打开词卡');
+    db.exec('BEGIN IMMEDIATE');
+    const all=readReviewState(db,userId), bucket=all[library] || (all[library]={words:{}});
+    bucket.words ||= {};
+    const item=bucket.words[key] || {word,learnedAt:now,learnedCount:0,reviewCount:0,successCount:0,failCount:0,events:[]};
+    duplicate=item.manualMastered===true && item.stage>=SRS_INTERVALS_MIN.length;
+    if(!duplicate){
+      item.stage=SRS_INTERVALS_MIN.length; item.manualMastered=true; item.masteredAt=now;
+      srsPolicy.scheduled(item,now,null);
+      item.events=[...(item.events || []),{at:now,type:'manual-mastered'}].slice(-64);
+      bucket.words[key]=item;
+      if(!writeReviewState(db,userId,all))throw new Error('标熟保存失败');
+    }
+    db.exec('COMMIT');
+  } catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}
+  finally{db.close();}
+  learnedFor(library)[petWordKey(word)]={word,at:now,userId,mastered:true};
+  if(!duplicate){
+    state.petMemorySeq=Math.max(0,Number(state.petMemorySeq)||0)+1;
+    state.petMemoryEvents.push({id:state.petMemorySeq,at:now,word,library,userId,action:'mastered',srsApplied:true});
+    state.petMemoryEvents=state.petMemoryEvents.slice(-160);
+  }
+  bumpPetWordEpoch(); saveState(); patrickIdleCache.at=0;
+  return {duplicate};
+}
+function handlePatrickShortcut(payload, res) {
+  const reply = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(value)); };
+  const action = payload?.action;
+  if (!['start', 'next', 'remember', 'answer', 'replay', 'example-prev', 'example-next', 'example-generate', 'expand', 'sentence', 'dismiss'].includes(action)) {
+    return reply(400, { ok: false, error: 'invalid-action' });
+  }
+  if (CFG.petMode !== 'patrick' || (!patrickVisible && process.env.WORDPAPER_TEST_MODE !== '1') || !featureOn('betaPetQuiz')) return reply(409, { ok: false, error: 'patrick-unavailable' });
+  // Keep the answer being used by the sentence editor stable until it closes.
+  // Chat can stay open while the user selects Patrick again; its own WebView
+  // never dispatches pet shortcuts.
+  if (sentenceWinChild) return reply(409, { ok: false, error: 'editing' });
+  const q = displayedQuiz;
+  if (q?.srsUserId) {
+    const db = openSrsDb();
+    try { if (!db || activeUserId(db) !== q.srsUserId) return reply(409, { ok: false, error: 'stale-account' }); }
+    finally { if (db) db.close(); }
+  }
+  if (action === 'start' && q) {
+    pushPatrickCmd({ cmd: 'quiz', keyboard: true });
+    return reply(200, { ok: true });
+  }
+  // Every modifying shortcut carries the identity printed on the visible card.
+  // A queued Delete/Enter from the previous card can never act on the next one.
+  if (q ? payload.quizId !== q.id : !!payload.quizId) return reply(409, { ok: false, error: 'stale-quiz' });
+  const index = Number.isInteger(payload.index) ? payload.index : -1;
+  const word = q?.word || petFirstPassWords()[index];
+  if (!q && action !== 'start' && (!word || !payload.wordKey || petWordKey(word) !== payload.wordKey)) {
+    return reply(409, { ok: false, error: 'stale-word' });
+  }
+  if (action === 'start' || action === 'next') {
+    const offered = nextPatrickQuiz(word && petWordKey(word));
+    return reply(200, { ok: true, offered, empty: !offered });
+  }
+  if (action === 'dismiss') {
+    clearQuizCard(); pendingQuiz = null; quizResultUntil = 0; ttsStopNow();
+    autoQuizLastAt = Date.now(); pushPatrickCmd({ cmd: 'quiz-end' });
+    return reply(200, { ok: true });
+  }
+  if (action === 'remember') {
+    const userId=q?.srsUserId || modelAccount(), library=q?.library || CFG.library;
+    const result=markPatrickMastered(word,library,userId);
+    ttsStopNow();
+    if(q){q.manualMastered=true;q.hold=true;patrickQuizState=null;quizResultUntil=Number.MAX_SAFE_INTEGER;renderQuizCard();}
+    syncWallpaperToPet();
+    const size=resolvePetSize(); renderPetPng(size.w,size.h,()=>{});
+    pushPatrickCmd({cmd:'words',words:petWordsForPatrick(),keys:currentPetKeys()});
+    return reply(200,{ok:true,mastered:true,word:word.word,...result});
+  }
+  if (action === 'answer') {
+    if (q) {
+      if (q.manualMastered || q.pickedIndex >= 0) return reply(200, { ok: true, duplicate: true });
+      const picked = payload.picked;
+      if (!Number.isInteger(picked) || picked < 0 || picked >= q.options.length) return reply(400, { ok: false, error: 'invalid-option' });
+      // A shortened option expands first, matching pointer behavior.
+      if (action === 'answer' && q.geom?.collapsedOptions?.[picked]) {
+        q.expand = true; renderQuizCard(); return reply(200, { ok: true, expanded: true });
+      }
+      q.hold = true;
+      return answerQuiz(picked, res);
+    }
+    return reply(409, { ok: false, error: 'no-quiz' });
+  }
+  if (action === 'replay' || action === 'example-prev' || action === 'example-next' || action === 'example-generate') {
+    return reply(200, patrickSpeakWord(index, q?.id, {
+      exampleIndex: payload.exampleIndex,
+      exampleDelta: action === 'example-prev' ? -1 : action === 'example-next' ? 1 : 0,
+      generate: action === 'example-generate',
+    }));
+  }
+  if (action === 'expand' && q) {
+    q.expand = !q.expand; q.hold = true;
+    if (q.pickedIndex >= 0) quizResultUntil = Number.MAX_SAFE_INTEGER;
+    renderQuizCard(); return reply(200, { ok: true, expanded: q.expand });
+  }
+  if (action === 'sentence' && !q?.manualMastered && q?.pickedIndex >= 0 && state.lastQuiz?.word === q.word.word) {
+    q.hold = true; quizResultUntil = Number.MAX_SAFE_INTEGER;
+    const result = startSentenceWindow();
+    return reply(result.ok ? 200 : 503, result);
+  }
+  return reply(409, { ok: false, error: 'unavailable-for-card' });
+}
+
 /* 按形态分发:CFG.petMode = 'card' | 'patrick'。所有「召唤小词灵」入口都走这里。 */
+function petWindowStatus() {
+  const mode = CFG.petMode === 'patrick' ? 'patrick' : 'card';
+  return { pet: mode === 'patrick' ? patrickVisible : petVisible || petStarting, mode, petMode: mode };
+}
+
 function startPet() {
   if (CFG.petMode === 'patrick') { startPatrickPet(); return; }
+  if (patrickChild) stopPetAll();
   startCardPet();
 }
 
@@ -5423,8 +5647,11 @@ function startCardPet() {
     const p = JSON.parse(fs.readFileSync(posFile, 'utf8'));
     if (p && typeof p.x === 'number' && typeof p.y === 'number') savedPos = JSON.stringify({ x: p.x, y: p.y });
   } catch {}
+  petStarting = true;
   renderPetPng(W, H, (err) => {
-    if (generation !== petGeneration || fs.existsSync(closeFile)) return;
+    if (generation !== petGeneration) return;
+    petStarting = false;
+    if (CFG.petMode !== 'card' || fs.existsSync(closeFile)) return;
     if (err) { console.error('[companion] pet render failed:', err.message); return; }
     const pngPath = path.join(os.tmpdir(), `dw_pet-${process.pid}.png`);
     const jxa = buildPetJXA(W, H);
@@ -5965,6 +6192,14 @@ function trustedLocalMutation(req) {
   try { return ['localhost', '127.0.0.1', '::1'].includes(new URL(source).hostname); }
   catch { return false; }
 }
+function trustedModelRequest(req) {
+  const source = req.headers.origin || req.headers.referer || '';
+  if (!source) return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+  try {
+    return [localWebOrigin(CFG.webOrigin), `http://localhost:${CFG.port}`, `http://127.0.0.1:${CFG.port}`]
+      .filter(Boolean).includes(new URL(source).origin);
+  } catch { return false; }
+}
 function localWebOrigin(value) {
   try {
     const parsed = new URL(String(value || ''));
@@ -6041,6 +6276,37 @@ function parseMultipart(buf, boundary) {
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
+
+  if (url === '/pet-shortcuts.php') {
+    const reply = (status, value) => {res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'});res.end(JSON.stringify(value));};
+    if (req.method === 'GET') return reply(200, {ok:true, bindings:patrickShortcuts.normalize(CFG.patrickShortcuts)});
+    if (req.method !== 'POST') {res.writeHead(405);return res.end();}
+    if (!trustedLocalMutation(req)) {res.writeHead(403);return res.end();}
+    return readBody(req, body => {
+      let payload;try {payload=JSON.parse(body.toString('utf8'));} catch {return reply(400,{ok:false,error:'快捷键设置格式不正确'});}
+      const checked=patrickShortcuts.validate(payload?.bindings);
+      if(!checked.ok)return reply(400,checked);
+      const previous=CFG.patrickShortcuts;CFG.patrickShortcuts=checked.bindings;
+      if(!saveConfig()){CFG.patrickShortcuts=previous;return reply(500,{ok:false,error:'保存失败，请重试'});}
+      if(displayedQuiz)renderQuizCard();
+      // Keep the speech/audio identity: refresh captions without restarting it.
+      if(speakCardState)renderSpeakCard(speakCardState, true);
+      return reply(200,{ok:true,bindings:checked.bindings});
+    });
+  }
+  if (url === '/pet-shortcuts-window.php') {
+    if(req.method!=='POST'){res.writeHead(405);return res.end();}
+    if(!trustedLocalMutation(req)){res.writeHead(403);return res.end();}
+    return openWorkspace('/#shortcuts', error=>{res.writeHead(error?503:200,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:!error}));});
+  }
+  if (url === '/pet-model-settings.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedModelRequest(req)) { res.writeHead(403); return res.end(); }
+    return openWorkspace('/#model', error => {
+      res.writeHead(error ? 503 : 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: !error, error: error ? '无法打开主窗口，请在 WordPaper 顶部点击「模型接口」。' : undefined }));
+    });
+  }
 
   // The native launcher registers its actual bundle and selected server port,
   // including when it reuses an already-running companion. Browser pages must
@@ -6198,7 +6464,8 @@ const server = http.createServer((req, res) => {
       const result = { ok: true, library, uiTheme: CFG.uiTheme, page: deck.index + 1, words: deck.pages[deck.index].words.length, wordEpoch: state.petWordEpoch };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
-      if ((petVisible || patrickVisible) && (changedLibrary || changedWebOrigin || changedPageKeys || changedTransition || payload.refresh === true)) startPet();
+      if (patrickVisible && (changedLibrary || changedWebOrigin || changedUITheme || payload.refresh === true)) startPet();
+      else if ((petVisible || petStarting) && (changedLibrary || changedWebOrigin || changedPageKeys || changedTransition || payload.refresh === true)) startPet();
       else if (patrickVisible && (changedPageKeys || changedLibrary)) pushPatrickCmd({ cmd: 'words', words: petWordsForPatrick(), keys: currentPetKeys(), exampleLines: petWordsForPatrick().map(x => x.example).filter(Boolean) });
       else if (petVisible && changedUITheme) {
         const size = resolvePetSize();
@@ -6262,10 +6529,23 @@ const server = http.createServer((req, res) => {
   }
   // 网页轮询：小词灵「当前页词」+ 代际。点词/翻页/补位 bump epoch，网页据此对齐预览。
   // 派大星:优先朗读可见题目;quizId 拒绝已被切走的题目。仅本机回环可触发。
+  if (url === '/pet-speech-reset.php') {
+    if (req.method !== 'POST' || !nativeLocalRequest(req)) { res.writeHead(403); return res.end(); }
+    if (Number(req.headers['x-wordpaper-user-id']) === Number(CFG.srsUserId)) resetSpeechPlayback();
+    res.writeHead(204); return res.end();
+  }
+  if (desktopSpeechRoutes.has(url)) {
+    const requestingUser = req.headers['x-wordpaper-user-id'];
+    if (!trustedModelRequest(req) || (requestingUser && CFG.srsUserId && Number(requestingUser) !== Number(CFG.srsUserId))) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: '请在当前桌面账号中使用语音。' }));
+    }
+  }
   if (url === '/pet-voices.json') {
     if(req.method!=='GET'){res.writeHead(405);return res.end();}
     res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
-    return res.end(JSON.stringify({ok:true,voices:speechModule.VOICES,selected:selectedVoice().id,dark:petSkin(CFG.uiTheme).dark===true}));
+    const active = selectedVoice();
+    return res.end(JSON.stringify({ok:true,voices:active.custom ? [active] : speechModule.VOICES,selected:active.id,dark:petSkin(CFG.uiTheme).dark===true}));
   }
   if (url === '/pet-voice.php' || url === '/pet-voice-preview.php') {
     if(req.method!=='POST'){res.writeHead(405);return res.end();}
@@ -6277,12 +6557,14 @@ const server = http.createServer((req, res) => {
         if(payload.id===voicePreviewId){voicePreviewUntil=0;voicePreviewId='';}
         return reply(200,{ok:true});
       }
-      const voice=speechModule.voiceById(payload?.voiceId);
+      const active = selectedVoice();
+      const voice = active.custom ? (payload?.voiceId === active.id && active) : speechModule.voiceById(payload?.voiceId);
       if(!voice)return reply(400,{ok:false,error:'invalid-voice'});
       if(url==='/pet-voice.php') {
+        if (voice.custom) return reply(200,{ok:true,selected:voice.id});
         const previous=CFG.speechVoice;CFG.speechVoice=voice.id;
         if(!saveConfig()){CFG.speechVoice=previous;return reply(500,{ok:false,error:'保存失败，请重试'});}
-        ttsStopNow();voicePreviewUntil=0;voicePreviewId='';
+        resetSpeechPlayback();
         return reply(200,{ok:true,selected:voice.id});
       }
       ttsStopNow();
@@ -6290,9 +6572,9 @@ const server = http.createServer((req, res) => {
       res.on('close',()=>{if(!res.writableEnded && voicePreviewId===id){voicePreviewUntil=0;voicePreviewId='';}});
       for(const [key,clip] of voicePreviewClips)if(clip.expires<Date.now())voicePreviewClips.delete(key);
       while(voicePreviewClips.size>=8)voicePreviewClips.delete(voicePreviewClips.keys().next().value);
-      speechAudio.prepare(speechModule.SAMPLE,voice.id,(err,audio)=>{
+      prepareSpeech(speechModule.SAMPLE,voice.id,(err,audio)=>{
         if(voicePreviewId!==id)return reply(409,{ok:false,error:'preview-replaced'});
-        if(err){voicePreviewUntil=0;voicePreviewId='';return reply(503,{ok:false,error:'声音暂不可用'});}
+        if(err){voicePreviewUntil=0;voicePreviewId='';return reply(503,{ok:false,error:err.status ? err.message : '声音暂不可用'});}
         voicePreviewClips.set(id,{...audio,expires:Date.now()+600000});
         reply(200,{ok:true,id,url:'/pet-voice-audio.php?id='+id,cues:audio.cues,fallback:audio.fallback});
       });
@@ -6315,6 +6597,20 @@ const server = http.createServer((req, res) => {
       return res.end(JSON.stringify(result));
     });
   }
+  if (url === '/pet-key.php') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
+    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    return readBody(req, body => {
+      let payload = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      try { return handlePatrickShortcut(payload, res); }
+      catch (error) {
+        console.error('[companion] shortcut failed:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'shortcut-failed' }));
+      }
+    });
+  }
   // 图片发布且气泡完成入场后才开始音频,不靠估算时长决定收起。
   if (url === '/pet-speak-shown.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
@@ -6322,7 +6618,7 @@ const server = http.createServer((req, res) => {
     return readBody(req, body => {
       let payload = {};
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
-      const spoken = startSpeakCardAudio(payload.id);
+      const spoken = startSpeakCardAudio(payload.id, payload.version);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, spoken }));
     });
@@ -6362,20 +6658,15 @@ const server = http.createServer((req, res) => {
     const q = patrickQuizState;
     if (!q || !patrickVisible || speakCardState || Date.now()<voicePreviewUntil) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, spoken: false })); }
     const word = q.word.word;
-    const speechGeneration = ttsGen;
     // 到点播报:先让派大星喊一句「该复习了」,再念考题词(卡片此刻正印着它)。
     // 用户要的「到点了直接弹出来 + 播报」就是这条。
     pushPatrickCmd({ cmd: 'bubble', lines: [{ text: '⏰ 到点啦，考你一个词～', size: 11, bold: true }], ms: 3200 });
-    playSfx('correct');
     // 卡片已上屏 → 现在正是出声的时刻。先确保音频就绪(命中缓存则同步返回),
     // 就绪后立刻入队;ttsSpeak 会直接从缓存 afplay,音画同步。
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, spoken: true, word }));
-    ttsPrewarm(word, () => {
-      if (ttsGen !== speechGeneration || speakCardState || !patrickQuizState || patrickQuizState.word !== q.word) return;   // 已作答/换题/手动朗读
-      ttsQueue.length = 0;   // 队列里只许有它
-      ttsEnqueue([{ text: word, voice: PATRICK_TTS.enVoice, rate: PATRICK_TTS.enRate }], { allow: [word] });
-    });
+    ttsQueue.length = 0;
+    ttsEnqueue([{ text: word }], { allow: [word] });
     return;
   }
   // 造句练习:开/关小窗;取当前考题词(网页用它渲染标题);提交句子交给 DeepSeek 批改。
@@ -6426,7 +6717,6 @@ const server = http.createServer((req, res) => {
     if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
     if (patrickVisible) {
       pushPatrickCmd({ cmd: 'celebrate', ms: 3500 });
-      playSfx('correct');     // Glass + Hero,清脆的胜利感
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, celebrated: patrickVisible }));
@@ -6527,11 +6817,17 @@ const server = http.createServer((req, res) => {
   // 提交造句 → DeepSeek 批改。返回 { ok, feedback, fixed, score }。
   if (url === '/pet-sentence.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
-    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    if (!trustedModelRequest(req)) { res.writeHead(403); return res.end(); }
     return readBody(req, body => {
       let payload = {};
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
-      const lq = state.lastQuiz || {};
+      const lq = { ...(state.lastQuiz || {}) };
+      const userId = modelAccount(req);
+      if (!userId || (lq.userId && lq.userId !== userId)) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, code: 'account_mismatch', error: '账号已切换，请在当前账号重新答题后造句。' }));
+      }
+      lq.userId = userId;
       const word = String(lq.word || '');
       const sentence = String(payload.sentence || '').trim();
       if (!word) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '还没有答过题' })); }
@@ -6548,11 +6844,11 @@ const server = http.createServer((req, res) => {
         ' "example": "再用这个词造一个新的英文例句(不要和学生写的一样),中文翻译另起一行" }',
         '判断标准:语法是否正确、这个词用得是否地道、句子是否自然。如果学生用了别的形式(如复数/时态变化)也算 used=true。',
       ].join(String.fromCharCode(10));
-      askMagpie(prompt, reply => {
+      askMagpie(prompt, (reply, modelError) => {
         const text = String(reply || '').trim();
         if (!text) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ ok: false, error: 'DeepSeek 没有回应（可能被限流，稍后再试）' }));
+          return res.end(JSON.stringify({ ok: false, code: modelError?.code || 'invalid_response', error: modelError?.message || '模型没有返回有效批改，请重试。' }));
         }
         // 模型有时会包 ```json ``` 或加前后缀 → 截取第一个 { 到最后一个 }
         let parsed = null;
@@ -6560,11 +6856,16 @@ const server = http.createServer((req, res) => {
           const a = text.indexOf('{'), b = text.lastIndexOf('}');
           if (a >= 0 && b > a) parsed = JSON.parse(text.slice(a, b + 1));
         } catch {}
+        if (!parsed || typeof parsed.score !== 'number' || !Number.isInteger(parsed.score) || parsed.score < 1 || parsed.score > 5
+          || typeof parsed.used !== 'boolean' || typeof parsed.feedback !== 'string' || !parsed.feedback.trim() || typeof parsed.fixed !== 'string') {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, code: 'invalid_grading', error: '模型返回的批改格式不完整，请重试；本次未计入学习记录。' }));
+        }
         const score = parsed && Number.isFinite(Number(parsed.score)) ? Math.max(1, Math.min(5, Math.round(Number(parsed.score)))) : null;
         // 例句:先用本地词典里这个词的原句(离线、可靠),再补模型新造的一句。
         let dictExample = '';
         try {
-          const ex = exampleForWord(lq.library || CFG.library, { word });
+          const ex = exampleForWord(lq.library || CFG.library, lq, 0, userId);
           if (ex && ex.en) dictExample = ex.zh ? ex.en + '\n' + ex.zh : ex.en;
         } catch {}
         const modelExample = parsed && parsed.example ? String(parsed.example).trim() : '';
@@ -6623,13 +6924,13 @@ const server = http.createServer((req, res) => {
         saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
-      });
+      }, { userId, grading: true, maxTokens: 1200 });
     });
   }
   // 多轮 AI 对话(常驻浮窗用)
   if (url === '/pet-chat.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
-    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    if (!trustedModelRequest(req)) { res.writeHead(403); return res.end(); }
     return readBody(req, body => {
       let payload = {};
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
@@ -6644,7 +6945,7 @@ const server = http.createServer((req, res) => {
       chatWithMagpie(msg, (reply, err) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(reply ? { ok: true, reply } : { ok: false, error: err || 'no-reply' }));
-      });
+      }, modelAccount(req));
     });
   }
   // 对话历史(浮窗打开时回填)
@@ -6775,7 +7076,7 @@ const server = http.createServer((req, res) => {
   // 问 DeepSeek(本地 magpie)一个关于当前词的问题,回答显示在气泡里
   if (url === '/pet-ask.php') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
-    if (!trustedLocalMutation(req)) { res.writeHead(403); return res.end(); }
+    if (!trustedModelRequest(req)) { res.writeHead(403); return res.end(); }
     return readBody(req, body => {
       let payload = {};
       try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
@@ -6785,7 +7086,7 @@ const server = http.createServer((req, res) => {
       const question = String(payload.question || '').trim()
         || (word ? `用简单的话讲讲 "${word}" 这个词,怎么记、常见搭配是什么` : '');
       if (!question) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'empty question' })); }
-      askMagpie(question, answer => {
+      askMagpie(question, (answer, error) => {
         const text = String(answer || '').trim();
         if (text) {
           answerCardState = { word, answer: text, at: Date.now() };
@@ -6793,11 +7094,11 @@ const server = http.createServer((req, res) => {
           pushPatrickCmd({ cmd: 'answer-card', ms: 15000 });
           // 不再自动朗读:用户没要求,且容易和卡片上的词不一致。
         } else {
-          pushPatrickCmd({ cmd: 'bubble', lines: [{ text: '派大星想不出来…网络不太好', size: 11 }], ms: 6000 });
+          pushPatrickCmd({ cmd: 'bubble', lines: [{ text: error?.message || '模型暂时不可用', size: 11 }], ms: 6000 });
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: Boolean(text), answer: text, word }));
-      });
+        res.end(JSON.stringify({ ok: Boolean(text), answer: text, word, error: error?.message }));
+      }, { userId: modelAccount(req) });
     });
   }
   // 形态切换:card ⇄ patrick(卡片 ⭐ / 派大星菜单 / 网页 / 菜单栏共用)
@@ -6810,7 +7111,7 @@ const server = http.createServer((req, res) => {
     // 同步 POST:切换完成(窗口已重建)才返回,调用方(旧窗口)随后自毁不闪烁。
     setPetMode(mode, (err) => {
       res.writeHead(err ? 500 : 200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(err ? { ok: false } : { ok: true, mode: CFG.petMode }));
+      res.end(JSON.stringify(err ? { ok: false, error: err.message } : { ok: true, ...petWindowStatus() }));
     });
     return;
   }
@@ -6821,7 +7122,7 @@ const server = http.createServer((req, res) => {
     const commands = patrickCmds.filter(c => c.seq > after);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     // quizGeom:当前抽查卡的点击命中区(按内容算的),子窗拿它调窗口高 + 做行命中。
-    return res.end(JSON.stringify({ ok: true, seq: patrickCmdSeq, commands, quizGeom: (displayedQuiz && displayedQuiz.geom) || null, idle: patrickIdleContext() }));
+    return res.end(JSON.stringify({ ok: true, seq: patrickCmdSeq, commands, quizGeom: (displayedQuiz && displayedQuiz.geom) || null, idle: patrickIdleContext(), shortcuts: patrickShortcuts.normalize(CFG.patrickShortcuts) }));
   }
   // 抽查:网页把到期词推来 → 派大星弹 4 选 1 抽查卡;作答落回 petMemoryEvents。
   if (url === '/pet-quiz.php') {
@@ -6940,17 +7241,16 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     if (action === 'open') {
       try { fs.unlinkSync(PET_CLOSED_PATH); } catch {}   // ✕ 关闭只对本次有效，召唤时清掉标记
-      startPet();
-      return res.end(JSON.stringify({ ok: true, pet: true }));
+      if (!petWindowStatus().pet) startPet();
+      return res.end(JSON.stringify({ ok: true, ...petWindowStatus() }));
     }
     if (action === 'close') {
       try { fs.writeFileSync(PET_CLOSED_PATH, '1'); } catch {}
       stopPetAll();
-      return res.end(JSON.stringify({ ok: true, pet: false }));
+      return res.end(JSON.stringify({ ok: true, ...petWindowStatus() }));
     }
-    if (action === 'card') { setPetMode('card'); return res.end(JSON.stringify({ ok: true, pet: petVisible, mode: 'card' })); }
-    if (action === 'patrick') { setPetMode('patrick'); return res.end(JSON.stringify({ ok: true, pet: patrickVisible, mode: 'patrick' })); }
-    return res.end(JSON.stringify({ ok: true, pet: petVisible || patrickVisible, mode: CFG.petMode || 'card' }));
+    if (PET_MODES.has(action)) return setPetMode(action, err => res.end(JSON.stringify(err ? { ok: false, error: err.message } : { ok: true, ...petWindowStatus() })));
+    return res.end(JSON.stringify({ ok: true, ...petWindowStatus() }));
   }
 
   // live re-render during a resize drag: render PNG at the new size and respond
@@ -6975,6 +7275,7 @@ const server = http.createServer((req, res) => {
   // The pet reloads the new PNG itself (poll timer) — no window restart.
   if (url === '/pet-size.php') {
     if (req.method === 'HEAD') { res.writeHead(isMac ? 200 : 404); return res.end(); }
+    if (CFG.petMode !== 'card' || !CFG.petEnabled || fs.existsSync(PET_CLOSED_PATH)) { res.writeHead(409); return res.end(); }
     let w = 0, h = 0;
     try {
       const q = new URL(req.url, 'http://localhost').searchParams;
@@ -6988,7 +7289,6 @@ const server = http.createServer((req, res) => {
     if (w > 0 && h > 0) {
       state.petSize = { w, h };
       saveState();
-      try { fs.unlinkSync(PET_CLOSED_PATH); } catch {}   // 换形状时把宠物叫回来
       return renderPetPng(w, h, done);
     }
     return done();
@@ -7024,7 +7324,7 @@ const server = http.createServer((req, res) => {
   // status endpoint
   if (url === '/status.json') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ mac: isMac, config: CFG, pet: petVisible || patrickVisible, petMode: CFG.petMode || 'card', hotkey: hotkeyStatus(), menuBar: Boolean(menuBarChild), quizQueue: quizQueueState() }));
+    return res.end(JSON.stringify({ mac: isMac, config: CFG, ...petWindowStatus(), hotkey: hotkeyStatus(), menuBar: Boolean(menuBarChild), quizQueue: quizQueueState() }));
   }
 
   /* /api/export/* 转发给主服务。
@@ -7042,7 +7342,7 @@ const server = http.createServer((req, res) => {
   // 小词灵窗口的归属心跳(孤儿窗口靠它发现「伴侣已换人」并自毁)
   if (url === '/pet-owner.json') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ ok: true, ownerPid: process.pid }));
+    return res.end(JSON.stringify({ ok: true, ownerPid: process.pid, petMode: CFG.petMode, closed: fs.existsSync(PET_CLOSED_PATH) }));
   }
   // 菜单栏点击:召唤/隐藏小词灵、换一组、检查更新、一键更新、退出
   if (url === '/menu.php') {

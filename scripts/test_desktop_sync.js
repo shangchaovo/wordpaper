@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { freePort, startMockProvider, startApp, stopApp, cookieValue, startFlow, callback } = require('./test_oauth');
 const { DatabaseSync } = require('node:sqlite');
@@ -15,14 +16,38 @@ const { normalizeUrl } = require('../lib/upstream');
 (async () => {
   assert.throws(() => normalizeUrl('http://fd-public.example.com'), /https/);
   assert.equal(normalizeUrl('http://[fd00::1]:8770'), 'http://[fd00::1]:8770');
+  const { merge } = require('../js/state-merge');
+  const a = { word: 'alpha', meaning: '甲' }, b = { word: 'beta', meaning: '乙' };
+  const mergedWords = merge('customWords', [a, b], [b], [a, { ...b, meaning: '修改' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(mergedWords.value)), [{ ...b, meaning: '修改' }], 'an offline edit to B cannot revive deleted A');
+  assert.equal(merge('customWords', [a], [], [{ ...a, meaning: '修改' }]).conflict, true, 'preserve delete / edit conflicts');
+  const scheduled = { stage: 1, due: 1000 };
+  const reviewAt = words => ({ cet4: { words } });
+  assert.equal(merge('review', reviewAt({ a: scheduled }), reviewAt({ a: { ...scheduled, due: 0 } }),
+    reviewAt({ a: { ...scheduled, stage: 2 } })).conflict, true, 'one word schedule stays atomic during an undo');
+  assert.deepEqual(JSON.parse(JSON.stringify(merge('settings', { theme: 'x', font: 1 },
+    { theme: 'y', font: 1 }, { theme: 'x', font: 2 }).value)), { theme: 'y', font: 2 });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordpaper-desktop-sync-'));
   const mockPort = await freePort(), mockBase = `http://127.0.0.1:${mockPort}`;
   const mock = await startMockProvider(mockPort, []);
+  const preview = http.createServer((req, res) => {
+    res.writeHead(405, { 'Content-Type': 'text/html' });
+    res.end('<!doctype html><title>WordPaper 预览</title>');
+  });
   const apps = [];
   try {
+    await new Promise((resolve, reject) => {
+      preview.once('error', reject);
+      preview.listen(0, '127.0.0.1', resolve);
+    });
+    const previewOrigin = `http://127.0.0.1:${preview.address().port}`;
     for (const mode of ['public', 'local', 'local']) {
       apps.push(await startApp(await freePort(), path.join(root, String(apps.length)), mockBase, { WORDPAPER_MODE: mode, WORDPAPER_COMPANION_ENABLED: '0' }));
     }
+    const emailOnly = await startApp(await freePort(), path.join(root, 'email-only'), mockBase, {
+      WORDPAPER_GOOGLE_CLIENT_SECRET: '', WORDPAPER_WECHAT_APP_SECRET: '',
+    });
+    apps.push(emailOnly);
     const [cloud, desk1, desk2] = apps;
     async function api(app, route, body, account, method) {
       const response = await fetch(app.base + route, {
@@ -57,11 +82,23 @@ const { normalizeUrl } = require('../lib/upstream');
       assert.equal(local.mirrored, true);
       return { local, account };
     }
+    const unsupported = await api(desk1, '/api/desktop/start', { url: previewOrigin, provider: 'wechat' });
+    assert.equal(unsupported.response.status, 502);
+    assert.match(unsupported.error, /未提供 WordPaper 账号同步/);
+    for (const [provider, label] of [['google', 'Google 登录'], ['wechat', '微信登录']]) {
+      const unavailable = await api(desk1, '/api/desktop/start', { url: emailOnly.base, provider });
+      assert.equal(unavailable.response.status, 503);
+      assert.ok(unavailable.error.includes(label));
+      assert.match(unavailable.error, /邮箱 \/ 原账号登录/);
+    }
     if (process.argv.includes('--browser')) {
       await new Promise((resolve, reject) => {
         const child = spawn('python3', ['scripts/test_desktop_sync_browser.py'], {
           cwd: path.resolve(__dirname, '..'), stdio: 'inherit',
-          env: { ...process.env, WORDPAPER_TEST_BASE_URL: desk1.base.replace('127.0.0.1', 'localhost'), WORDPAPER_TEST_CLOUD: cloud.base },
+          env: {
+            ...process.env, WORDPAPER_TEST_BASE_URL: desk1.base.replace('127.0.0.1', 'localhost'),
+            WORDPAPER_TEST_CLOUD: cloud.base, WORDPAPER_TEST_PREVIEW: previewOrigin,
+          },
         });
         child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error(`desktop browser test exited ${code}`)));
       });
@@ -119,12 +156,28 @@ const { normalizeUrl } = require('../lib/upstream');
     assert.equal(b.baseRevision, 2);
     localStorage.replaceUnqueuedState(first.local.user.id, 'review', { generation: 'stale' }, 2);
     assert.deepEqual(localStorage.getState(first.local.user.id).state.review, { generation: 'b' });
+    // A committed cloud PUT can lose its reply. The exact same value on
+    // replay is an acknowledgement, even while a newer local edit is queued.
+    const lost = JSON.parse(localStorage.metaGet('upstream_queue')).review;
+    localStorage.putState(first.local.user.id, 'review', { generation: 'c' }, 3, true);
+    localStorage.settleQueuedState(first.local.user.id, 'review', lost, { conflict: true, value: lost.value, revision: 3 });
+    const newer = JSON.parse(localStorage.metaGet('upstream_queue')).review;
+    assert.deepEqual(newer.value, { generation: 'c' });
+    assert.equal(newer.baseRevision, 3);
+    assert.equal(localStorage.mirrorConflicts(first.local.user.id, true), 0);
     // Restore the fixture to the actual cloud revision before continuing.
     localStorage.metaDelete('upstream_queue');
     localStorage.replaceState(first.local.user.id, 'review', review, 1);
     localStorage.close();
-    assert.equal((await api(desk1, '/api/account', undefined, first.local)).accountUrl, cloud.base + '/#account');
+    assert.equal((await api(desk1, '/api/account', undefined, first.local)).accountUrl, cloud.base + '/login.html?next=%2F%23account');
+    assert.equal((await api(desk1, '/api/account/open-center', undefined, first.local)).response.status, 405);
+    assert.equal((await api(desk1, '/api/account/open-center', {})).response.status, 401);
+    assert.equal((await api(desk1, '/api/account/open-center', {}, { ...first.local, csrfToken: '' })).response.status, 403);
+    assert.equal((await api(cloud, '/api/account/open-center', {}, first.account)).response.status, 404);
     assert.equal((await api(cloud, '/api/desktop/start', { url: cloud.base, provider: 'google' })).response.status, 404);
+    assert.equal((await api(cloud, '/api/desktop/open', {})).response.status, 404);
+    assert.equal((await api(desk1, '/api/desktop/open', {})).response.status, 410);
+    assert.equal((await api(desk1, '/api/desktop/open', {}, { ...first.local, csrfToken: '' })).response.status, 403);
     assert.equal((await api(desk1, '/api/device/start', { provider: 'google', challenge: 'x'.repeat(43) })).response.status, 404);
 
     // Possession of a displayed approval code is not enough to claim a session.
@@ -141,6 +194,7 @@ const { normalizeUrl } = require('../lib/upstream');
     const cancelled = await api(desk2, '/api/desktop/start', { url: cloud.base, provider: 'wechat' }, second.local);
     const cancelAccount = { ...second.local, cookie: second.local.cookie + '; ' + cancelled.flow };
     assert.equal((await api(desk2, '/api/desktop/cancel', {}, cancelAccount)).response.status, 200);
+    assert.equal((await api(desk2, '/api/desktop/open', {}, cancelAccount)).response.status, 410);
     assert.equal((await api(desk2, '/api/desktop/poll', {}, cancelAccount)).response.status, 410);
     // WeChat can independently authorize a desktop, using the same protocol.
     await connect(desk2, 'wechat', second.local);
@@ -155,6 +209,7 @@ const { normalizeUrl } = require('../lib/upstream');
     console.log('PASS desktop device approval, private verifier/replay/cancel guards, Google and WeChat, two Apps + web sync, local-account isolation and unpair preservation');
   } finally {
     for (const app of apps) await stopApp(app.child).catch(() => {});
+    await new Promise(resolve => preview.close(resolve));
     await new Promise(resolve => mock.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });
   }

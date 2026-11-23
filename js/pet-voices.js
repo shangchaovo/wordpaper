@@ -55,9 +55,11 @@
     try {
       const result=await api('/pet-voice-preview.php',{voiceId:voice.id},controller.signal);
       if (run!==generation) return;
-      previewId=result.id; cues=result.cues || []; audio.src=result.url;
+      previewId=result.id;
+      if (result.fallback) { stopPreview(); showMessage('所选声音暂不可用'); return; }
+      cues=result.cues || []; audio.src=result.url;
       await audio.play(); if (run!==generation) return;
-      $('play-status').textContent=result.fallback?'当前使用系统声音 · 在线音色暂不可用':'正在试听 · 逐词跟读';
+      $('play-status').textContent=cues.length ? '正在试听 · 逐词跟读' : '正在试听';
       frame=requestAnimationFrame(animate);
     } catch(error) {
       if (run===generation && error.name!=='AbortError') {stopPreview();showMessage('试听暂不可用，请再试一次');}
@@ -116,6 +118,7 @@
   }
   function renderMenu(state) {
     if (!state?.ok) return;
+    if (menuState && menuState.selectedVoice !== state.selectedVoice) { stopPreview(); refreshVoices(); }
     menuState=state;
     document.documentElement.dataset.theme=state.dark?'dark':'light';
     $('pet-toggle').dataset.command=state.pet?'pet-close':'pet-open';
@@ -138,6 +141,9 @@
     const run=selectionGeneration;
     try {
       const data=await api('/pet-voices.json');
+      if (run!==selectionGeneration) return;
+      const changed = data.voices.map(v=>v.id).join() !== [...cards.keys()].join();
+      if (changed) { $('voices').replaceChildren(); cards.clear(); }
       voices=data.voices;document.documentElement.dataset.theme=data.dark?'dark':'light';
       if (!cards.size) voices.forEach(createCard);
       if (run===selectionGeneration) {selected=data.selected;savedSelection=data.selected;renderSelection();}

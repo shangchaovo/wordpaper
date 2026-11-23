@@ -1624,24 +1624,21 @@
 .preview { container-type: inline-size; container-name: preview; }
 :root .app .pet-dock {
   display: grid;
-  grid-template-columns: 44px minmax(130px, 1fr) auto auto auto;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px 12px;
   padding: 14px 16px;
 }
-@container preview (max-width: 760px) {
-  :root .app .pet-dock { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px 12px; }
-  .pet-dock-face { grid-column: 1; grid-row: 1; }
-  .pet-dock-copy { grid-column: 2; grid-row: 1; }
-  .pet-dock-actions { grid-column: 3; grid-row: 1; width: auto; }
-  .pet-dock-fx { grid-column: 2; grid-row: 2; }
-  .pet-dock-sync { grid-column: 3; grid-row: 2; justify-self: end; }
-}
-@container preview (max-width: 440px) {
-  .pet-dock-copy { grid-column: 2 / -1; }
-  .pet-dock-fx { grid-column: 1 / 3; }
-  .pet-dock-actions { grid-column: 1 / -1; grid-row: 3; width: 100%; }
-  .pet-dock-actions .btn { flex: 1; }
+:root .app .pet-dock .pet-dock-face { grid-column: 1; grid-row: 1; }
+:root .app .pet-dock .pet-dock-copy { grid-column: 2; grid-row: 1; }
+:root .app .pet-dock .pet-dock-actions { grid-column: 3; grid-row: 1; display: flex; flex-wrap: wrap; gap: 6px; width: auto; }
+:root .app .pet-dock .pet-dock-options { grid-column: 2 / -1; grid-row: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+:root .app .pet-dock :is(.btn, label) { white-space: nowrap; }
+:root .app .pet-dock [hidden], :root .app [data-speech-settings][hidden] { display: none; }
+@container preview (max-width: 660px) {
+  :root .app .pet-dock { grid-template-columns: 44px minmax(0, 1fr); }
+  :root .app .pet-dock .pet-dock-options { grid-column: 1 / -1; }
+  :root .app .pet-dock .pet-dock-actions { grid-column: 1 / -1; grid-row: 3; }
 }
 
 /* The selection moves between real button bounds; without JS, the original buttons remain. */

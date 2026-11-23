@@ -97,23 +97,46 @@ def main():
 
             # library cards (v3) — 12 built-in libraries (2 日语 + 初/高中 + 四六/研/雅/托/GRE + 法语/西语) + 我的词库
             check("词库卡片渲染(13张)", page.locator("#library-cards .lib-card").count() == 13)
+            english = page.locator('[data-group-toggle="english"]')
+            check("词书分组默认收起，当前词书可直接浏览",
+                  page.locator('.lib-group-heading[aria-expanded=false]').count() == 3
+                  and page.locator('#btn-browse-selected-library').is_visible())
             # 词书搜索:输入关键词过滤卡片,清空恢复。
             page.fill("#library-filter", "雅思")
             page.wait_for_timeout(200)
             check("词书搜索过滤(雅思)", page.locator("#library-cards .lib-card").count() == 1
-                  and "雅思" in page.inner_text("#library-cards"))
+                  and page.locator('[data-library="ielts"]').is_visible()
+                  and english.get_attribute('aria-expanded') == 'true')
             page.fill("#library-filter", "")
             page.wait_for_timeout(200)
-            check("清空搜索恢复全部词书", page.locator("#library-cards .lib-card").count() == 13)
+            check("清空搜索恢复全部分组的折叠状态", page.locator("#library-cards .lib-card").count() == 13
+                  and english.get_attribute('aria-expanded') == 'false')
             # default canvas size desktop 1920x1080 (本软件不面向手机)
             # 预览按屏幕像素绘制，壁纸的逻辑尺寸标在 data-wallpaper-w/h 上
             dims = page.evaluate("() => { const c=document.querySelector('#preview-canvas'); return {w:+c.dataset.wallpaperW,h:+c.dataset.wallpaperH}; }")
             check("默认电脑画布 1920×1080", dims["w"] == 1920 and dims["h"] == 1080)
 
             # switch library via the cet4 card (locate by text, not index)
+            english.press('Enter')
             page.locator("#library-cards .lib-card", has_text="四级").first.click()
             page.wait_for_timeout(400)
             check("点卡片切四级词库", "四级" in page.inner_text("#meta") or "CET4" in page.inner_text("#meta"))
+            check("选择词书后分组仍可操作", english.get_attribute('aria-expanded') == 'true'
+                  and page.locator('#selected-library-label').inner_text() == '四级')
+            palette = page.locator('#wallpaper-palette summary')
+            check("壁纸配色默认只显示当前选择", palette.is_visible()
+                  and not page.locator('#theme-swatches').is_visible() and bool(page.locator('#palette-name').inner_text()))
+            before_color = page.locator('#preview-canvas').evaluate("c=>c.getContext('2d').getImageData(2,2,1,1).data.join(',')")
+            palette.press('Enter')
+            page.locator('#theme-swatches [title="森林"]').press('Space')
+            check("选择壁纸配色后收起并回到摘要", page.locator('#palette-name').inner_text() == '森林'
+                  and not page.locator('#theme-swatches').is_visible() and palette.evaluate('e=>e===document.activeElement')
+                  and page.evaluate('() => Store.getSettings().theme') == 'forest')
+            page.wait_for_timeout(350)
+            check("所选颜色已经绘制到预览", before_color != page.locator('#preview-canvas').evaluate("c=>c.getContext('2d').getImageData(2,2,1,1).data.join(',')"))
+            palette.click()
+            page.locator('#theme-swatches [aria-pressed="true"]').press('Escape')
+            check("可用 Escape 收起配色", not page.locator('#theme-swatches').is_visible())
 
             # background pattern picker
             page.locator("#pattern-picker .pattern-chip").nth(2).click()  # dots
@@ -234,6 +257,8 @@ def main():
             # SRS (艾宾浩斯) — 记忆复习 card. Switch to a stable built-in fixture (四级)
             # before exercising the notebook; custom libraries use the same SRS path.
             check("记忆复习卡片存在", page.locator("#btn-open-memory").count() == 1)
+            if english.get_attribute('aria-expanded') == 'false':
+                english.click()
             page.locator("#library-cards .lib-card", has_text="四级").first.click()
             page.wait_for_timeout(500)
             lib = page.evaluate("() => Store.getSettings().library")
@@ -313,16 +338,26 @@ def main():
             check("设为桌面壁纸按钮", page.locator("#btn-set-wallpaper2").is_visible())
             check("小词灵主入口", page.locator("#btn-pet-dock").is_visible()
                   and page.locator("#btn-pet-memory").is_visible())
+            page.locator("#pet-dock").scroll_into_view_if_needed()
             pet_box = page.locator("#pet-dock").bounding_box()
             stage_box = page.locator("#preview-stage").bounding_box()
             pet_button_box = page.locator("#btn-pet-dock").bounding_box()
-            check("小词灵已整合在预览上方且可点击",
+            check("预览下方的桌面控件按当前形态显示，编辑面板不会遮挡",
                   pet_box is not None and stage_box is not None and pet_button_box is not None
-                  and pet_box["width"] > 500 and pet_box["y"] < stage_box["y"]
+                  and pet_box["width"] > 500 and pet_box["y"] >= stage_box["y"] + stage_box["height"] - 1
                   and page.evaluate("""() => {
-                    const b = document.querySelector('#btn-pet-dock').getBoundingClientRect();
-                    const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
-                    return hit === document.querySelector('#btn-pet-dock') || document.querySelector('#btn-pet-dock').contains(hit);
+                    const mode = document.getElementById('sel-pet-mode');
+                    const fx = document.getElementById('sel-pet-transition');
+                    const hasCard = mode.value === 'card' && !mode.disabled;
+                    if (Boolean(fx.offsetWidth) !== hasCard) return false;
+                    const controls = ['btn-pet-dock', 'sel-pet-mode'];
+                    if (hasCard) controls.push('sel-pet-transition');
+                    return controls.every(id => {
+                      const control = document.getElementById(id);
+                      const box = control.getBoundingClientRect();
+                      return control.contains(document.elementFromPoint(
+                        box.left + box.width / 2, box.top + box.height / 2));
+                    });
                   }"""))
 
             # 同一台 Mac 上的第二个账号:小词灵直接可用(共享本机桌面伴侣),

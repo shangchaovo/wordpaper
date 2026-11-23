@@ -126,6 +126,7 @@ def main():
             page.wait_for_timeout(600)
 
             # seed a known library + a few reminders for deterministic-ish output
+            page.locator('[data-group-toggle="english"]').click()
             page.locator("#library-cards .lib-card", has_text="四级").first.click()
             page.fill("#inp-reminder", "背单词 30 分钟")
             page.click("#btn-add-reminder")

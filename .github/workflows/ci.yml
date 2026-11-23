@@ -40,6 +40,32 @@ jobs:
           npm run test:review-policy
           npm run test:learning
 
+  postgres-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: wp_test_admin
+          POSTGRES_PASSWORD: isolated-ci-database
+          POSTGRES_DB: wordpaper_ci
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U wp_test_admin -d wordpaper_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: |
+          node scripts/test_postgres_backend.js
+          node scripts/test_postgres_migration.js
+        env:
+          WORDPAPER_TEST_DATABASE_URL: postgresql://wp_test_admin:isolated-ci-database@127.0.0.1:${{ job.services.postgres.ports[5432] }}/wordpaper_ci
+
   python-scripts:
     runs-on: ubuntu-latest
     steps:
