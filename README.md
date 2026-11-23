@@ -193,7 +193,7 @@ https://你的域名/api/auth/google/callback
 
 Google 配置使用 `WORDPAPER_GOOGLE_CLIENT_ID`、`WORDPAPER_GOOGLE_CLIENT_SECRET`、`WORDPAPER_GOOGLE_REDIRECT_URI`。`redirect_uri_mismatch` 表示需要在 Google Auth Platform 的「客户端」中登记该回调地址。开发环境可单独登记 `http://localhost:8770/api/auth/google/callback`，并从 `http://localhost:8770` 访问。测试模式下，将需要参与测试的账号加入测试用户列表。正式发布前按控制台要求完成品牌、受众及发布设置。
 
-Google 回调、公网入口和 `WORDPAPER_PUBLIC_ORIGIN` 使用同一站点。桌面 App 在系统浏览器中授权，随后用连接码确认设备。
+主站 Google 回调与 `WORDPAPER_PUBLIC_ORIGIN` 使用同一站点。桌面 App 在系统浏览器中授权，随后用连接码确认设备。
 
 验证命令：`node scripts/test_account_links.js` 覆盖绑定安全与数据保留；`node scripts/test_desktop_sync.js` 覆盖两台 App + 云端同步、一次性授权和本机账号隔离；`npm run test:account-browser` 与 `npm run test:desktop-browser` 验证实际页面操作及浏览器授权返回。全部使用临时数据库和模拟平台，不代替开通后使用真实账号的联调。
 
@@ -231,6 +231,8 @@ Compose 只映射一个 Web 端口，且只挂载一个持久卷：
 WORDPAPER_PUBLIC_ORIGIN=https://wordpaper.example.com
 TRUST_PROXY=1
 ```
+
+如需第二个域名，在 `WORDPAPER_ADDITIONAL_PUBLIC_ORIGINS` 中填写完整 HTTPS origin，多个地址用逗号分隔。主域名继续使用 `WORDPAPER_PUBLIC_ORIGIN`，显式配置的 OAuth 回调也保留主域名。在同一 Google 客户端为每个入口登记各自的 `/api/auth/google/callback`。多域部署的 HTTPS 代理须保留浏览器请求的 `Host`。浏览器登录、设备确认和写入校验都使用发起请求的入口，每个入口分别保存登录 Cookie。
 
 `TRUST_PROXY=1` 表示只信任一跳受控反向代理：代理必须覆盖或追加 `X-Forwarded-For / Proto / Host`，应用端口必须像 Compose 默认值一样只绑定 `127.0.0.1`，防火墙也不能允许公网绕过代理直连 8770。服务取右侧最后一跳客户端地址，客户端伪造在左侧的 X-Forwarded-For 不会绕过登录与验证码限流。
 

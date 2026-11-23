@@ -28,6 +28,7 @@ const COMPANION_PORT = Number(process.env.WORDPAPER_COMPANION_PORT || (process.e
 const COMPANION_ENABLED = MODE === 'local' && process.env.WORDPAPER_COMPANION_ENABLED !== '0';
 const DATA_DIR = path.resolve(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'));
 const PUBLIC_ORIGIN = String(process.env.WORDPAPER_PUBLIC_ORIGIN || '').replace(/\/$/, '');
+const PUBLIC_ORIGINS = additionalPublicOrigins();
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const SESSION_DAYS = Math.max(1, Math.min(365, Number(process.env.WORDPAPER_SESSION_DAYS) || 30));
 const OAUTH_FLOW_SECONDS = 10 * 60;
@@ -119,6 +120,8 @@ const handleModel = require('./lib/model-routes').createModelRoutes({
 const handleDeviceAuth = require('./lib/device-auth').createDeviceAuth({
   storage, upstream, json, readJson, requireOrigin, requireCsrf, requireSession,
   requestSession, authRateAllowed, expectedOrigin, oauthProviderConfigured, newSession,
+  // Keep already-issued primary codes valid when enabling a second public origin.
+  deviceScope: origin => PUBLIC_ORIGINS && origin !== PUBLIC_ORIGIN ? origin : '',
   isLoopbackRequest, mode: MODE, sessionDays: SESSION_DAYS, parseCookies, openSystemBrowser,
   pairedHostEnabled: req => !mirroring() && syncServer?.listening &&
     (isLoopbackRequest(req) || req.socket.localAddress === syncServer.address().address),
@@ -397,8 +400,26 @@ function requestOrigin(req) {
   return host ? `${protocol}://${host}` : '';
 }
 
+function additionalPublicOrigins() {
+  const aliases = String(process.env.WORDPAPER_ADDITIONAL_PUBLIC_ORIGINS || '').trim();
+  if (MODE !== 'public' || !aliases) return null;
+  const origins = new Map();
+  for (const entry of [PUBLIC_ORIGIN, ...aliases.split(',')]) {
+    const value = entry.trim().replace(/\/$/, '');
+    const url = URL.parse(value);
+    if (!url || url.protocol !== 'https:' || url.origin !== value || url.hostname.includes('*')) {
+      throw new Error('配置多个公开入口时，主入口和每个附加入口都必须是完整的 HTTPS origin');
+    }
+    origins.set(url.host, url.origin);
+  }
+  return origins;
+}
+
 function expectedOrigin(req) {
-  return PUBLIC_ORIGIN || requestOrigin(req);
+  if (!PUBLIC_ORIGINS) return PUBLIC_ORIGIN || requestOrigin(req);
+  // The TLS terminator must preserve Host. Forwarded-Host cannot select a site.
+  if (!isSecureRequest(req)) return '';
+  return PUBLIC_ORIGINS.get(String(req.headers.host || '').toLowerCase()) || '';
 }
 
 function localGoogleOrigin(req) {
@@ -411,7 +432,7 @@ function localGoogleOrigin(req) {
 
 function validMutationOrigin(req) {
   const origin = String(req.headers.origin || '');
-  if (!origin) return process.env.NODE_ENV !== 'production';
+  if (!origin) return !PUBLIC_ORIGINS && process.env.NODE_ENV !== 'production';
   return origin === expectedOrigin(req);
 }
 
@@ -598,6 +619,11 @@ function oauthRedirectUri(req, provider) {
   const production = process.env.NODE_ENV === 'production';
   if (production && !configured && !PUBLIC_ORIGIN) return '';
   const pathname = `/api/auth/${provider}/callback`;
+  if (PUBLIC_ORIGINS) {
+    const origin = expectedOrigin(req);
+    if (!origin || (configured && configured !== PUBLIC_ORIGIN + pathname)) return '';
+    return origin + pathname;
+  }
   const value = configured || expectedOrigin(req) + pathname;
   try {
     const parsed = new URL(value);
@@ -793,7 +819,8 @@ async function wechatIdentity(code, flow) {
 }
 
 async function oauthCallback(req, res, parsed, provider) {
-  if (!oauthProviderConfigured(req, provider)) {
+  const redirectUri = oauthRedirectUri(req, provider);
+  if (!redirectUri) {
     oauthFailure(res, `${provider}_not_configured`);
     return;
   }
@@ -804,7 +831,7 @@ async function oauthCallback(req, res, parsed, provider) {
     oauthFailure(res, 'oauth_expired');
     return;
   }
-  const flow = storage.consumeOAuthFlow(tokenHash(state), tokenHash(binding), provider);
+  const flow = storage.consumeOAuthFlow(tokenHash(state), tokenHash(binding), provider, redirectUri);
   if (!flow) {
     oauthFailure(res, 'oauth_expired');
     return;
@@ -1345,6 +1372,11 @@ async function handle(req, res) {
       catch { json(res, 503, { ok: false, mode: MODE, database: 'postgres' }); return; }
     }
     json(res, 200, { ok: true, mode: MODE, version: BUNDLED_VERSION || '', ...database });
+    return;
+  }
+
+  if (PUBLIC_ORIGINS && !expectedOrigin(req)) {
+    json(res, 421, { error: '未配置的公开请求入口' });
     return;
   }
 

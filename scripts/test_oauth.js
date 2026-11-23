@@ -85,7 +85,7 @@ async function startMockProvider(port, exchanges) {
       assert.equal(form.get('client_secret'), 'google-secret-test');
       assert.equal(form.get('grant_type'), 'authorization_code');
       assert.ok(form.get('code_verifier').length >= 43);
-      exchanges.push({ provider: 'google', code: form.get('code'), verifier: form.get('code_verifier') });
+      exchanges.push({ provider: 'google', code: form.get('code'), verifier: form.get('code_verifier'), redirectUri: form.get('redirect_uri') });
       responseJson(res, { access_token: form.get('code'), token_type: 'Bearer', expires_in: 3600 });
       return;
     }
