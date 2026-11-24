@@ -3657,11 +3657,13 @@
 
   function seedOnce() {
     if (window.Store.getSeeded()) return;
-    window.Reminders.save([
-      { id: 'r1', text: '背单词 30 分钟', time: '08:00', done: false },
-      { id: 'r2', text: '喝水 8 杯', time: '', done: false },
-      { id: 'r3', text: '23:00 前睡觉', time: '23:00', done: false },
-    ]);
+    if (window.Store.read('reminders', null) === null) {
+      window.Reminders.save([
+        { id: 'r1', text: '背单词 30 分钟', time: '08:00', done: false },
+        { id: 'r2', text: '喝水 8 杯', time: '', done: false },
+        { id: 'r3', text: '23:00 前睡觉', time: '23:00', done: false },
+      ]);
+    }
     window.Store.setSeeded();
   }
 

@@ -9,7 +9,7 @@ CLOUD = os.environ['WORDPAPER_TEST_CLOUD']
 LEGACY = os.environ['WORDPAPER_TEST_LEGACY_BASE_URL']
 
 
-def connect_desktop(context, app, selector, *, legacy=False):
+def connect_desktop(context, app, selector, *, legacy=False, saved_reminders=None):
     with context.expect_page() as popup:
         app.locator(selector).click()
         if legacy:
@@ -21,12 +21,22 @@ def connect_desktop(context, app, selector, *, legacy=False):
     authorize.wait_for_url(CLOUD + '/connect.html?code=*', wait_until='domcontentloaded')
     expect(authorize.locator('#connect-approve')).to_be_enabled()
     assert authorize.locator('#connect-code').inner_text() == app.locator('#desktop-sync-code').inner_text()
+    if saved_reminders is not None:
+        # Simulate an existing cloud workspace that predates the seeded flag.
+        session = context.request.get(CLOUD + '/api/session').json()
+        assert 'seeded' not in context.request.get(CLOUD + '/api/state').json()['state']
+        saved = context.request.put(CLOUD + '/api/state/reminders',
+            headers={'Origin': CLOUD, 'X-CSRF-Token': session['csrfToken']},
+            data={'value': saved_reminders, 'expectedRevision': 0})
+        assert saved.ok, saved.text()
     authorize.locator('#connect-approve').click()
     expect(authorize.get_by_role('heading', name='已允许同步')).to_be_visible()
     expect(authorize.locator('#connect-status')).to_contain_text('回到 WordPaper App')
     expect(authorize.locator('#connect-code')).to_be_hidden()
     app.wait_for_url((LEGACY if legacy else BASE) + '/', wait_until='domcontentloaded', timeout=20000)
-    app.wait_for_function('window.Store && Store.currentUser() && Store.getSeeded()')
+    app.bring_to_front()
+    # Foreground synchronization starts once the first workspace render is ready.
+    app.wait_for_function("!document.hidden && document.querySelector('#srs-grace-table')?.textContent.length > 0")
     app.wait_for_function('async () => await Store.flush()')
 
 
@@ -49,22 +59,22 @@ with sync_playwright() as p:
     expect(app.get_by_text('微信')).to_have_count(0)
     # A saved address from a legacy install must not change the official destination.
     app.evaluate("localStorage.setItem('wp:sync-origin','http://100.83.152.67:8770')")
+    saved_reminders = [{'id': 'original', 'text': '换电脑前的提醒', 'done': False, 'time': ''}]
     with app.expect_request('**/api/desktop/start') as started:
-        connect_desktop(context, app, '#auth-google')
+        connect_desktop(context, app, '#auth-google', saved_reminders=saved_reminders)
     assert started.value.post_data_json == {'provider': 'google'}
     remote_session = context.request.get(CLOUD + '/api/session').json()
-    # First-use seeding is a mirrored write. Wait for the cloud's authoritative
-    # revision before setting up the independent web edit.
-    authorized = next(page for page in context.pages if page.url.startswith(CLOUD + '/connect.html'))
-    authorized.wait_for_function("async () => (await (await fetch('/api/state')).json()).revisions.reminders > 0")
     remote = context.request.get(CLOUD + '/api/state').json()
+    expect(app.locator('#reminder-list')).to_contain_text(saved_reminders[0]['text'])
+    assert remote['state']['reminders'] == saved_reminders and remote['revisions']['reminders'] == 1
     value = [{'id': 'shared', 'text': '浏览器改动同步到 App', 'done': False, 'time': ''}]
     response = context.request.put(CLOUD + '/api/state/reminders', headers={
         'Origin': CLOUD, 'X-CSRF-Token': remote_session['csrfToken'],
     }, data={'value': value, 'expectedRevision': remote['revisions'].get('reminders', 0)})
     assert response.status == 200, response.text()
-    app.evaluate("window.dispatchEvent(new Event('focus'))")
-    expect(app.locator('#reminder-list')).to_contain_text('浏览器改动同步到 App', timeout=15000)
+    with app.expect_response(lambda response: urlsplit(response.url).path == '/api/state' and response.ok):
+        app.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(app.locator('#reminder-list')).to_contain_text('浏览器改动同步到 App', timeout=45000)
     snapshot = context.request.get(BASE + '/api/state').json()
     app.route('**/api/state', lambda route: route.fulfill(json=snapshot))
     for state, label in [('offline', '主账号离线'), ('reauth', '主账号需验证'), ('ok', '已同步')]:

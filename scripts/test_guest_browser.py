@@ -156,8 +156,15 @@ def test_public(engine, base, temp):
         creds = {'username': USERNAME, 'password': PASSWORD}
         account = context.request.post(base + '/api/auth/register', data=creds, headers={'Origin': base})
         assert account.status == 201, account.text()
+        # Cleared reminders on an account without a seeded flag stay empty.
+        token = context.request.get(base + '/api/session').json()['csrfToken']
+        saved = context.request.put(base + '/api/state/reminders', data={'value': [], 'expectedRevision': 0},
+                                   headers={'Origin': base, 'X-CSRF-Token': token})
+        assert saved.ok, saved.text()
         page.goto(base)
         expect(page.locator('#account-name')).to_have_text(USERNAME)
+        page.wait_for_function('Store.getSeeded()')
+        assert page.evaluate('Store.getReminders()') == []
         add_reminder(page, ACCOUNT_NOTE)
         assert page.evaluate('Store.flush()')
         cloud_state = context.request.get(base + '/api/state').json()['state']
