@@ -71,8 +71,28 @@
     return out;
   }
 
-  /* Parse an .xlsx ArrayBuffer using SheetJS if present, else fall back to a
-   * CSV-ish attempt. Returns array of word objects. */
+  let excelReader;
+  function loadExcelReader() {
+    if (window.XLSX) return Promise.resolve();
+    if (!excelReader) {
+      excelReader = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+        script.integrity = 'sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';
+        script.crossOrigin = 'anonymous';
+        script.referrerPolicy = 'no-referrer';
+        script.onload = resolve;
+        script.onerror = () => {
+          script.remove();
+          excelReader = null;
+          reject(new Error('无法加载 Excel 读取器，请检查网络或另存为 CSV 导入'));
+        };
+        document.head.append(script);
+      });
+    }
+    return excelReader;
+  }
+
   function parseExcel(arrayBuffer) {
     if (window.XLSX) {
       const wb = window.XLSX.read(arrayBuffer, { type: 'array' });
@@ -106,5 +126,5 @@
     return { merged, added };
   }
 
-  window.Importer = { parseText, parseCSV, parseExcel, merge, normalizeRow };
+  window.Importer = { parseText, parseCSV, parseExcel, loadExcelReader, merge, normalizeRow };
 })();

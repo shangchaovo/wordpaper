@@ -297,12 +297,12 @@ function isSameMachineRequest(req) {
   return ownInterfaceAddresses().has(addr);
 }
 
-function securityHeaders(res) {
+function securityHeaders(res, connectSource = "'self'") {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${connectSource}; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`);
 }
 
 function json(res, status, value, headers) {
@@ -1418,6 +1418,16 @@ async function handle(req, res) {
   if (PUBLIC_ORIGINS && !expectedOrigin(req)) {
     json(res, 421, { error: '未配置的公开请求入口' });
     return;
+  }
+
+  // The guest document is a public shell. It never resolves or issues a session.
+  if (pathname === '/guest' || pathname === '/guest/') {
+    if (pathname === '/guest/') { redirect(res, '/guest'); return; }
+    // Guest scripts may fetch the bundled dictionaries, including in a browser
+    // that also has a signed-in account cookie for this origin.
+    const origin = URL.parse(expectedOrigin(req))?.origin;
+    securityHeaders(res, origin ? origin + '/data/' : "'none'");
+    serveStatic(req, res, '/index.html'); return;
   }
 
   // ── 应用内自更新(独立版专属):检查 + 安装。棘轮与权限校验都在 POST /apply

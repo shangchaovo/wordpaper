@@ -697,7 +697,7 @@
     function setToolsExpanded(expanded) {
       panel.hidden = !expanded;
       menu.setAttribute('aria-expanded', String(expanded));
-      menu.setAttribute('aria-controls', narrowHeader.matches ? 'workspace-settings-panel workspace-tools' : 'workspace-settings-panel');
+      menu.setAttribute('aria-controls', Store.isGuest() ? 'workspace-tools' : (narrowHeader.matches ? 'workspace-settings-panel workspace-tools' : 'workspace-settings-panel'));
       topbar.classList.toggle('compact-tools', narrowHeader.matches && !expanded);
     }
     setToolsExpanded(false);
@@ -807,7 +807,7 @@
     const downloadTop = $('#btn-download'); if (downloadTop) downloadTop.addEventListener('click', downloadPNG);
     const liveBtn = $('#btn-live'); if (liveBtn) liveBtn.addEventListener('click', enterLive);
     $('#btn-exit-live').addEventListener('click', exitLive);
-    const wallpaperTop = $('#btn-set-wallpaper'); if (wallpaperTop) wallpaperTop.addEventListener('click', setDesktopWallpaper);
+    const wallpaperTop = $('#btn-set-wallpaper'); if (wallpaperTop && !Store.isGuest()) wallpaperTop.addEventListener('click', setDesktopWallpaper);
     // preview meta-bar duplicates (快速出壁纸，滚到中部也能直接操作)
     const r2 = $('#btn-refresh2'); if (r2) r2.addEventListener('click', async () => {
       playOnce(r2, 'is-spinning');
@@ -816,7 +816,7 @@
       toast('已换一组新单词');
     });
     const d2 = $('#btn-download2'); if (d2) d2.addEventListener('click', downloadPNG);
-    const w2 = $('#btn-set-wallpaper2'); if (w2) w2.addEventListener('click', setDesktopWallpaper);
+    const w2 = $('#btn-set-wallpaper2'); if (w2 && !Store.isGuest()) w2.addEventListener('click', setDesktopWallpaper);
     // import modal (button-triggered popup)
     const modal = $('#import-modal');
     const openImport = $('#btn-open-import');
@@ -849,6 +849,18 @@
       if (libraryModal && !libraryModal.hidden) closeLibraryBrowser();
       if (memoryModal && !memoryModal.hidden) closeMemoryNotebook();
     });
+    const libFilter = $('#library-filter');
+    if (libFilter) libFilter.addEventListener('input', renderLibraryCards);
+    if (!Store.isGuest()) bindCompanionControls();
+
+    bindImport();
+    bindReminders();
+    bindBgPhoto();
+    bindWordInspector();
+    bindDrag();
+  }
+
+  function bindCompanionControls() {
     const companionBtn = $('#btn-companion');
     if (companionBtn) companionBtn.addEventListener('click', handleCompanionAction);
     // 换词特效下拉:选中即存 localStorage 并触发 pet-sync,下次换词生效。
@@ -881,9 +893,6 @@
     }
     const companionTop = $('#btn-companion-top');
     if (companionTop) companionTop.addEventListener('click', enableCompanion);
-    // 词书搜索框:输入即过滤词库卡片。
-    const libFilter = $('#library-filter');
-    if (libFilter) libFilter.addEventListener('input', renderLibraryCards);
     const petBtn = $('#btn-pet-toggle');
     if (petBtn) petBtn.addEventListener('click', togglePet);
     const dl = $('#btn-companion-dl');
@@ -901,12 +910,6 @@
     window.addEventListener('focus', checkPet);
     document.addEventListener('visibilitychange', checkPet);
     setInterval(checkPet, 5000);
-
-    bindImport();
-    bindReminders();
-    bindBgPhoto();
-    bindWordInspector();
-    bindDrag();
   }
 
   /* ---------- ordered module layout ---------- */
@@ -1567,12 +1570,13 @@
       let words = [];
       try {
         if (ext === 'xlsx' || ext === 'xls') {
+          await window.Importer.loadExcelReader();
           words = window.Importer.parseExcel(await f.arrayBuffer());
         } else {
           const text = await f.text();
           words = ext === 'csv' ? window.Importer.parseCSV(text) : window.Importer.parseText(text);
         }
-      } catch (err) { toast('解析失败：' + err.message); }
+      } catch (err) { toast('解析失败：' + err.message); file.value = ''; return; }
       if (words.length) addImportedWords(words, '文件'); else toast('没识别到单词，换种格式试试');
       file.value = '';
     });
@@ -1616,6 +1620,7 @@
   }
 
   async function importFromImage(file) {
+    if (Store.isGuest()) { toast('游客可以粘贴单词或导入文本和表格。'); return; }
     toast('正在识别图片里的单词…');
     try {
       const ok = await window.OCR.available();
@@ -1853,6 +1858,23 @@
     inspector.hidden = false;
     syncWordScaleAvailability();
     if (label.textContent !== word.word) label.textContent = word.word;
+    if (Store.isGuest()) {
+      const add = $('#btn-guest-remember');
+      const library = lastSel.library || settings.library;
+      add.hidden = !settings.srsEnabled;
+      add.disabled = Boolean(Review.getWord(library, word));
+      add.textContent = add.disabled ? '已加入记忆本' : '加入记忆本';
+      add.onclick = () => {
+        const result = Review.rememberWord(library, word);
+        if (result?.action === 'learn') {
+          recordDailyActivity({ action: 'learn', library, word, at: result.item.learnedAt,
+            activityId: 'learn:' + library + ':' + Review.wordKey(word) }, 'guest');
+        }
+        add.disabled = true;
+        add.textContent = '已加入记忆本';
+        updateSrsUI();
+      };
+    }
     if (switching) {
       wordLabelAnimation?.cancel();
       if (label.animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -1955,6 +1977,11 @@
     paintSelection(sel, page || 'words', '#preview-canvas');
     if (liveActive) paintLive(page || cyclePage);
     updateMeta(sel);
+    if (Store.isGuest() && selectedWordIndex != null && (lastSel?.library !== sel.library ||
+        Review.wordKey(lastSel?.words[selectedWordIndex]) !== Review.wordKey(sel.words[selectedWordIndex]))) {
+      selectedWordIndex = null;
+      $('#word-inspector').hidden = true;
+    }
     lastSel = sel;
     syncWordScaleAvailability();
     updateSrsUI();
@@ -1964,7 +1991,7 @@
   let petSyncedSel = null;   // {dateStr, words, library, rotated:false}
   let companionUp = false;   // status.json 探测结果（syncCompanionButton 维护）
 
-  function petSyncActive() { return !!(settings && settings.petWallpaperSync !== false); }
+  function petSyncActive() { return !Store.isGuest() && !!(settings && settings.petWallpaperSync !== false); }
   function companionReachable() { return companionUp; }
 
   // 用同步来的小词灵词构造一个 selection（与 Engine.current 返回结构一致）。
@@ -2171,6 +2198,7 @@
     const card = $('.srs-card'); if (!card || !window.Review) return;
     const enabled = !!settings.srsEnabled;
     const openBtn = $('#btn-open-memory'); if (openBtn) openBtn.disabled = false;
+    if (Store.isGuest()) $('#btn-guest-remember').hidden = !enabled || selectedWordIndex == null;
     const petOpenBtn = $('#btn-pet-memory'); if (petOpenBtn) petOpenBtn.disabled = false;
     const st = window.Review.stats(settings.library);
     $('#srs-status').innerHTML = enabled
@@ -2213,7 +2241,10 @@
     box.innerHTML = '';
     if (!enabled) return;
     const records = window.Review.recentWords(settings.library, 4);
-    if (!records.length) { box.innerHTML = '<div class="srs-record empty">在桌面小词灵点词卡完成首轮后，单词会进入这里的复习周期。</div>'; return; }
+    if (!records.length) {
+      box.innerHTML = Store.isGuest() ? '' : '<div class="srs-record empty">在桌面小词灵点词卡完成首轮后，单词会进入这里的复习周期。</div>';
+      return;
+    }
     records.forEach(item => {
       const row = document.createElement('div'); row.className = 'srs-record';
       const word = document.createElement('b'); word.textContent = item.word.word;
@@ -2366,6 +2397,7 @@
 
   /* 达标庆祝:派大星开心跳 + 撒花特效 + 音效(经伴侣)。 */
   function celebratePlanHit() {
+    if (Store.isGuest()) { toast('🎉 今日目标达成！'); return; }
     toast('🎉 今日目标达成！派大星为你欢呼～');
     try { fetch('pet-celebrate.php', { method: 'POST' }); } catch (e) {}
   }
@@ -2376,7 +2408,7 @@
   function bindProgressImport() {
     const input = $('#file-import-progress');
     const status = $('#memory-import-status');
-    if (!input || input.dataset.bound === '1') return;
+    if (Store.isGuest() || !input || input.dataset.bound === '1') return;
     input.dataset.bound = '1';
     const setStatus = (text, warn) => {
       if (!status) return;
@@ -2498,7 +2530,8 @@
     renderNotebookSummary();
     list.innerHTML = '';
     if (!active.length && !mastered.length) {
-      list.innerHTML = '<div class="memory-empty">还没有记忆记录。先在桌面小词灵点击词卡完成首轮学习，再回到这里复习。</div>';
+      const hint = Store.isGuest() ? '点选壁纸预览中的单词，然后点「加入记忆本」。' : '先在桌面小词灵点击词卡完成首轮学习，再回到这里复习。';
+      list.innerHTML = '<div class="memory-empty">还没有记忆记录。' + hint + '</div>';
       return;
     }
 
@@ -2622,6 +2655,7 @@
       const memoryOpen = $('#memory-modal') && !$('#memory-modal').hidden;
       if (newlyDue > 0 && !memoryOpen) refresh(false);
     }, 15000);
+    if (Store.isGuest()) return;
     setInterval(syncPetMemoryEvents, 15000);
     setInterval(pushPetQuiz, 45000);   // 派大星抽查推送(内部有条件闸,非到期/非派大星空转)
     setTimeout(pushPetQuiz, 4000);     // 页面打开 4s 后先推一次,不用等第一个 45s tick
@@ -2660,7 +2694,7 @@
   }
 
   async function syncPetMemoryEvents() {
-    if (petMemorySyncing || !window.Review || !settings) return;
+    if (Store.isGuest() || petMemorySyncing || !window.Review || !settings) return;
     petMemorySyncing = true;
     const storedCursor = window.Store.read('petMemoryCursor', {});
     const cursor = storedCursor && typeof storedCursor === 'object' ? storedCursor : { streamId: '', lastId: Number(storedCursor) || 0 };
@@ -2756,6 +2790,7 @@
 
   let petContextTimer = null;
   function syncCompanionLearningContext() {
+    if (Store.isGuest()) return;
     clearTimeout(petContextTimer);
     petContextTimer = setTimeout(async () => {
       if (!settings) return;
@@ -3277,7 +3312,10 @@
     const legacyButton = $('#btn-import-legacy');
     const conflictButton = $('#btn-sync-conflicts');
     const retry = $('#btn-sync-retry');
-    if (retry) retry.onclick = () => location.reload();
+    if (retry) retry.onclick = () => {
+      if (Store.isGuest() && status.dataset.state === 'error') Store.flush();
+      else location.reload();
+    };
     let saveStatus = { state: 'saving' };
     const setStatus = detail => {
       if (!status) return;
@@ -3288,7 +3326,7 @@
       let state = saveStatus.state;
       if (state === 'conflict' && !hasConflicts) state = 'saved';
       if (state === 'saving' || state === 'saved') {
-        if (window.Store?.serviceAvailable?.() === false) state = 'unavailable';
+        if (!window.Store.isGuest() && window.Store?.serviceAvailable?.() === false) state = 'unavailable';
         else if (upstream === 'reauth') state = 'reauth';
         else if (window.Store?.hasMirrorPending?.()) state = 'queued';
         else if (upstream === 'offline') state = 'offline';
@@ -3301,14 +3339,14 @@
         : state === 'reauth' ? '主账号需验证'
         : state === 'offline' ? '主账号离线'
         : state === 'queued' ? '已存本机 · 待同步'
-        : state === 'unavailable' ? '账号数据暂不可用'
+        : state === 'unavailable' ? (Store.isGuest() ? '游客数据暂不可用' : '账号数据暂不可用')
         : state === 'local' ? '本机保存'
         : '已同步';
       if (state === 'reauth') status.title = '当前改动保存在本机。请在账号绑定中重新验证主账号。';
       else if (state === 'offline') status.title = '当前改动保存在本机，连接主账号后会自动同步。';
-      else if (state === 'local') status.title = '当前数据保存在这个浏览器里。';
+      else if (state === 'local') status.title = '数据保存在当前浏览器或 App 中。';
       else status.title = saveStatus.message || '';
-      if (retry) retry.hidden = state !== 'unavailable';
+      if (retry) retry.hidden = state !== 'unavailable' && !(Store.isGuest() && state === 'error');
     };
     if (conflictButton) conflictButton.onclick = async () => {
       const dialog = $('#sync-conflicts-dialog');
@@ -3378,9 +3416,29 @@
     });
     const logout = $('#btn-logout');
     if (logout) logout.addEventListener('click', () => window.Store.logout());
+    const guestSwitch = $('#btn-switch-guest');
+    guestSwitch.addEventListener('click', async () => {
+      guestSwitch.disabled = true;
+      try {
+        if (!await Store.flush()) throw new Error('账号还有未保存的更改，请保存后再切换。');
+        await GuestWorkspace.enter();
+        location.replace(GuestWorkspace.url());
+      } catch (error) { toast(error.message); guestSwitch.disabled = false; }
+    });
     return () => {
       const user = window.Store.currentUser();
-      if (accountName && user) accountName.textContent = user.username;
+      guestSwitch.hidden = !user;
+      if (Store.isGuest()) {
+        document.documentElement.dataset.workspace = 'guest';
+        accountName.textContent = '游客';
+        logout.textContent = '返回登录';
+        $('#import-types-hint').textContent = '导入文件或粘贴单词，词条会保存在本机的「我的词库」。';
+        $('#file-import').accept = '.csv,.txt,.tsv,.xlsx,.xls';
+        $('#first-review-hint').textContent = '点选预览中的单词，再点「加入记忆本」开始复习。';
+      } else {
+        delete document.documentElement.dataset.workspace;
+        if (accountName && user) accountName.textContent = user.username;
+      }
       const isLocal = window.Store.isLocalMode && Store.isLocalMode();
       setStatus(isLocal ? { state: 'local' } : { state: 'saved' });
     };
@@ -3723,10 +3781,11 @@
 
   async function init() {
     const showAccount = bindPersistenceUI();
-    bindUpdateUI();
+    if (!window.GuestWorkspace.selected()) bindUpdateUI();
     try { await window.Store.init(); }
     catch (error) {
       if (error.message !== 'authentication required') {
+        if (Store.isGuest()) showAccount();
         window.dispatchEvent(new CustomEvent('wordpaper:sync-status', { detail: { state: 'unavailable', message: error.message } }));
       }
       return;
@@ -3771,9 +3830,11 @@
       if (canApplyRemote()) await applyRemote(await Store.refreshRemote(canApplyRemote));
     };
     window.addEventListener('wordpaper:state-applied', event => applyRemote(event.detail.keys));
-    setInterval(syncRemote, 30000);
-    window.addEventListener('focus', syncRemote);
-    initAdminPanel();   // 管理员才显示;失败静默
+    if (!Store.isGuest()) {
+      setInterval(syncRemote, 30000);
+      window.addEventListener('focus', syncRemote);
+      initAdminPanel();
+    }
     $('#srs-grace-table').textContent = SrsPolicy.INTERVALS_MIN.map(min => `${SrsPolicy.duration(min * 60000)}一档：宽限 ${SrsPolicy.duration(SrsPolicy.graceMs(min * 60000))}`).join('；');
     startSrsTicker();
     syncPetMemoryEvents();

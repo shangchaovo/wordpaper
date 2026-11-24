@@ -2,7 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id), api = window.PatrickShortcuts;
   const dialog = $('pet-shortcuts-dialog'), trigger = $('btn-pet-shortcuts');
-  if (!api || !dialog || !trigger) return;
+  if (!api || !dialog || !trigger || document.documentElement.dataset.workspace === 'guest') return;
   const save = $('pet-shortcuts-save'), reset = $('pet-shortcuts-reset'), cancel = $('pet-shortcuts-cancel-key');
   let draft = null, recording = '', busy = false, generation = 0;
   const buttons = new Map();

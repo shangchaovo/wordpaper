@@ -1,4 +1,4 @@
-/* store.js — authenticated server persistence with a per-user local cache. */
+/* Account-backed state, browser guest storage, and static demo persistence. */
 (function () {
   'use strict';
   const NS = 'wp:';
@@ -14,7 +14,9 @@
   let csrfToken = '';
   let userPrefix = '';
   let availableLegacy = {};
-  let localMode = false;   // 静态托管本地模式:只写 localStorage,无任何同步
+  let localMode = false;   // 游客工作区或静态演示均由设备保存
+  let guestMode = false;
+  let workspaceChosen = false;
   let mirrored = false;
   let upstreamState = 'ok';
   let mirrorPending = 0;
@@ -285,6 +287,7 @@
   }
 
   async function flush() {
+    if (guestMode) return GuestWorkspace.flush();
     flushLocal();
     const keys = Object.keys(pending);
     if (!keys.length) return true;
@@ -374,6 +377,10 @@
     if (!STATE_KEYS.includes(key)) return false;
     stateEpoch++;
     cache[key] = value;
+    if (guestMode) {
+      GuestWorkspace.write(key, value);
+      return true;
+    }
     if (userPrefix) localDirty.add(key);
     if (key === 'uiTheme') localSet(NS + 'uiTheme', value); // harmless pre-paint preference, shared only on this browser
     if (currentUser) {
@@ -398,6 +405,19 @@
   }
 
   async function init() {
+    if (!workspaceChosen) {
+      guestMode = Boolean(window.GuestWorkspace?.selected());
+      workspaceChosen = true;
+    }
+    if (guestMode) {
+      if (!GuestWorkspace.onGuestPage()) {
+        location.replace(GuestWorkspace.url());
+        throw new Error('authentication required');
+      }
+      localMode = true;
+      cache = await GuestWorkspace.load();
+      return null;
+    }
     const sessionResponse = await fetch('/api/session', { cache: 'no-store', signal: AbortSignal.timeout(15000) }).catch(() => null);
     if (sessionResponse?.status === 401) {
       location.assign('/login.html?next=' + encodeURIComponent(location.pathname + location.search));
@@ -538,6 +558,13 @@
     canConfigureSpeech() { return Boolean(currentUser) && speechSettingsAvailable; },
     csrfToken() { return csrfToken; },
     async logout() {
+      if (guestMode) {
+        if (!await flush()) return;
+        try { await GuestWorkspace.leave(); }
+        catch (error) { emit('wordpaper:storage-warning', { message: error.message }); return; }
+        location.assign(/^\/guest\/?$/.test(location.pathname) ? '/login.html' : 'login.html');
+        return;
+      }
       if (!await flush() && Object.keys(pending).length) {
         emit('wordpaper:storage-warning', { message: '还有待保存的数据，请恢复连接后再退出。' }); return;
       }
@@ -652,6 +679,7 @@
     read,
     write,
     NS,
+    isGuest() { return guestMode; },
     isLocalMode() { return localMode; },
   };
 
