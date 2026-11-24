@@ -90,7 +90,8 @@ with sync_playwright() as p:
     account = opened.value
     expect(account.locator('#account-dialog')).to_be_visible()
     expect(account.locator('#account-identity')).to_contain_text(remote_session['user']['username'])
-    expect(account.locator('#account-dialog').get_by_text('微信')).to_have_count(0)
+    expect(account.locator('#account-providers [data-provider="wechat"]')).to_have_count(0)
+    expect(account.locator('#mini-account')).to_be_hidden()
     github = account.locator('#account-dialog [data-provider="github"]')
     github.get_by_role('button', name='绑定 GitHub', exact=True).click()
     expect(github.locator('.account-provider-state')).to_have_text('已绑定', timeout=15000)

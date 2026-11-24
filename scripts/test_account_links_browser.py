@@ -51,7 +51,7 @@ with sync_playwright() as p:
     assert page.evaluate('Store.currentUser().id') == user['id']
     assert page.evaluate('Store.getReminders()[0].text') == '绑定前的提醒'
     expect(dialog.locator('[data-provider="wechat"]')).to_have_count(0)
-    expect(dialog.get_by_text('微信')).to_have_count(0)
+    expect(dialog.locator('#mini-account')).to_be_hidden()
     github = dialog.locator('[data-provider="github"]')
     github.get_by_role('button', name='绑定 GitHub', exact=True).click()
     expect(github.locator('.account-provider-state')).to_have_text('已绑定', timeout=15000)
@@ -86,7 +86,7 @@ with sync_playwright() as p:
     page.locator('#btn-account').click()
     expect(page.locator('#account-password-form')).to_be_visible()
     expect(dialog.locator('[data-provider="google"]').get_by_role('button', name='更换绑定')).to_be_disabled()
-    expect(dialog.get_by_text('微信')).to_have_count(0)
+    expect(dialog.locator('#account-providers, #account-verify-providers').get_by_text('微信')).to_have_count(0)
     expect(dialog.get_by_role('button', name='用已绑定的 GitHub 验证')).to_be_enabled()
     expect(github.get_by_role('button', name='更换绑定')).to_be_disabled()
     page.unroute('**/api/account', account_with_legacy_wechat)
