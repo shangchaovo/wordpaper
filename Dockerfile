@@ -9,6 +9,7 @@ RUN python3 scripts/package_companion.py >/dev/null
 
 FROM node:22-alpine
 
+RUN apk add --no-cache espeak-ng
 WORKDIR /app
 COPY --from=bundle --chown=node:node /app /app
 

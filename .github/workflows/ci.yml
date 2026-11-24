@@ -35,6 +35,10 @@ jobs:
           for f in js/*.js; do node --check "$f"; done
       - name: Test suite
         run: npm test
+      - name: WeChat account and learning regression tests
+        run: |
+          node scripts/test_wechat_mini.js
+          node scripts/test_mini_learning.js
       - name: Account, learning and review browser regressions
         run: |
           npm run test:guest

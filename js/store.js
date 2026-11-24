@@ -8,6 +8,8 @@
   ];
   let cache = {};
   let revisions = {};
+  let mirrorStamps = {};
+  const writes = {};
   let confirmed = {};
   let pending = {};
   let currentUser = null;
@@ -23,7 +25,6 @@
   let mirrorConflictCount = 0;
   let serviceAvailable = true;
   let speechSettingsAvailable = false;
-  let stateEpoch = 0;
   const syncing = new Map();
   const timers = new Map();
 
@@ -98,11 +99,13 @@
   }
 
   function updateMirror(response) {
+    if (!mirrored) return;
+    const previousPending = mirrorPending, previousConflicts = mirrorConflictCount;
     if (Number.isSafeInteger(response.pending)) mirrorPending = response.pending;
     if (Number.isSafeInteger(response.conflictCount)) mirrorConflictCount = response.conflictCount;
     if (response.queued === true) mirrorPending = Math.max(1, mirrorPending);
-    updateUpstream(response.upstream);
-    emit('wordpaper:upstream-status');
+    if (response.upstream && upstreamState !== response.upstream) updateUpstream(response.upstream);
+    else if (previousPending !== mirrorPending || previousConflicts !== mirrorConflictCount) emit('wordpaper:upstream-status');
   }
 
   function localConflicts() {
@@ -145,9 +148,11 @@
     emit('wordpaper:upstream-status');
   }
 
-  function stateRequest() {
+  function stateRequest(passive = false) {
     return fetch('/api/state', { cache: 'no-store', signal: AbortSignal.timeout(45000),
-      headers: { 'X-WordPaper-Revisions': JSON.stringify(revisions) } });
+      headers: { 'X-WordPaper-Revisions': JSON.stringify(revisions),
+        ...(passive ? { 'X-WordPaper-Passive': '1' } : {}),
+        ...(mirrored ? { 'X-WordPaper-Updated-At': JSON.stringify(mirrorStamps) } : {}) } });
   }
 
   function validState(remote) {
@@ -206,7 +211,6 @@
       if (response.status === 409 && body.conflict === true && Number.isSafeInteger(body.revision) && Object.hasOwn(body, 'value')) {
         if (body.revision < snapshot.expectedRevision && !mirrored) throw new Error('云端版本早于本机记录，请先核对迁移结果');
         confirmed[key] = structuredClone(body.value);
-        stateEpoch++;
         revisions[key] = Number(body.revision) || 0;
         if (JSON.stringify(body.value) === serialized) {
           const latest = pending[key];
@@ -245,7 +249,6 @@
         return false;
       }
       if (!response.ok || !Number.isSafeInteger(body.revision) || body.revision <= 0) throw new Error(body.error || '保存失败');
-      stateEpoch++;
       revisions[key] = Number(body.revision) || snapshot.expectedRevision + 1;
       const latest = pending[key];
       confirmed[key] = Object.hasOwn(body, 'value') ? structuredClone(body.value) : JSON.parse(serialized);
@@ -301,22 +304,25 @@
     if (!currentUser || !STATE_KEYS.includes(key)) return false;
     if (syncing.has(key)) await syncing.get(key);
     if (pending[key] && !await syncKey(key)) return false;
-    const epoch = stateEpoch;
+    const baseline = revisions[key], stamp = mirrorStamps[key], lastWrite = writes[key];
     try {
       const response = await stateRequest();
       if (!response.ok) { connectionAvailable(false); return false; }
       const remote = await response.json();
-      if (!currentUser || epoch !== stateEpoch || !remote.user || remote.user.id !== currentUser.id || pending[key] || syncing.has(key)) return false;
+      if (!currentUser || revisions[key] !== baseline || mirrorStamps[key] !== stamp || writes[key] !== lastWrite || !remote.user || remote.user.id !== currentUser.id || pending[key] || syncing.has(key)) return false;
       if (!validState(remote)) { connectionAvailable(false); return false; }
       connectionAvailable(true);
       updateMirror(remote);
       if (remote.partial && !Object.hasOwn(remote.state, key)) return true;
       if (!mirrored && (Number(remote.revisions && remote.revisions[key]) || 0) < (Number(revisions[key]) || 0)) return false;
-      cache[key] = (remote.state || {})[key];
+      const value = remote.state[key];
+      const changed = !sameJSON(value, cache[key]);
+      if (mirrored) mirrorStamps[key] = remote.updatedAt?.[key];
+      cache[key] = value;
       confirmed[key] = structuredClone(cache[key]);
       revisions[key] = Number(remote.revisions && remote.revisions[key]) || 0;
       localSet(userPrefix + key, cache[key]);
-      stateEpoch++;
+      if (changed) emit('wordpaper:state-applied', { keys: [key] });
       return true;
     } catch { connectionAvailable(false); return false; }
   }
@@ -326,13 +332,14 @@
     if (localMode || !currentUser || remoteRefreshBusy) return [];
     remoteRefreshBusy = true;
     const userId = currentUser.id;
-    const epoch = stateEpoch;
+    const baseline = { ...revisions }, stamps = { ...mirrorStamps }, localWrites = { ...writes };
+    const inFlight = new Set([...Object.keys(pending), ...syncing.keys()]);
     try {
-      const response = await stateRequest();
+      const response = await stateRequest(true);
       if (response.status === 401) { location.assign('/login.html'); return []; }
       if (!response.ok) { connectionAvailable(false); return []; }
       const remote = await response.json();
-      if (epoch !== stateEpoch || !currentUser || currentUser.id !== userId || remote.user?.id !== userId || (canApply && !canApply())) return [];
+      if (!currentUser || currentUser.id !== userId || remote.user?.id !== userId || (canApply && !canApply())) return [];
       if (!validState(remote)) { connectionAvailable(false); return []; }
       connectionAvailable(true);
       updateMirror(remote);
@@ -340,13 +347,14 @@
       STATE_KEYS.forEach(key => {
         if (remote.partial && !Object.hasOwn(remote.state, key)) return;
         const revision = Number(remote.revisions?.[key]) || 0;
+        if (inFlight.has(key) || writes[key] !== localWrites[key] || revisions[key] !== baseline[key] || mirrorStamps[key] !== stamps[key]) return;
         if (pending[key] || syncing.has(key) || (!mirrored && revision < (Number(revisions[key]) || 0))) return;
         const value = remote.state?.[key];
+        if (mirrored) mirrorStamps[key] = remote.updatedAt?.[key];
         if (revision === (Number(revisions[key]) || 0) && sameJSON(value, cache[key])) return;
         cache[key] = value; confirmed[key] = structuredClone(value); revisions[key] = revision;
         localSet(userPrefix + key, value); changed.push(key);
       });
-      if (changed.length) stateEpoch++;
       return changed;
     } catch { connectionAvailable(false); return []; }
     finally { remoteRefreshBusy = false; }
@@ -375,8 +383,9 @@
 
   function queueWrite(key, value) {
     if (!STATE_KEYS.includes(key)) return false;
-    stateEpoch++;
     cache[key] = value;
+    writes[key] = (writes[key] || 0) + 1;
+    delete mirrorStamps[key];
     if (guestMode) {
       GuestWorkspace.write(key, value);
       return true;
@@ -457,6 +466,7 @@
     cache = Object.assign({}, remote.state || {});
     confirmed = structuredClone(cache);
     revisions = Object.assign({}, remote.revisions || {});
+    mirrorStamps = { ...remote.updatedAt };
     pending = localGet(userPrefix + 'syncPending', {});
     if (!pending || typeof pending !== 'object' || Array.isArray(pending)) pending = {};
 
@@ -518,7 +528,6 @@
 
   async function importLegacy() {
     if (!currentUser || !Object.keys(availableLegacy).length) return false;
-    stateEpoch++;
     Object.keys(availableLegacy).forEach(function (key) {
       const value = availableLegacy[key];
       cache[key] = value;
@@ -570,7 +579,7 @@
       }
       const response = await fetch('/api/session', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } }).catch(() => null);
       if (!response?.ok) { emit('wordpaper:storage-warning', { message: '暂时无法退出，请稍后重试。' }); return; }
-      cache = {}; confirmed = {}; revisions = {}; pending = {}; currentUser = null; csrfToken = ''; userPrefix = '';
+      cache = {}; confirmed = {}; revisions = {}; mirrorStamps = {}; pending = {}; currentUser = null; csrfToken = ''; userPrefix = '';
       location.assign('/login.html');
     },
     getSettings() {

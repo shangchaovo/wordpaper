@@ -29,8 +29,15 @@
         }
       }
     }
+    // Two devices may assign a cancellation to different local calendar days.
+    // The durable event ID still identifies one practice across time zones.
+    const canceled = new Set();
+    for (const events of Object.values(days)) {
+      for (const [id, event] of Object.entries(events)) if (event.canceled) canceled.add(id);
+    }
     const sorted = {};
     for (const day of Object.keys(days).sort()) {
+      if (canceled.size) for (const [id, event] of Object.entries(days[day])) if (canceled.has(id)) event.canceled = true;
       sorted[day] = Object.fromEntries(Object.entries(days[day]).sort(([a], [b]) => a.localeCompare(b)));
     }
     return { days: sorted };

@@ -2181,7 +2181,7 @@
       if (Store.currentUser()) { if (!await Store.refreshKey('review')) return; }
       else Store.saveReview(all);
       updateSrsUI();
-      if (!$('#memory-modal').hidden) renderMemoryNotebook();
+      if (!$('#memory-modal').hidden) renderMemoryNotebook(true);
     } finally { overdueSyncing = false; }
   }
   function updateNotebookTimes() {
@@ -2304,10 +2304,14 @@
     if (!dailyInput || !metricInput || !window.Store) return;
     if (!dailyInput.dataset.bound) {
       dailyInput.dataset.bound = '1';
-      const saveGoal = () => {
+      dailyInput.addEventListener('input', () => { dailyInput.dataset.editing = '1'; });
+      dailyInput.addEventListener('blur', () => { delete dailyInput.dataset.editing; renderPlanModule(); });
+      const saveGoal = event => {
         const plan = readPlan();
-        plan.dailyGoal = window.LearningActivity.plan({ dailyGoal: dailyInput.value }).dailyGoal;
-        plan.metric = metricInput.value;
+        if (event.target === dailyInput) {
+          plan.dailyGoal = window.LearningActivity.plan({ dailyGoal: dailyInput.value }).dailyGoal;
+          delete dailyInput.dataset.editing;
+        } else plan.metric = metricInput.value;
         writePlan(plan); renderPlanModule();
         toast(`每天${PLAN_METRICS[plan.metric]}目标：${plan.dailyGoal} 次`);
       };
@@ -2321,7 +2325,7 @@
       });
     }
     const plan = readPlan(), day = todayKey(), counts = planCounts(day);
-    dailyInput.value = plan.dailyGoal;
+    if (!dailyInput.dataset.editing) dailyInput.value = plan.dailyGoal;
     metricInput.value = plan.metric;
     for (const metric of Object.keys(PLAN_METRICS)) {
       $('#plan-count-' + metric).textContent = counts[metric];
@@ -2480,6 +2484,10 @@
       `<span class="memory-pill memory-pill-forgot">遗忘 <b>${st.failures}</b> 次</span>`;
   }
 
+  function notebookCardVersion(item) {
+    return JSON.stringify([item.word.word, item.word.meaning, item.word.pos, item.stage, item.due,
+      item.manualMastered, item.reviewCount, item.petQuiz?.count, item.lastUndo?.activityId, item.lastUndo?.at]);
+  }
   function buildNotebookCard(item, masteredFlag, now) {
     const ROUNDS = window.Review.INTERVALS_MIN.length;
     /* 卡片来源标注:🐾=派大星考过(patrickQuiz 事件 / markPetQuiz);🆕=新词(还没作答过)。 */
@@ -2489,6 +2497,7 @@
     const dueNow = !!(item.due && item.due <= now);
     const card = document.createElement('article');
     card.dataset.reviewKey = window.Review.wordKey(item.word);
+    card.reviewVersion = notebookCardVersion(item);
     card.className = 'memory-entry' + (dueNow && !masteredFlag ? ' due' : '') + (masteredFlag ? ' mastered' : '');
     const meta = masteredFlag
       ? (item.manualMastered ? '已手动标熟 · 不再安排复习' : `已经记住 · 复习了 ${item.reviewCount || 0} 次`)
@@ -2518,7 +2527,7 @@
     return card;
   }
 
-  function renderMemoryNotebook() {
+  function renderMemoryNotebook(preserve) {
     const list = $('#memory-notebook-list');
     if (!list || !window.Review) return;
     bindProgressImport();
@@ -2528,10 +2537,29 @@
     const now = Date.now();
     const isDue = (item) => !!(item.due && item.due <= now);
     renderNotebookSummary();
-    list.innerHTML = '';
+    const existing = new Map();
+    const focused = document.activeElement;
+    const top = list.getBoundingClientRect().top;
+    let anchor, anchorTop;
+    if (preserve === true) {
+      for (const card of list.querySelectorAll('.memory-entry')) {
+        existing.set(card.dataset.reviewKey, card);
+        if (list.scrollTop && !anchor && card.getBoundingClientRect().bottom > top) {
+          anchor = card;
+          anchorTop = card.getBoundingClientRect().top;
+        }
+      }
+    }
+    const rows = [];
+    const empty = message => {
+      const note = document.createElement('div');
+      note.className = 'memory-empty';
+      note.textContent = message;
+      list.replaceChildren(note);
+    };
     if (!active.length && !mastered.length) {
-      const hint = Store.isGuest() ? '点选壁纸预览中的单词，然后点「加入记忆本」。' : '先在桌面小词灵点击词卡完成首轮学习，再回到这里复习。';
-      list.innerHTML = '<div class="memory-empty">还没有记忆记录。' + hint + '</div>';
+      const hint = Store.isGuest() ? '点选壁纸预览中的单词，然后点「加入记忆本」。' : '在小程序或桌面小词灵标记首次学习后，这里会显示单词和下次复习时间。';
+      empty('还没有记忆记录。' + hint);
       return;
     }
 
@@ -2539,12 +2567,17 @@
       const head = document.createElement('div');
       head.className = 'memory-section-head' + (masteredFlag ? ' mastered' : '');
       head.innerHTML = `<span class="memory-section-title">${title}</span><span class="memory-section-count">${items.length} 词</span><span class="memory-section-hint">${hint}</span>`;
-      list.appendChild(head);
+      rows.push(head);
       if (!items.length) {
-        const note = document.createElement('div'); note.className = 'memory-empty memory-section-empty'; note.textContent = emptyNote; list.appendChild(note);
+        const note = document.createElement('div'); note.className = 'memory-empty memory-section-empty'; note.textContent = emptyNote; rows.push(note);
         return;
       }
-      items.forEach(item => list.appendChild(buildNotebookCard(item, masteredFlag, now)));
+      for (const item of items) {
+        const card = existing.get(window.Review.wordKey(item.word));
+        const keep = card && card.reviewVersion === notebookCardVersion(item)
+          && (card.classList.contains('answered') || card.classList.contains('due') === (isDue(item) && !masteredFlag));
+        rows.push(keep ? card : buildNotebookCard(item, masteredFlag, now));
+      }
     };
 
     const q = String(($('#memory-search-input') || {}).value || '').trim().toLowerCase();
@@ -2554,11 +2587,21 @@
     const sortedActive = active.filter(hit).slice().sort((a, b) => (isDue(b) - isDue(a)) || ((a.due || Infinity) - (b.due || Infinity)));
     const sortedMastered = mastered.filter(hit).slice().sort((a, b) => ((b.lastSeenAt || b.learnedAt || 0) - (a.lastSeenAt || a.learnedAt || 0)));
     if (q && !sortedActive.length && !sortedMastered.length) {
-      list.innerHTML = `<div class="memory-empty">没有找到「${escapeHTML(q)}」相关的词</div>`;
+      empty(`没有找到「${q}」相关的词`);
       return;
     }
     addSection('📌 还在记', '到点的排在最前面，答「背过了」进入下一轮；跑满 8 轮就毕业', sortedActive, false, '没有还在记的词 —— 全都记住了 🎉');
     addSection('✅ 已经记住', '跑满全部 8 轮复习，以后不用再管', sortedMastered, true, '还没有已经记住的词 —— 跑满 8 轮复习的词会自动进到这里。');
+    if (preserve !== true) { list.replaceChildren(...rows); return; }
+    // Keep unchanged cards attached, including their revealed meaning and undo control.
+    const keep = new Set(rows);
+    for (const child of Array.from(list.children)) if (!keep.has(child)) child.remove();
+    rows.forEach((node, i) => {
+      const next = list.children[i];
+      if (node !== next) list.insertBefore(node, next || null);
+    });
+    if (focused && list.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+    if (anchor?.isConnected) list.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
   }
   // A native disabled button drops keyboard focus while the review is syncing.
   async function notebookActionReady(card, retryMessage) {
@@ -2569,7 +2612,7 @@
     try {
       const ready = !window.Store.currentUser() || (await window.Store.flush() && await window.Store.refreshKey('review'));
       if (!ready) toast(retryMessage);
-      return ready;
+      return ready && card.isConnected;
     } finally {
       card.removeAttribute('aria-busy');
       buttons.forEach(button => button.removeAttribute('aria-disabled'));
@@ -2584,6 +2627,7 @@
     if (!result || result.action === 'missing' || result.action === 'early') { toast('这张词卡还没到复习时间'); renderMemoryNotebook(); return; }
     if (result.item?.lastUndo?.activityId === activityId) recordDailyActivity({ action: 'review', activityId, at: result.item.lastUndo.at,
       library: settings.library, word: item.word, nextDue: result.item.due });
+    card.reviewVersion = notebookCardVersion(result.item);
     const meaning = card.querySelector('.memory-meaning');
     if (meaning) {
       meaning.classList.remove('locked');
@@ -3483,12 +3527,50 @@
       el.addEventListener('click', action); parent.appendChild(el);
       return el;
     }
+    const miniPanel = $('#mini-account'), miniCode = $('#mini-code');
+    const miniRequest = async method => {
+      const response = await fetch('/api/account/mini', {method,cache:'no-store',
+        headers:{'X-CSRF-Token':Store.csrfToken(),'Content-Type':'application/json'}, ...(method==='POST'?{body:'{}'}:{})});
+      const value = await response.json();
+      if(!response.ok) throw new Error(value.error || '小程序账号服务不可用');
+      return value;
+    };
+    let codeExpiry;
+    function clearMiniCode() {clearTimeout(codeExpiry);miniCode.textContent='';}
+    dialog.addEventListener('close',clearMiniCode);
+    async function loadMini(mirrored) {
+      miniPanel.hidden=true;
+      try {
+        const {linked} = await miniRequest('GET');
+        if(!dialog.open) return;
+        miniPanel.hidden=false;
+        $('#mini-description').textContent=linked?'已绑定，微信与此账号共享学习记录。':'在小程序「我的」输入配对码，会显示账号供你核对。';
+        $('#mini-unlink').hidden=!linked;
+        $('#mini-speech').hidden=!mirrored || !Store.canConfigureSpeech();
+      } catch {miniPanel.hidden=true;}
+    }
+    $('#mini-issue').addEventListener('click',async event=>{
+      const b=event.currentTarget;b.disabled=true;
+      try {
+        const result=await miniRequest('POST');
+        if(dialog.open){clearMiniCode();miniCode.textContent=result.code+' · 5 分钟内有效';codeExpiry=setTimeout(clearMiniCode,Math.max(0,result.expiresAt-Date.now()));}
+      }catch(err){miniCode.textContent=err.message;}finally{b.disabled=false;}
+    });
+    $('#mini-unlink').addEventListener('click',async()=>{
+      if(!confirm('解除此账号与微信小程序的绑定，并取消微信提醒？'))return;
+      try{await miniRequest('DELETE');clearMiniCode();await load();}catch(err){miniCode.textContent=err.message;}
+    });
+    $('#mini-speech').addEventListener('click',async()=>{
+      if(!confirm('将此账号在这台 Mac 上保存的 AI 语音接口、音色和密钥发送给已配对的云账号服务，并替换云端语音配置？'))return;
+      try{await request('/api/account/mini/speech',{});miniCode.textContent='账号语音已同步。';}catch(err){miniCode.textContent=err.message;}
+    });
     async function load() {
       const providers = $('#account-providers');
       const scope = $('#account-scope');
       providers.replaceChildren();
       $('#account-verify').hidden = true;
       const data = await request('/api/account');
+      void loadMini(data.managedExternally);
       providers.dataset.managedExternally = String(data.managedExternally === true);
       $('#account-connect-cloud').hidden = !data.managedExternally;
       $('#account-retention').hidden = Boolean(data.managedExternally);
@@ -3823,23 +3905,45 @@
     document.addEventListener('pointerup', () => { syncPointerDown = false; }, { passive: true });
     document.addEventListener('pointercancel', () => { syncPointerDown = false; }, { passive: true });
     window.addEventListener('blur', () => { syncPointerDown = false; });
-    const canApplyRemote = () => !document.hidden && !syncPointerDown && !moduleEditing
+    const deferred = new Set();
+    const canUpdateControls = () => !document.hidden && !syncPointerDown && !moduleEditing
       && !document.querySelector('dialog[open], .modal-overlay:not([hidden])')
       && !document.activeElement?.matches('input, textarea, [contenteditable="true"]');
-    const applyRemote = async changed => {
-      if (!changed.length) return;
-      loadSettings(); applySettingsToUI(); renderReminderUI(); updateSrsUI();
-      if (changed.includes('settings')) loadBgImage();
-      await refresh(false);
-      syncCompanionLearningContext();
+    const applyRemote = async keys => {
+      const changed = new Set(keys);
+      if (changed.has('review')) {
+        updateSrsUI();
+        if (!$('#memory-modal').hidden) renderMemoryNotebook(true);
+      } else if (changed.has('dailyPlan') || changed.has('learningActivity')) renderPlanModule();
+
+      for (const key of keys) {
+        if (['settings','uiTheme','reminders','knownWords','customWords','engine','moduleLayout','hiddenModules'].includes(key)) deferred.add(key);
+      }
+      if (!deferred.size || !canUpdateControls()) return;
+      const changes = new Set(deferred);
+      deferred.clear();
+      if (changes.has('settings') || changes.has('uiTheme')) {
+        loadSettings(); applySettingsToUI();
+        if (changes.has('settings')) loadBgImage();
+      }
+      if (changes.has('moduleLayout')) applyModuleLayout(Store.read('moduleLayout', null));
+      if (changes.has('hiddenModules')) applyHiddenModules();
+      if (changes.has('reminders')) renderReminderUI();
+      if (changes.has('customWords') || changes.has('knownWords')) renderLibraryCards();
+      if (['settings','customWords','knownWords','engine'].some(key => changes.has(key))) await refresh(false);
+      else if (changes.has('reminders')) repaintPreview();
+      if (['settings','uiTheme','knownWords','customWords'].some(key => changes.has(key))) syncCompanionLearningContext();
     };
+    const visible = () => !document.hidden;
     const syncRemote = async () => {
-      if (canApplyRemote()) await applyRemote(await Store.refreshRemote(canApplyRemote));
+      if (visible()) await applyRemote(await Store.refreshRemote(visible));
     };
     window.addEventListener('wordpaper:state-applied', event => applyRemote(event.detail.keys));
     if (!Store.isGuest()) {
-      setInterval(syncRemote, 30000);
+      setInterval(syncRemote, 3000);
       window.addEventListener('focus', syncRemote);
+      document.addEventListener('visibilitychange', syncRemote);
+      document.addEventListener('focusout', () => { if (deferred.size) requestAnimationFrame(() => applyRemote([])); });
       initAdminPanel();
     }
     $('#srs-grace-table').textContent = SrsPolicy.INTERVALS_MIN.map(min => `${SrsPolicy.duration(min * 60000)}一档：宽限 ${SrsPolicy.duration(SrsPolicy.graceMs(min * 60000))}`).join('；');

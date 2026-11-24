@@ -6844,34 +6844,21 @@ const server = http.createServer((req, res) => {
       if (!sentence) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '句子是空的' })); }
       if (sentence.length > 400) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: '句子太长了（400 字符以内）' })); }
       // 要求模型只回 JSON,前端好解析;判分维度固定,方便稳定显示。
-      const prompt = [
-        '你是英语老师,学生在用单词「' + word + '」(' + (lq.meaning || '') + ')造句子。',
-        '请批改这句:' + sentence,
-        '',
-        '只回一个 JSON 对象,不要任何解释文字、不要 Markdown 代码块,格式:',
-        '{"ok": true, "score": 1-5 的整数, "used": 学生是否真的用了这个词(true/false),',
-        ' "fixed": "改好的自然英文句子", "feedback": "一两句中文点评,指出问题并说怎么改",',
-        ' "example": "再用这个词造一个新的英文例句(不要和学生写的一样),中文翻译另起一行" }',
-        '判断标准:语法是否正确、这个词用得是否地道、句子是否自然。如果学生用了别的形式(如复数/时态变化)也算 used=true。',
-      ].join(String.fromCharCode(10));
+      const grading = require('./lib/mini-sentence');
+      const prompt = grading.gradingPrompt(word, lq.meaning, sentence);
       askMagpie(prompt, (reply, modelError) => {
         const text = String(reply || '').trim();
         if (!text) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ ok: false, code: modelError?.code || 'invalid_response', error: modelError?.message || '模型没有返回有效批改，请重试。' }));
         }
-        // 模型有时会包 ```json ``` 或加前后缀 → 截取第一个 { 到最后一个 }
-        let parsed = null;
-        try {
-          const a = text.indexOf('{'), b = text.lastIndexOf('}');
-          if (a >= 0 && b > a) parsed = JSON.parse(text.slice(a, b + 1));
-        } catch {}
-        if (!parsed || typeof parsed.score !== 'number' || !Number.isInteger(parsed.score) || parsed.score < 1 || parsed.score > 5
-          || typeof parsed.used !== 'boolean' || typeof parsed.feedback !== 'string' || !parsed.feedback.trim() || typeof parsed.fixed !== 'string') {
+        let parsed;
+        try { parsed = grading.parseGrading(text); }
+        catch (error) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ ok: false, code: 'invalid_grading', error: '模型返回的批改格式不完整，请重试；本次未计入学习记录。' }));
+          return res.end(JSON.stringify({ ok: false, code: error.code, error: error.message }));
         }
-        const score = parsed && Number.isFinite(Number(parsed.score)) ? Math.max(1, Math.min(5, Math.round(Number(parsed.score)))) : null;
+        const score = parsed.score;
         // 例句:先用本地词典里这个词的原句(离线、可靠),再补模型新造的一句。
         let dictExample = '';
         try {
