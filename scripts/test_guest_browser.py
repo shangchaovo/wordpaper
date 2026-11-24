@@ -21,13 +21,15 @@ PASSWORD = 'guest-browser-test-password'
 
 
 @contextmanager
-def server(folder, mode):
-    folder.mkdir()
+def server(folder, mode, desktop_cloud=None):
+    folder.mkdir(exist_ok=True)
     port = free_port()
     env = {key: value for key, value in os.environ.items() if not key.startswith('WORDPAPER_')}
     env.update(HOST='127.0.0.1', PORT=str(port), NODE_ENV='test', WORDPAPER_MODE=mode,
                WORDPAPER_DATA_DIR=str(folder), WORDPAPER_COMPANION_PORT=str(free_port()),
                WORDPAPER_COMPANION_AUTOSTART='0', WORDPAPER_COMPANION_ENABLED='0')
+    if desktop_cloud:
+        env.update(WORDPAPER_DESKTOP_CLOUD='1', WORDPAPER_TEST_DESKTOP_CLOUD_ORIGIN=desktop_cloud)
     with (folder / 'server.log').open('w+') as log:
         child = subprocess.Popen(['node', 'server.js'], cwd=ROOT, env=env, stdout=log, stderr=log)
         try:
@@ -154,8 +156,15 @@ def test_public(engine, base, temp):
         creds = {'username': USERNAME, 'password': PASSWORD}
         account = context.request.post(base + '/api/auth/register', data=creds, headers={'Origin': base})
         assert account.status == 201, account.text()
+        # Cleared reminders on an account without a seeded flag stay empty.
+        token = context.request.get(base + '/api/session').json()['csrfToken']
+        saved = context.request.put(base + '/api/state/reminders', data={'value': [], 'expectedRevision': 0},
+                                   headers={'Origin': base, 'X-CSRF-Token': token})
+        assert saved.ok, saved.text()
         page.goto(base)
         expect(page.locator('#account-name')).to_have_text(USERNAME)
+        page.wait_for_function('Store.getSeeded()')
+        assert page.evaluate('Store.getReminders()') == []
         add_reminder(page, ACCOUNT_NOTE)
         assert page.evaluate('Store.flush()')
         cloud_state = context.request.get(base + '/api/state').json()['state']
@@ -202,12 +211,24 @@ def test_public(engine, base, temp):
         assert not page.evaluate('Store.isGuest()')
 
 
-def test_paired(engine, base, upstream, temp):
-    with profile(engine, temp / 'desktop', desktop=True) as context:
+def pair_before_upgrade(engine, folder, upstream):
+    with server(folder, 'local') as base, profile(engine, folder / 'initial-login') as context:
         pair = context.request.post(base + '/api/pair', headers={'Origin': base}, data={
             'url': upstream, 'identifier': USERNAME, 'password': PASSWORD})
         assert pair.ok, pair.text()
-        original = context.request.get(base + '/api/session').json()
+        user_id = context.request.get(base + '/api/session').json()['user']['id']
+        # Source/self-host installations keep their existing workspace after session expiry.
+        context.clear_cookies()
+        page = context.new_page()
+        page.goto(base + '/login.html')
+        page.get_by_role('button', name='继续进入工作区', exact=True).click()
+        expect(page.locator('#account-name')).to_have_text(USERNAME)
+        assert context.request.get(base + '/api/session').json()['user']['id'] == user_id
+        return user_id
+
+
+def test_paired(engine, base, original_user_id, temp):
+    with profile(engine, temp / 'desktop', desktop=True) as context:
         # The machine keeps its pairing when this browser's session expires.
         context.clear_cookies()
         page = context.new_page()
@@ -217,13 +238,51 @@ def test_paired(engine, base, upstream, temp):
         assert page.evaluate('Store.flush()')
         assert not requests, requests
         leave(page)
-        expect(page.locator('#pair-card')).to_be_visible()
-        expect(page.locator('#pair-identity')).to_contain_text(USERNAME)
-        page.locator('#btn-resume').click()
+        expect(page.locator('#desktop-resume')).to_contain_text(USERNAME)
+        page.locator('#desktop-resume').click()
         expect(page.locator('#reminder-list')).to_contain_text(ACCOUNT_NOTE)
         expect(page.locator('#reminder-list')).not_to_contain_text('独立的桌面游客记录')
         session = context.request.get(base + '/api/session').json()
-        assert session['mirrored'] and session['user']['id'] == original['user']['id']
+        assert session['mirrored'] and session['user']['id'] == original_user_id
+
+
+def test_retired_connection(engine, base, temp):
+    with profile(engine, temp / 'old-private', desktop=True) as context:
+        page = context.new_page()
+        posts = []
+        page.on('request', lambda request: posts.append(urlsplit(request.url).path) if request.method == 'POST' else None)
+        page.goto(base + '/')
+        expect(page.locator('#auth-google')).to_be_enabled()
+        expect(page.locator('#auth-github')).to_be_enabled()
+        expect(page.locator('#auth-guest')).to_be_enabled()
+        expect(page.locator('#desktop-resume')).to_be_hidden()
+        expect(page.locator('#local-account-options')).to_be_hidden()
+        expect(page.locator('#desktop-origin, #pair-card, #btn-pair, #btn-unpair')).to_have_count(0)
+        page.evaluate("localStorage.setItem('wp:sync-origin','http://100.83.152.67:8770')")
+        for selector in ['#auth-google', '#auth-github', '#desktop-cloud-email']:
+            page.locator(selector).click()
+            dialog = page.get_by_role('dialog')
+            expect(dialog).to_contain_text(USERNAME)
+            dialog.get_by_role('button', name='取消').click()
+            expect(dialog).to_be_hidden()
+        assert posts == [], posts
+        assert page.evaluate("localStorage.getItem('wp:sync-origin')") == 'http://100.83.152.67:8770'
+        choose_guest(page, '#auth-guest')
+        add_reminder(page, '旧连接保留期间的游客记录')
+        assert page.evaluate('Store.flush()')
+        leave(page)
+        expect(page.locator('#desktop-legacy-disconnect')).to_be_visible()
+        page.locator('#desktop-legacy-disconnect').click()
+        page.get_by_role('button', name='允许断开', exact=True).click()
+        expect(page.locator('#desktop-sync-status')).to_contain_text('旧连接已断开')
+        assert posts == ['/api/desktop/disconnect-legacy'], posts
+        assert page.evaluate("localStorage.getItem('wp:sync-origin')") is None
+        page.reload()
+        expect(page.locator('#auth-google')).to_be_enabled()
+        expect(page.locator('#desktop-legacy-disconnect')).to_be_hidden()
+        expect(page.locator('#desktop-resume')).to_be_hidden()
+        choose_guest(page, '#auth-guest')
+        expect(page.locator('#reminder-list')).to_contain_text('旧连接保留期间的游客记录')
 
 
 def main():
@@ -232,11 +291,18 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='wordpaper-guest-') as folder, sync_playwright() as playwright:
         temp = Path(folder)
-        with server(temp / 'cloud', 'public') as cloud, server(temp / 'local', 'local') as local:
+        with server(temp / 'cloud', 'public') as cloud:
             engine = getattr(playwright, args.browser)
             test_public(engine, cloud, temp)
-            test_paired(engine, local, cloud, temp)
-    print(f'PASS {args.browser}: guest cold reopen, photo and learning data, no guest API traffic, account and desktop pairing isolation')
+            official_folder = temp / 'already-connected'
+            old_user = pair_before_upgrade(engine, official_folder, cloud)
+            with server(official_folder, 'local', desktop_cloud=cloud) as local:
+                test_paired(engine, local, old_user, temp)
+            legacy_folder = temp / 'legacy-private'
+            pair_before_upgrade(engine, legacy_folder, cloud)
+            with server(legacy_folder, 'local', desktop_cloud='https://official.example.test') as local:
+                test_retired_connection(engine, local, temp)
+    print(f'PASS {args.browser}: guest cold reopen, photo and learning data, no guest API traffic, account and desktop pairing isolation, legacy disconnect consent')
 
 
 if __name__ == '__main__':

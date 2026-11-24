@@ -5,21 +5,34 @@
   async function openAccount() {
     location.replace(await GuestWorkspace.accountURL());
   }
-  const origin = document.querySelector('#desktop-origin');
   const status = document.querySelector('#desktop-sync-status');
   const pending = document.querySelector('#desktop-sync-pending');
   const link = document.querySelector('#desktop-sync-open');
   const address = document.querySelector('#desktop-sync-address');
-  const buttons = Array.from(section.querySelectorAll('[data-cloud-provider]'));
+  const providerButtons = document.querySelectorAll('.provider-stack [data-provider]');
+  const email = document.querySelector('#desktop-cloud-email');
+  const resume = document.querySelector('#desktop-resume');
+  const disconnect = document.querySelector('#desktop-legacy-disconnect');
+  const consent = document.querySelector('#desktop-disconnect-dialog');
+  const consentCopy = document.querySelector('#disconnect-copy');
   const localGoogle = document.querySelector('#desktop-local-google');
   const localSignIn = document.querySelector('#desktop-local-google-sign-in');
   const localStatus = document.querySelector('#desktop-local-google-status');
   const localCancel = document.querySelector('#desktop-local-google-cancel');
   let timer = null, csrfToken = '', generation = 0;
   let localAttempt = null;
+  let legacy = null;
+  let resumeDestination = '/';
+
+  function forgetOldServerAddress() {
+    try { localStorage.removeItem('wp:sync-origin'); } catch {}
+  }
 
   function disableSignInButtons(disabled) {
-    buttons.forEach(button => { button.disabled = disabled; });
+    providerButtons.forEach(button => { if (!button.hidden) button.disabled = disabled; });
+    email.disabled = disabled;
+    resume.disabled = disabled;
+    disconnect.disabled = disabled;
     localSignIn.disabled = disabled;
   }
 
@@ -55,6 +68,7 @@
       const result = await post('/api/desktop/poll');
       if (id !== generation) return;
       if (result.pending) { timer = setTimeout(() => poll(id), 2500); return; }
+      forgetOldServerAddress();
       status.textContent = '连接成功，正在打开同步工作区…';
       await openAccount();
     } catch (error) {
@@ -62,24 +76,56 @@
       stop(); status.textContent = error.message;
     }
   }
-  buttons.forEach(button => button.addEventListener('click', async function () {
-    if (!origin.reportValidity()) return;
+  async function sessionToken() {
+    const response = await fetch('/api/session', { cache: 'no-store' });
+    return response.ok ? (await response.json()).csrfToken : '';
+  }
+  async function disconnectLegacy() {
+    if (!legacy) return true;
+    consentCopy.textContent = '旧连接账号为 ' + legacy.username + '。' +
+      (legacy.pending ? '恢复副本会包含本机待同步的改动。' : '旧账号上的词库与学习记录会保留。');
+    consent.returnValue = '';
+    const choice = new Promise(resolve => consent.addEventListener('close', () => resolve(consent.returnValue), { once: true }));
+    consent.showModal();
+    if (await choice !== 'disconnect') return false;
+    csrfToken = await sessionToken();
+    await post('/api/desktop/disconnect-legacy', { confirmed: true });
+    forgetOldServerAddress();
+    legacy = null;
+    disconnect.hidden = true;
+    status.textContent = '旧连接已断开。恢复副本已保存到 WordPaper 数据目录的 recovery 文件夹。';
+    return true;
+  }
+  disconnect.addEventListener('click', async () => {
+    disableSignInButtons(true);
+    try { await disconnectLegacy(); }
+    catch (error) { status.textContent = error.message; }
+    finally { disableSignInButtons(false); }
+  });
+  resume.addEventListener('click', async () => {
+    disableSignInButtons(true);
+    try {
+      await post('/api/auth/resume');
+      location.replace(await GuestWorkspace.accountURL(resumeDestination));
+    } catch (error) { status.textContent = error.message; disableSignInButtons(false); }
+  });
+  async function start(provider) {
     stop(); const id = generation;
     disableSignInButtons(true);
-    status.textContent = '正在连接账号服务器…';
     try {
-      const response = await fetch('/api/session', { cache: 'no-store' });
-      csrfToken = response.ok ? (await response.json()).csrfToken : '';
-      const result = await post('/api/desktop/start', { url: origin.value.trim(), provider: button.dataset.cloudProvider });
+      if (!await disconnectLegacy()) { stop(); return; }
+      status.textContent = '正在连接 WordPaper 云账号…';
+      csrfToken = await sessionToken();
+      const result = await post('/api/desktop/start', { provider });
       if (id !== generation) return;
-      try { localStorage.setItem('wp:sync-origin', origin.value.trim()); } catch {}
       document.querySelector('#desktop-sync-code').textContent = result.userCode;
       link.href = result.verificationUrl; pending.hidden = false;
-      status.textContent = '等待浏览器授权。请核对账号与连接码，然后允许这台 App 同步。';
+      status.textContent = '请在系统浏览器选择账号，核对连接码并允许此 Mac 同步。';
       timer = setTimeout(() => poll(id), 2500);
       await openAuthorization(id);
     } catch (error) { if (id === generation) { stop(); status.textContent = error.message; } }
-  }));
+  }
+  email.addEventListener('click', () => start('email'));
   localSignIn.addEventListener('click', async () => {
     localAttempt = new AbortController();
     disableSignInButtons(true);
@@ -115,17 +161,36 @@
     catch (error) { status.textContent = error.message; return; }
     status.textContent = '已取消连接，可以重新发起。';
   });
-  fetch('/api/auth/providers', { cache: 'no-store' }).then(response => response.json()).then(data => {
-    if (!data.pairingAllowed) return;
-    section.hidden = false;
-    const requestedSync = new URLSearchParams(location.search).has('sync');
-    localGoogle.hidden = !data.localGoogle?.enabled || Boolean(data.paired) || requestedSync;
-    section.open = localGoogle.hidden;
-    try { origin.value = data.paired?.url || localStorage.getItem('wp:sync-origin') || ''; } catch {}
-    if (window.WordPaperDesktop) {
-      document.querySelector('.provider-stack').hidden = true;
-      document.querySelector('#auth-intro-help').textContent = '继续使用这台 Mac 上的词库和学习进度。';
+  function configure(data, destination) {
+    resumeDestination = destination;
+    const cloud = data.desktopCloud === true;
+    section.hidden = !cloud && !data.paired;
+    email.hidden = !cloud;
+    legacy = cloud ? data.legacyConnection : null;
+    disconnect.hidden = !legacy;
+    if (data.pairingAllowed && data.paired) {
+      resume.textContent = cloud ? '继续使用 ' + data.paired.username : '继续进入工作区';
+      resume.hidden = false;
     }
-  }).catch(() => {});
+    const localOptions = document.querySelector('#local-account-options');
+    localGoogle.hidden = !data.localGoogle?.enabled || Boolean(data.paired) || (cloud && !data.hasLocalAccount);
+    if (cloud) {
+      document.querySelector('#auth-intro-help').textContent = '登录后可在网页和 Mac 间同步词库与学习进度。';
+      const panel = document.querySelector('#email-panel');
+      localOptions.appendChild(panel);
+      panel.hidden = Boolean(data.paired) || !data.hasLocalAccount;
+      if (!panel.hidden) {
+        panel.querySelector('.auth-tabs').hidden = true;
+        document.querySelector('#form-title').textContent = '登录已有本机账号';
+        document.querySelector('#form-hint').textContent = '使用这台 Mac 上原有的用户名和密码打开本机工作区。';
+        document.querySelector('#submit-auth').textContent = '登录本机账号';
+      }
+      localOptions.hidden = panel.hidden && localGoogle.hidden;
+    } else {
+      if (data.paired) document.querySelector('#auth-intro-help').textContent = '继续打开此设备已连接的工作区。';
+      localOptions.hidden = localGoogle.hidden;
+    }
+  }
+  window.DesktopAuth = { configure, start };
   window.addEventListener('pagehide', () => { localAttempt?.abort(); stop(); });
 })();

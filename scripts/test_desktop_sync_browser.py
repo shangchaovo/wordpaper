@@ -6,23 +6,38 @@ from playwright.sync_api import sync_playwright, expect
 
 BASE = os.environ['WORDPAPER_TEST_BASE_URL']
 CLOUD = os.environ['WORDPAPER_TEST_CLOUD']
-PREVIEW = os.environ['WORDPAPER_TEST_PREVIEW']
+LEGACY = os.environ['WORDPAPER_TEST_LEGACY_BASE_URL']
 
 
-def connect_desktop(context, app, button_name):
+def connect_desktop(context, app, selector, *, legacy=False, saved_reminders=None):
     with context.expect_page() as popup:
-        app.get_by_role('button', name=button_name, exact=True).click()
+        app.locator(selector).click()
+        if legacy:
+            dialog = app.get_by_role('dialog')
+            expect(dialog).to_contain_text('legacy-test')
+            expect(dialog).to_contain_text('待同步')
+            dialog.get_by_role('button', name='允许断开', exact=True).click()
     authorize = popup.value
     authorize.wait_for_url(CLOUD + '/connect.html?code=*', wait_until='domcontentloaded')
     expect(authorize.locator('#connect-approve')).to_be_enabled()
     assert authorize.locator('#connect-code').inner_text() == app.locator('#desktop-sync-code').inner_text()
+    if saved_reminders is not None:
+        # Simulate an existing cloud workspace that predates the seeded flag.
+        session = context.request.get(CLOUD + '/api/session').json()
+        assert 'seeded' not in context.request.get(CLOUD + '/api/state').json()['state']
+        saved = context.request.put(CLOUD + '/api/state/reminders',
+            headers={'Origin': CLOUD, 'X-CSRF-Token': session['csrfToken']},
+            data={'value': saved_reminders, 'expectedRevision': 0})
+        assert saved.ok, saved.text()
     authorize.locator('#connect-approve').click()
     expect(authorize.get_by_role('heading', name='已允许同步')).to_be_visible()
     expect(authorize.locator('#connect-status')).to_contain_text('回到 WordPaper App')
     expect(authorize.locator('#connect-code')).to_be_hidden()
-    app.wait_for_url(BASE + '/', wait_until='domcontentloaded', timeout=20000)
-    app.wait_for_function('window.Store && Store.currentUser() && Store.getSeeded()')
-    app.wait_for_function('async () => await Store.flush()')
+    app.wait_for_url((LEGACY if legacy else BASE) + '/', wait_until='domcontentloaded', timeout=20000)
+    app.bring_to_front()
+    # Foreground synchronization starts once the first workspace render is ready.
+    expect(app.locator('#srs-grace-table')).to_contain_text('宽限', timeout=20000)
+    expect(app.locator('#sync-status')).to_have_text('已同步', timeout=20000)
 
 
 with sync_playwright() as p:
@@ -37,22 +52,29 @@ with sync_playwright() as p:
     app.on('pageerror', lambda error: errors.append(str(error)))
     app.goto(BASE + '/login.html', wait_until='domcontentloaded')
     expect(app.locator('#desktop-sync')).to_be_visible()
-    expect(app.locator('[data-cloud-provider="wechat"]')).to_have_count(0)
+    expect(app.get_by_role('button', name='使用 Google 继续', exact=False)).to_have_count(1)
+    expect(app.get_by_role('button', name='使用 GitHub 继续', exact=False)).to_have_count(1)
+    expect(app.locator('#auth-guest')).to_be_visible()
+    expect(app.locator('#desktop-origin, #btn-pair, #btn-unpair, #pair-card')).to_have_count(0)
     expect(app.get_by_text('微信')).to_have_count(0)
-    app.locator('#desktop-origin').fill(PREVIEW)
-    app.get_by_role('button', name='Google 登录', exact=True).click()
-    expect(app.locator('#desktop-sync-status')).to_contain_text('未提供 WordPaper 账号同步')
-    app.locator('#desktop-origin').fill(CLOUD)
-    connect_desktop(context, app, 'Google 登录')
+    # A saved address from a legacy install must not change the official destination.
+    app.evaluate("localStorage.setItem('wp:sync-origin','http://100.83.152.67:8770')")
+    saved_reminders = [{'id': 'original', 'text': '换电脑前的提醒', 'done': False, 'time': ''}]
+    with app.expect_request('**/api/desktop/start') as started:
+        connect_desktop(context, app, '#auth-google', saved_reminders=saved_reminders)
+    assert started.value.post_data_json == {'provider': 'google'}
     remote_session = context.request.get(CLOUD + '/api/session').json()
     remote = context.request.get(CLOUD + '/api/state').json()
+    expect(app.locator('#reminder-list')).to_contain_text(saved_reminders[0]['text'])
+    assert remote['state']['reminders'] == saved_reminders and remote['revisions']['reminders'] == 1
     value = [{'id': 'shared', 'text': '浏览器改动同步到 App', 'done': False, 'time': ''}]
     response = context.request.put(CLOUD + '/api/state/reminders', headers={
         'Origin': CLOUD, 'X-CSRF-Token': remote_session['csrfToken'],
     }, data={'value': value, 'expectedRevision': remote['revisions'].get('reminders', 0)})
     assert response.status == 200, response.text()
-    app.evaluate("window.dispatchEvent(new Event('focus'))")
-    expect(app.locator('#reminder-list')).to_contain_text('浏览器改动同步到 App', timeout=15000)
+    with app.expect_response(lambda response: urlsplit(response.url).path == '/api/state' and response.ok):
+        app.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(app.locator('#reminder-list')).to_contain_text('浏览器改动同步到 App', timeout=45000)
     snapshot = context.request.get(BASE + '/api/state').json()
     app.route('**/api/state', lambda route: route.fulfill(json=snapshot))
     for state, label in [('offline', '主账号离线'), ('reauth', '主账号需验证'), ('ok', '已同步')]:
@@ -101,10 +123,9 @@ with sync_playwright() as p:
     reconnect = desktop.new_page()
     reconnect.route('**/api/desktop/open', lambda route: route.fulfill(status=503, json={'error': '系统浏览器未能打开'}))
     reconnect.goto(BASE + '/login.html?sync=1')
-    expect(reconnect.locator('#auth-github')).to_be_hidden()
-    expect(reconnect.locator('[data-cloud-provider="github"]')).to_be_visible()
-    reconnect.locator('#desktop-origin').fill(CLOUD)
-    reconnect.locator('[data-cloud-provider="email"]').click()
+    expect(reconnect.locator('#auth-github')).to_be_visible()
+    expect(reconnect.locator('#desktop-origin')).to_have_count(0)
+    reconnect.locator('#desktop-cloud-email').click()
     fallback = reconnect.get_by_role('textbox', name='浏览器授权地址')
     expect(fallback).to_be_visible()
     assert fallback.input_value() == reconnect.locator('#desktop-sync-open').get_attribute('href')
@@ -121,9 +142,9 @@ with sync_playwright() as p:
     }).ok
     assert context.request.get(CLOUD + '/api/session').status == 401
     app.goto(BASE + '/login.html?sync=1', wait_until='domcontentloaded')
-    expect(app.locator('#desktop-origin')).to_have_value(CLOUD)
+    expect(app.locator('#desktop-resume')).to_be_visible()
     with context.expect_event('request', predicate=lambda request: urlsplit(request.url).path == '/github/authorize'):
-        connect_desktop(context, app, 'GitHub 登录')
+        connect_desktop(context, app, '#auth-github')
     assert context.request.get(CLOUD + '/api/session').json()['user']['id'] == remote_session['user']['id']
     local_session = context.request.get(BASE + '/api/session').json()
     assert local_session['mirrored'] and local_session['user']['id'] == original_local_user['id']
@@ -179,6 +200,22 @@ with sync_playwright() as p:
         assert time.monotonic() < deadline, by_id
         time.sleep(.1)
     cloud_web.close()
+
+    # A migrated device can choose Google directly from the same first-user page.
+    old_context = browser.new_context()
+    legacy_app = old_context.new_page()
+    transitions = []
+    legacy_app.on('request', lambda req: transitions.append(urlsplit(req.url).path)
+                  if req.method == 'POST' and '/api/desktop/' in req.url else None)
+    legacy_app.goto(LEGACY + '/')
+    expect(legacy_app.locator('#desktop-resume')).to_be_hidden()
+    expect(legacy_app.locator('#desktop-origin')).to_have_count(0)
+    connect_desktop(old_context, legacy_app, '#auth-google', legacy=True)
+    assert transitions[:2] == ['/api/desktop/disconnect-legacy', '/api/desktop/start'], transitions
+    info = old_context.request.get(LEGACY + '/api/auth/providers').json()
+    assert not info.get('legacyConnection') and info['paired']['url'] == CLOUD
+    expect(legacy_app.locator('#reminder-list')).to_contain_text('网页刚刚编辑')
+    old_context.close()
 
     # Service errors must never hydrate unscoped sample data or seed defaults.
     outage = context.new_page()

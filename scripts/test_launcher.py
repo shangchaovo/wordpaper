@@ -284,6 +284,7 @@ updater.applyUpdate=async(current,target)=>{
     # Use HTTP fixtures for malformed/old companion registration responses.
     # The launcher executes its actual reuse branch without spawning any service.
     for label, registration_body, registration_status, accepted in [
+        ('private sync server', b'{"ok":true,"nativeNavigation":1}', 200, False),
         ('missing capability', b'{"ok":true}', 200, False),
         ('unsupported capability', b'{"ok":true,"nativeNavigation":0}', 200, False),
         ('failed registration', b'{"ok":false,"nativeNavigation":1}', 200, False),
@@ -305,7 +306,7 @@ updater.applyUpdate=async(current,target)=>{
                 self.wfile.write(payload)
             def do_GET(self):
                 if self.path == '/healthz':
-                    self.send_payload(200, json.dumps({'ok': True, 'mode': 'local',
+                    self.send_payload(200, json.dumps({'ok': True, 'mode': 'local', 'desktopCloud': label != 'private sync server',
                         'version': (res / 'VERSION').read_text().strip()}, separators=(',', ':')).encode())
                 elif self.path == '/status.json': self.send_payload(200, b'{"mac":true}')
                 else: self.send_payload(404, b'{}')
@@ -325,6 +326,11 @@ updater.applyUpdate=async(current,target)=>{
             'WORDPAPER_NATIVE_READY_FILE': str(case_ready)}
         try:
             result = subprocess.run(['/bin/bash', str(launcher)], env=case_env, capture_output=True, timeout=15)
+            if label == 'private sync server':
+                assert result.returncode != 0 and not observed and not case_ready.exists()
+                assert '这个端口正由其他版本' in (case_logs / 'dialog.log').read_text()
+                print('PASS launcher did not reuse private-sync server', flush=True)
+                continue
             assert len(observed) == 1, (label, observed, result.stderr)
             assert observed[0] == {'body': {'appPath': str(app.resolve()), 'webOrigin': f'http://localhost:{fixture_port}'},
                 'local': '1', 'origin': None, 'earlyReady': False}, (label, observed)

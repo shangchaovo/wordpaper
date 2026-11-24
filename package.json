@@ -1,6 +1,6 @@
 {
   "name": "wordpaper",
-  "version": "2.6.11",
+  "version": "2.6.12",
   "private": true,
   "description": "Multi-user word wallpaper service with durable SQLite storage",
   "engines": {

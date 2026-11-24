@@ -3451,6 +3451,11 @@
     trigger.hidden = false;
     const status = $('#account-status');
     const cancelGoogle = $('#account-google-cancel');
+    $('#account-connect-cloud').addEventListener('click', async event => {
+      event.preventDefault();
+      if (!await Store.flush()) { say('还有正在保存的改动，请稍后再试。', true); return; }
+      location.assign($('#account-connect-cloud').href);
+    });
     const say = (message, error = false) => { status.textContent = message; status.dataset.error = String(error); };
     const callbackErrors = {
       identity_in_use: '这个第三方账号已绑定其他 WordPaper 账号。请先在原账号中解除绑定，再回来重试。',
@@ -3652,11 +3657,13 @@
 
   function seedOnce() {
     if (window.Store.getSeeded()) return;
-    window.Reminders.save([
-      { id: 'r1', text: '背单词 30 分钟', time: '08:00', done: false },
-      { id: 'r2', text: '喝水 8 杯', time: '', done: false },
-      { id: 'r3', text: '23:00 前睡觉', time: '23:00', done: false },
-    ]);
+    if (window.Store.read('reminders', null) === null) {
+      window.Reminders.save([
+        { id: 'r1', text: '背单词 30 分钟', time: '08:00', done: false },
+        { id: 'r2', text: '喝水 8 杯', time: '', done: false },
+        { id: 'r3', text: '23:00 前睡觉', time: '23:00', done: false },
+      ]);
+    }
     window.Store.setSeeded();
   }
 

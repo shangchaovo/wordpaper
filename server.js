@@ -26,6 +26,8 @@ const MODE = process.env.WORDPAPER_MODE || (isLoopbackHost(HOST) ? 'local' : 'pu
 // running on 8771 even when the test web server/database are isolated.
 const COMPANION_PORT = Number(process.env.WORDPAPER_COMPANION_PORT || (process.env.NODE_ENV === 'test' ? 1 : 8771));
 const COMPANION_ENABLED = MODE === 'local' && process.env.WORDPAPER_COMPANION_ENABLED !== '0';
+const desktopCloudEnabled = MODE === 'local' && (process.env.WORDPAPER_DESKTOP_CLOUD === '1' ||
+  (path.basename(ROOT) === 'Resources' && path.basename(path.dirname(ROOT)) === 'Contents' && path.dirname(path.dirname(ROOT)).endsWith('.app')));
 const DATA_DIR = path.resolve(process.env.WORDPAPER_DATA_DIR || path.join(os.homedir(), '.wordpaper'));
 const PUBLIC_ORIGIN = String(process.env.WORDPAPER_PUBLIC_ORIGIN || '').replace(/\/$/, '');
 const PUBLIC_ORIGINS = additionalPublicOrigins();
@@ -94,6 +96,9 @@ if (MODE === 'public') {
 const modelKey = databaseUrl ? Buffer.from(process.env.WORDPAPER_MODEL_KEY_BASE64 || '', 'base64') : undefined;
 if (databaseUrl && modelKey.length !== 32) throw new Error('WordPaper PostgreSQL 部署需要有效的 WORDPAPER_MODEL_KEY_BASE64');
 const storage = openStorage(DATA_DIR, { databaseUrl, modelKey });
+const desktopCloud = desktopCloudEnabled ? storage.desktopCloudStore(
+  providerEndpoint('WORDPAPER_TEST_DESKTOP_CLOUD_ORIGIN', 'https://wordpaper-api.onrender.com')
+) : null;
 const backgroundObjects = databaseUrl && require('./lib/background-objects').createBackgroundObjects({
   origin: process.env.WORDPAPER_STORAGE_ORIGIN,
   key: process.env.WORDPAPER_STORAGE_SECRET,
@@ -125,7 +130,7 @@ const handleModel = require('./lib/model-routes').createModelRoutes({
   storage, upstream, mirroring, mode: MODE, requireSession, requireCsrf, readJson, json,
 });
 const handleDeviceAuth = require('./lib/device-auth').createDeviceAuth({
-  storage, upstream, json, readJson, requireOrigin, requireCsrf, requireSession,
+  storage, upstream, desktopCloud, json, readJson, requireOrigin, requireCsrf, requireSession,
   requestSession, authRateAllowed, expectedOrigin, oauthProviderConfigured, newSession,
   // Keep already-issued primary codes valid when enabling a second public origin.
   deviceScope: origin => PUBLIC_ORIGINS && origin !== PUBLIC_ORIGIN ? origin : '',
@@ -353,6 +358,8 @@ function requestSession(req) {
     session = storage.findSession(localGoogleSessionHash(token));
   }
   if (session && mirroring() && session.user.id !== upstream.localUserId()) return null;
+  if (session && desktopCloud && !mirroring() &&
+      (desktopCloud.pausedSession(session.tokenHash) || desktopCloud.inactiveAccount(session.user.id))) return null;
   return session;
 }
 
@@ -524,7 +531,7 @@ function emailDebugAllowed(req) {
 }
 
 function emailRegistrationEnabled(req) {
-  return emailDeliveryConfigured() || emailDebugAllowed(req);
+  return !desktopCloud && (emailDeliveryConfigured() || emailDebugAllowed(req));
 }
 
 function emailCodeHash(email, code) {
@@ -1268,12 +1275,17 @@ async function handleAuth(req, res, parsed) {
       ...(localGoogleAuth.enabled(req) ? { localGoogle: { enabled: true } } : {}),
       pairingAllowed: MODE === 'local' && isLoopbackRequest(req),
       paired: upstream.pairedInfo(),
+      ...(desktopCloud && isLoopbackRequest(req) ? {
+        desktopCloud: true, hasLocalAccount: desktopCloud.hasLocalAccount(),
+        legacyConnection: desktopCloud.legacyConnection(),
+      } : {}),
     });
     return true;
   }
 
   // ── 主账号配对(仅本机 local 模式;回环 + Origin 校验 + 限流) ──────────
   if (pathname === '/api/pair' && req.method === 'POST') {
+    if (desktopCloud) { json(res, 404, { error: '请在这台 Mac 的登录页选择云账号登录。' }); return true; }
     if (MODE !== 'local' || !isLoopbackRequest(req)) { json(res, 404, { error: '只有本机部署可以连接主账号' }); return true; }
     if (!requireOrigin(req, res)) return true;
     if (!authRateAllowed(req)) { json(res, 429, { error: '操作过于频繁，请稍后再试' }); return true; }
@@ -1290,6 +1302,7 @@ async function handleAuth(req, res, parsed) {
   }
 
   if (pathname === '/api/unpair' && req.method === 'POST') {
+    if (desktopCloud?.legacyConnection()) { json(res, 409, { error: '请在登录页确认是否断开旧连接。' }); return true; }
     if (MODE !== 'local' || !isLoopbackRequest(req)) { json(res, 404, { error: '只有本机部署可以断开主账号' }); return true; }
     if (!requireOrigin(req, res)) return true;
     if (!authRateAllowed(req)) { json(res, 429, { error: '操作过于频繁，请稍后再试' }); return true; }
@@ -1357,6 +1370,7 @@ async function handleAuth(req, res, parsed) {
 
   if (pathname === '/api/auth/register' && req.method === 'POST') {
     if (!requireOrigin(req, res)) return true;
+    if (desktopCloud) { json(res, 403, { error: '请在登录页选择云账号注册。' }); return true; }
     if (mirroring()) { json(res, 403, { error: '这台设备已连接主账号，无需注册本地账号' }); return true; }
     if (!authRateAllowed(req)) { json(res, 429, { error: '操作过于频繁，请稍后再试' }); return true; }
     const body = await readJson(req);
@@ -1411,7 +1425,7 @@ async function handle(req, res) {
       try { database = { database: 'postgres', schemaVersion: storage.check().version }; }
       catch { json(res, 503, { ok: false, mode: MODE, database: 'postgres' }); return; }
     }
-    json(res, 200, { ok: true, mode: MODE, version: BUNDLED_VERSION || '', ...database });
+    json(res, 200, { ok: true, mode: MODE, version: BUNDLED_VERSION || '', ...(desktopCloud ? { desktopCloud: true } : {}), ...database });
     return;
   }
 
@@ -1995,7 +2009,7 @@ const server = http.createServer(serveRequest);
 let syncServer;
 let syncRetry;
 function listenForPairedMacs() {
-  if (MODE !== 'local' || !isLoopbackHost(HOST)) return;
+  if (desktopCloud || MODE !== 'local' || !isLoopbackHost(HOST)) return;
   const file = path.join(DATA_DIR, 'tailscale-sync.json');
   if (!fs.existsSync(file)) return;
   try {
@@ -2019,7 +2033,7 @@ function listenForPairedMacs() {
 server.on('listening', () => {
   listenForPairedMacs();
   const maintainReviews = () => {
-    try { storage.reconcileReviews(); } catch (error) { console.error('[review] overdue policy:', error.message); }
+    try { storage.reconcileReviews(desktopCloud && (id => id !== upstream.localUserId() && desktopCloud.inactiveAccount(id))); } catch (error) { console.error('[review] overdue policy:', error.message); }
   };
   maintainReviews();
   setInterval(maintainReviews, 30000).unref();

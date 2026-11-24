@@ -6,7 +6,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
   <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png?v=20261022">
   <title>登录 · WordPaper</title>
-  <link rel="stylesheet" href="css/auth.css?v=20261124-guest">
+  <link rel="stylesheet" href="css/auth.css?v=20261124-cloud">
 </head>
 <body class="auth-page">
   <main class="auth-shell">
@@ -23,15 +23,7 @@
         <p id="auth-intro-help">已有账号请先按原方式登录，再到「账号绑定」添加登录方式。</p>
       </header>
 
-      <section id="desktop-local-google" class="desktop-sync" hidden aria-label="本机 Google 登录">
-        <button id="desktop-local-google-sign-in" class="provider-button provider-button-google" type="button">
-          <span class="provider-mark google" aria-hidden="true">G</span>
-          <span class="provider-copy"><strong>使用 Google 登录本机账号</strong><small>使用已在这台 Mac 绑定的 Google 账号</small></span>
-          <span class="provider-arrow" aria-hidden="true">›</span>
-        </button>
-        <p id="desktop-local-google-status" role="status" aria-live="polite" hidden></p>
-        <button id="desktop-local-google-cancel" class="pair-unpair" type="button" hidden>取消授权</button>
-      </section>
+      <button id="desktop-resume" class="submit-auth" type="button" hidden></button>
       <div class="provider-stack" aria-label="第三方账号登录">
         <button id="auth-google" class="provider-button provider-button-google" type="button" data-provider="google" disabled hidden>
           <span class="provider-mark google" aria-hidden="true">G</span>
@@ -44,6 +36,16 @@
           <span class="provider-arrow" aria-hidden="true">›</span>
         </button>
       </div>
+      <section id="desktop-sync" hidden aria-label="云账号登录">
+        <button id="desktop-cloud-email" class="send-code-button" type="button">邮箱 / 原账号登录</button>
+        <p id="desktop-sync-status" role="status" aria-live="polite"></p>
+        <div id="desktop-sync-pending" hidden>
+          <p>请在浏览器核对连接码</p><p id="desktop-sync-code" class="connect-code"></p>
+          <a id="desktop-sync-open" href="#" target="_blank" rel="noopener">重新打开授权页面</a>
+          <input id="desktop-sync-address" type="text" aria-label="浏览器授权地址" readonly hidden>
+          <button id="desktop-sync-cancel" class="text-action" type="button">取消等待</button>
+        </div>
+      </section>
       <p id="provider-status" class="sr-only" role="status" aria-live="polite"></p>
 
       <div id="guest-option" class="guest-option">
@@ -57,7 +59,7 @@
 
       <div class="auth-divider" hidden><span>或使用邮箱</span></div>
 
-      <div id="email-panel" class="email-panel" role="tabpanel" aria-labelledby="tab-login">
+      <div id="email-panel" class="email-panel" hidden role="tabpanel" aria-labelledby="tab-login">
         <div class="auth-tabs" role="tablist" aria-label="邮箱账号操作">
           <button id="tab-login" class="auth-tab active" type="button" role="tab" aria-selected="true" aria-controls="email-panel" tabindex="0">登录</button>
           <button id="tab-register" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="email-panel" tabindex="-1">注册</button>
@@ -93,60 +95,33 @@
           <button id="submit-auth" class="submit-auth" type="submit">使用邮箱登录</button>
         </form>
       </div>
-      <section id="pair-card" class="pair-card" hidden>
-        <p class="card-kicker">主账号已连接</p>
-        <h2 id="pair-identity" class="pair-identity">—</h2>
-        <p id="pair-status" class="field-hint pair-status"></p>
-        <button id="btn-resume" class="submit-auth" type="button">继续进入工作区</button>
-        <button id="btn-unpair" class="pair-unpair" type="button">断开连接(删除本机同步副本)</button>
-      </section>
-
-      <details id="desktop-sync" class="sync-disclosure" hidden open>
-        <summary>跨设备同步</summary>
-        <div class="sync-content">
-          <p class="field-hint">连接账号服务器后，网页和 Mac 可共用学习进度。</p>
-          <label for="desktop-origin">账号服务器地址</label>
-          <input id="desktop-origin" type="url" placeholder="https://你的账号服务器域名" autocomplete="url" required>
-          <div class="desktop-login-buttons">
-            <button class="submit-auth" type="button" data-cloud-provider="google">Google 登录</button>
-            <button class="send-code-button" type="button" data-cloud-provider="github">GitHub 登录</button>
-            <button class="send-code-button" type="button" data-cloud-provider="email">邮箱 / 原账号登录</button>
-          </div>
-          <p id="desktop-sync-status" role="status" aria-live="polite"></p>
-          <div id="desktop-sync-pending" hidden>
-            <p>请在浏览器核对连接码：</p><p id="desktop-sync-code" class="connect-code"></p>
-            <a id="desktop-sync-open" href="#" target="_blank" rel="noopener">重新打开授权页面</a>
-            <input id="desktop-sync-address" type="text" aria-label="浏览器授权地址" readonly hidden>
-            <button id="desktop-sync-cancel" class="pair-unpair" type="button">取消等待</button>
-          </div>
-        </div>
+      <button id="desktop-legacy-disconnect" class="text-action" type="button" hidden>断开旧连接…</button>
+      <dialog id="desktop-disconnect-dialog" aria-labelledby="disconnect-title" aria-describedby="disconnect-copy">
+        <h3 id="disconnect-title">允许断开这台 Mac 的旧连接？</h3>
+        <p id="disconnect-copy"></p>
+        <p>断开前会在本机保存恢复副本。之后可用云账号同步，也可以继续使用游客模式。</p>
+        <form method="dialog" class="disconnect-actions">
+          <button type="submit" class="send-code-button" value="cancel" autofocus>取消</button>
+          <button type="submit" class="submit-auth" value="disconnect">允许断开</button>
+        </form>
+      </dialog>
+      <details id="local-account-options" class="local-account-options" hidden>
+        <summary>使用已有的本机账号</summary>
+        <section id="desktop-local-google" class="desktop-sync" hidden aria-label="本机 Google 登录">
+          <button id="desktop-local-google-sign-in" class="provider-button provider-button-google" type="button">
+            <span class="provider-mark google" aria-hidden="true">G</span>
+            <span class="provider-copy"><strong>使用 Google 登录本机账号</strong><small>使用已在这台 Mac 绑定的 Google 账号</small></span>
+            <span class="provider-arrow" aria-hidden="true">›</span>
+          </button>
+          <p id="desktop-local-google-status" role="status" aria-live="polite" hidden></p>
+          <button id="desktop-local-google-cancel" class="text-action" type="button" hidden>取消授权</button>
+        </section>
       </details>
-
-      <details id="pair-section" class="pair-section" hidden>
-        <summary id="pair-summary">这台是我的另一台电脑？连接到主账号 →</summary>
-        <div class="pair-body">
-          <p class="field-hint">输入主账号所在电脑的地址和账号密码。同一 Wi-Fi 用 <code>http://主机名.local:8770</code>,异地用 Tailscale 地址 <code>http://100.x.x.x:8770</code>(私有网络,无需公网)。连接后实时共用同一工作区;断网用本机缓存,恢复后自动同步。</p>
-          <label>
-            <span>服务器地址</span>
-            <input id="pair-url" type="url" autocomplete="url" placeholder="http://mininn.local:8770">
-          </label>
-          <label>
-            <span>邮箱或用户名</span>
-            <input id="pair-identifier" autocomplete="username" placeholder="主账号的邮箱或用户名">
-          </label>
-          <label>
-            <span>密码</span>
-            <input id="pair-password" type="password" autocomplete="current-password" placeholder="主账号密码">
-          </label>
-          <button id="btn-pair" class="submit-auth" type="button">连接并同步</button>
-        </div>
-      </details>
-
     </section>
   </main>
   <script src="js/guest.js?v=20261124-guest"></script>
-  <script src="js/auth.js?v=20261124-guest"></script>
   <script src="js/local-google.js?v=20261123-local-google"></script>
-  <script src="js/desktop-auth.js?v=20261124-guest"></script>
+  <script src="js/desktop-auth.js?v=20261124-cloud"></script>
+  <script src="js/auth.js?v=20261124-cloud"></script>
 </body>
 </html>

@@ -82,6 +82,119 @@ const { normalizeUrl } = require('../lib/upstream');
       assert.equal(local.mirrored, true);
       return { local, account };
     }
+    // Upgrade an actual private pairing, including a pending native write, in
+    // the same private data directory that the new official-only App reopens.
+    const legacyDir = path.join(root, 'legacy-device');
+    const legacyPort = await freePort();
+    const desktopEnv = { WORDPAPER_MODE: 'local', WORDPAPER_COMPANION_ENABLED: '0' };
+    const cloudEnv = { ...desktopEnv, WORDPAPER_DESKTOP_CLOUD: '1', WORDPAPER_TEST_DESKTOP_CLOUD_ORIGIN: cloud.base };
+    const agingApp = await startApp(legacyPort, legacyDir, mockBase, desktopEnv);
+    apps.push(agingApp);
+    const legacyAccount = await api(emailOnly, '/api/auth/register', { username: 'legacy-test', password: 'only-for-the-fixture' });
+    const reminder = [{ id: 'pending', text: '离线提醒', done: false, time: '' }];
+    // Browsers on the legacy mirror can still hold an older standalone cookie.
+    const dormant = process.argv.includes('--browser') ? null : await api(agingApp, '/api/auth/register', {
+      username: 'old-local-owner', password: 'legacy-local-password',
+    });
+    const paired = await api(agingApp, '/api/pair', { url: emailOnly.base, identifier: 'legacy-test', password: 'only-for-the-fixture' });
+    assert.equal(paired.response.status, 200);
+    const oldDb = openStorage(legacyDir);
+    oldDb.putState(paired.user.id, 'reminders', reminder, 0, true);
+    oldDb.close();
+    await stopApp(agingApp.child);
+    const migrated = await startApp(legacyPort, legacyDir, mockBase, cloudEnv);
+    apps.push(migrated);
+    const discovery = () => api(migrated, '/api/auth/providers');
+    assert.equal((await discovery()).paired, null);
+    assert.equal((await discovery()).hasLocalAccount, Boolean(dormant));
+    assert.deepEqual((await discovery()).legacyConnection, { username: 'legacy-test', pending: 1 });
+    assert.equal((await api(migrated, '/api/session', undefined, paired)).response.status, 401);
+    if (dormant) {
+      assert.equal((await api(migrated, '/api/session', undefined, dormant)).response.status, 401);
+      assert.equal((await fetch(migrated.base + '/', { headers: { Cookie: dormant.cookie }, redirect: 'manual' })).headers.get('location'), '/login.html');
+    }
+    assert.equal((await api(migrated, '/api/auth/resume', {})).response.status, 409);
+    assert.equal((await api(migrated, '/api/unpair', {})).response.status, 409);
+    assert.equal((await api(migrated, '/api/pair', { url: emailOnly.base })).response.status, 404);
+    assert.equal((await api(migrated, '/api/desktop/start', { provider: 'google' })).response.status, 409);
+    assert.equal((await api(migrated, '/api/desktop/disconnect-legacy', {})).response.status, 400);
+    assert.equal((await fetch(migrated.base + '/api/desktop/disconnect-legacy', {
+      method: 'POST', body: '{"confirmed":true}', headers: { 'Content-Type': 'application/json' },
+    })).status, 403);
+    assert.equal((await fetch(migrated.base + '/guest')).status, 200);
+    assert.ok((await discovery()).legacyConnection);
+    assert.equal(fs.existsSync(path.join(legacyDir, 'recovery')), false);
+    if (process.argv.includes('--browser')) {
+      const fresh = await startApp(await freePort(), path.join(root, 'fresh-browser'), mockBase, cloudEnv);
+      apps.push(fresh);
+      await new Promise((resolve, reject) => {
+        const child = spawn('python3', ['scripts/test_desktop_sync_browser.py'], {
+          cwd: path.resolve(__dirname, '..'), stdio: 'inherit',
+          env: {
+            ...process.env, WORDPAPER_TEST_BASE_URL: fresh.base.replace('127.0.0.1', 'localhost'),
+            WORDPAPER_TEST_LEGACY_BASE_URL: migrated.base.replace('127.0.0.1', 'localhost'),
+            WORDPAPER_TEST_CLOUD: cloud.base, WORDPAPER_TEST_PREVIEW: previewOrigin,
+          },
+        });
+        child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error(`desktop browser test exited ${code}`)));
+      });
+      return;
+    }
+    await stopApp(migrated.child);
+    const restarted = await startApp(legacyPort, legacyDir, mockBase, cloudEnv);
+    apps.push(restarted);
+    assert.deepEqual((await discovery()).legacyConnection, { username: 'legacy-test', pending: 1 });
+    const denied = await fetch(migrated.base + '/api/desktop/disconnect-legacy', {
+      method: 'POST', headers: { Origin: 'https://other.example', 'Content-Type': 'application/json' }, body: '{"confirmed":true}',
+    });
+    assert.equal(denied.status, 403);
+    // A disk error cannot discard the queue or complete a user's consent.
+    const recoveryDir = path.join(legacyDir, 'recovery');
+    fs.writeFileSync(recoveryDir, 'temporary obstacle');
+    assert.equal((await api(migrated, '/api/desktop/disconnect-legacy', { confirmed: true })).response.status, 503);
+    assert.equal((await discovery()).legacyConnection.pending, 1);
+    fs.unlinkSync(recoveryDir);
+    const disconnected = await api(migrated, '/api/desktop/disconnect-legacy', { confirmed: true });
+    assert.equal(disconnected.response.status, 200);
+    assert.equal((await discovery()).legacyConnection, null);
+    assert.equal((await api(migrated, '/api/session', undefined, paired)).response.status, 401);
+    assert.equal((await api(migrated, '/api/session', undefined, dormant)).response.status, 401);
+    const explicitLogin = await api(migrated, '/api/auth/login', { username: 'old-local-owner', password: 'legacy-local-password' });
+    assert.equal(explicitLogin.user.id, dormant.user.id);
+    assert.equal((await api(migrated, '/api/session', undefined, explicitLogin)).user.id, dormant.user.id);
+    const nativeSource = fs.readFileSync(path.resolve(__dirname, '../companion.js'), 'utf8');
+    const activeAccount = nativeSource.slice(nativeSource.indexOf('function activeUserId('), nativeSource.indexOf('let patrickIdleCache'));
+    const cfg = { srsUserId: paired.user.id };
+    const lookup = vm.runInNewContext('(' + activeAccount + ')', { CFG: cfg });
+    const dbForNative = new DatabaseSync(path.join(legacyDir, 'wordpaper.sqlite'));
+    assert.equal(lookup(dbForNative), null, 'old companion selection still opened the archived mirror');
+    cfg.srsUserId = dormant.user.id;
+    assert.equal(lookup(dbForNative), dormant.user.id, 'ordinary local companion account was hidden');
+    dbForNative.close();
+    const file = path.join(recoveryDir, disconnected.recoveryFile);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    const archived = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual(archived.pending.reminders.value, reminder);
+    assert.deepEqual(archived.state.reminders, reminder);
+    assert.ok(!JSON.stringify(archived).match(/wp_session|csrfToken|only-for-the-fixture/));
+    assert.equal((await api(migrated, '/api/desktop/disconnect-legacy', { confirmed: true })).response.status, 200);
+    assert.equal(fs.readdirSync(recoveryDir).length, 1);
+    assert.equal((await api(migrated, '/api/desktop/start', { provider: 'google', url: emailOnly.base })).response.status, 400);
+    assert.equal((await api(migrated, '/api/auth/register', { username: 'new', password: 'new-password123' })).response.status, 403);
+    const official = await connect(migrated);
+    assert.equal((await discovery()).paired.url, cloud.base);
+    assert.deepEqual((await api(emailOnly, '/api/state', undefined, legacyAccount)).state, {});
+    assert.deepEqual((await api(cloud, '/api/state', undefined, official.account)).state, {});
+    const persisted = openStorage(legacyDir);
+    assert.deepEqual(persisted.getState(paired.user.id).state.reminders, reminder);
+    assert.equal(persisted.metaGet('upstream_queue'), null);
+    persisted.close();
+    await stopApp(restarted.child);
+    const officialRestart = await startApp(legacyPort, legacyDir, mockBase, cloudEnv);
+    apps.push(officialRestart);
+    assert.equal((await api(officialRestart, '/api/session', undefined, official.local)).user.id, official.local.user.id);
+    assert.equal((await discovery()).paired.url, cloud.base);
+    console.log('PASS private desktop pairing pauses across restart until consent, saves pending changes locally, and accepts only the official cloud');
     const unsupported = await api(desk1, '/api/desktop/start', { url: previewOrigin, provider: 'wechat' });
     assert.equal(unsupported.response.status, 502);
     assert.match(unsupported.error, /未提供 WordPaper 账号同步/);
@@ -91,19 +204,6 @@ const { normalizeUrl } = require('../lib/upstream');
       assert.equal(unavailable.response.status, 503);
       assert.ok(unavailable.error.includes(label));
       assert.match(unavailable.error, /邮箱 \/ 原账号登录/);
-    }
-    if (process.argv.includes('--browser')) {
-      await new Promise((resolve, reject) => {
-        const child = spawn('python3', ['scripts/test_desktop_sync_browser.py'], {
-          cwd: path.resolve(__dirname, '..'), stdio: 'inherit',
-          env: {
-            ...process.env, WORDPAPER_TEST_BASE_URL: desk1.base.replace('127.0.0.1', 'localhost'),
-            WORDPAPER_TEST_CLOUD: cloud.base, WORDPAPER_TEST_PREVIEW: previewOrigin,
-          },
-        });
-        child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error(`desktop browser test exited ${code}`)));
-      });
-      return;
     }
     const localExisting = await api(desk1, '/api/auth/register', { username: '谷歌用户', password: 'local-secret-password' });
     const first = await connect(desk1, 'google', localExisting);
@@ -207,6 +307,16 @@ const { normalizeUrl } = require('../lib/upstream');
     assert.equal((await api(desk1, '/api/unpair', {}, first.local)).response.status, 200);
     const original = await api(desk1, '/api/auth/login', { username: '谷歌用户', password: 'local-secret-password' });
     assert.equal(original.user.id, localExisting.user.id);
+    // A separate local password account still works after upgrading its App,
+    // including an existing session originally issued by the standalone mode.
+    await stopApp(desk1.child);
+    const standalone = await startApp(Number(new URL(desk1.base).port), path.join(root, '1'), mockBase, cloudEnv);
+    apps.push(standalone);
+    const localProviders = await api(standalone, '/api/auth/providers');
+    assert.equal(localProviders.hasLocalAccount, true);
+    assert.equal(localProviders.legacyConnection, null);
+    assert.equal((await api(standalone, '/api/session', undefined, original)).user.id, localExisting.user.id);
+    assert.equal((await api(standalone, '/api/auth/login', { username: '谷歌用户', password: 'local-secret-password' })).user.id, localExisting.user.id);
     const db = new DatabaseSync(path.join(root, '0', 'wordpaper.sqlite'));
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM device_flows WHERE user_id IS NOT NULL').get().n, 0);
     db.close();
