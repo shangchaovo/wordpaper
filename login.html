@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
-  <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png?v=20261022">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png?v=20261022">
   <title>登录 · WordPaper</title>
-  <link rel="stylesheet" href="/css/auth.css?v=20261123-github">
+  <link rel="stylesheet" href="css/auth.css?v=20261124-guest">
 </head>
 <body class="auth-page">
   <main class="auth-shell">
     <section class="auth-intro" aria-labelledby="auth-brand">
-      <div class="auth-logo"><img src="/assets/favicon-128.png" width="96" height="96" alt=""></div>
+      <div class="auth-logo"><img src="assets/favicon-128.png" width="96" height="96" alt=""></div>
       <p class="auth-wordmark">WordPaper</p>
       <h1 id="auth-brand">把今天的单词<br>留在桌面。</h1>
       <p class="intro-copy">登录后，从上次的词库和复习进度继续。</p>
@@ -45,6 +45,15 @@
         </button>
       </div>
       <p id="provider-status" class="sr-only" role="status" aria-live="polite"></p>
+
+      <div id="guest-option" class="guest-option">
+        <button id="auth-guest" class="provider-button" type="button">
+          <span class="provider-mark guest" aria-hidden="true"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 21h8m-4-4v4"/></svg></span>
+          <span class="provider-copy"><strong>以游客身份继续</strong><small>词库和学习记录仅保存在当前浏览器或 App</small></span>
+          <span class="provider-arrow" aria-hidden="true">›</span>
+        </button>
+        <p id="guest-error" class="auth-error" role="alert" hidden></p>
+      </div>
 
       <div class="auth-divider" hidden><span>或使用邮箱</span></div>
 
@@ -135,8 +144,9 @@
 
     </section>
   </main>
-  <script src="/js/auth.js?v=20261123-github"></script>
-  <script src="/js/local-google.js?v=20261123-local-google"></script>
-  <script src="/js/desktop-auth.js?v=20261122-glass"></script>
+  <script src="js/guest.js?v=20261124-guest"></script>
+  <script src="js/auth.js?v=20261124-guest"></script>
+  <script src="js/local-google.js?v=20261123-local-google"></script>
+  <script src="js/desktop-auth.js?v=20261124-guest"></script>
 </body>
 </html>

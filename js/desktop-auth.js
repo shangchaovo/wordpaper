@@ -1,7 +1,10 @@
 (function () {
   'use strict';
   const section = document.querySelector('#desktop-sync');
-  if (!section) return;
+  if (!section || (!location.search && !location.hash && GuestWorkspace.selected())) return;
+  async function openAccount() {
+    location.replace(await GuestWorkspace.accountURL());
+  }
   const origin = document.querySelector('#desktop-origin');
   const status = document.querySelector('#desktop-sync-status');
   const pending = document.querySelector('#desktop-sync-pending');
@@ -53,7 +56,7 @@
       if (id !== generation) return;
       if (result.pending) { timer = setTimeout(() => poll(id), 2500); return; }
       status.textContent = '连接成功，正在打开同步工作区…';
-      location.replace('/');
+      await openAccount();
     } catch (error) {
       if (id !== generation) return;
       stop(); status.textContent = error.message;
@@ -90,7 +93,7 @@
       });
       if (completed) {
         localStatus.textContent = '登录成功，正在打开本机工作区…';
-        location.replace('/');
+        await openAccount();
       } else localStatus.textContent = '已取消 Google 登录。';
     } catch (error) {
       localStatus.textContent = error.message;
@@ -108,7 +111,7 @@
   link.addEventListener('click', event => { if (window.WordPaperDesktop) { event.preventDefault(); openAuthorization(generation); } });
   document.querySelector('#desktop-sync-cancel').addEventListener('click', async () => {
     stop();
-    try { const result = await post('/api/desktop/cancel'); if (result.connected) { location.replace('/'); return; } }
+    try { const result = await post('/api/desktop/cancel'); if (result.connected) { await openAccount(); return; } }
     catch (error) { status.textContent = error.message; return; }
     status.textContent = '已取消连接，可以重新发起。';
   });

@@ -2,7 +2,7 @@
 #import <WebKit/WebKit.h>
 #include <unistd.h>
 
-@interface WordPaperApp : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate>
+@interface WordPaperApp : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, WKDownloadDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *web;
 @property(nonatomic, strong) NSTask *service;
@@ -10,6 +10,7 @@
 @property(nonatomic, strong) NSURL *origin;
 @property(nonatomic, copy) NSString *readyFile;
 @property(nonatomic, copy) NSString *pendingPath;
+@property(nonatomic, strong) dispatch_queue_t guestQueue;
 @property BOOL ownsService;
 @property BOOL terminating;
 @end
@@ -52,6 +53,8 @@
         config.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
         [config.userContentController addScriptMessageHandler:self name:@"nativeTest"];
     }
+    self.guestQueue = dispatch_queue_create("org.wordpaper.guest-storage", DISPATCH_QUEUE_SERIAL);
+    [config.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"wordPaperGuest"];
     [config.userContentController addScriptMessageHandler:self name:@"external"];
     NSString *bridge = @"window.WordPaperDesktop=Object.freeze({openExternal:function(url){window.webkit.messageHandlers.external.postMessage(String(url));}});";
     [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:bridge injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
@@ -141,7 +144,8 @@
 }
 - (void)loadOrigin:(NSURL *)url {
     self.origin = url;
-    NSString *path = self.pendingPath ?: @"/";
+    BOOL guestSelected = [NSFileManager.defaultManager fileExistsAtPath:[[self guestDirectory] stringByAppendingPathComponent:@"active"]];
+    NSString *path = self.pendingPath ?: (guestSelected ? @"/guest" : @"/");
     [self.web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:path relativeToURL:url]]];
     self.pendingPath = nil;
 }
@@ -155,6 +159,7 @@
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return NO; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     self.terminating = YES;
+    if (self.guestQueue) dispatch_sync(self.guestQueue, ^{});
     if (!self.service.running) return NSTerminateNow;
     [self.service terminate];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [NSApp replyToApplicationShouldTerminate:YES]; });
@@ -186,6 +191,62 @@
         if ([self navigationTestEnabled]) { [self recordNavigationTestEvent:@"external" URL:url]; return; }
         [NSWorkspace.sharedWorkspace openURL:url];
     }
+}
+// The local server may choose a different port on a later launch. Keep the
+// native guest workspace independent of WebKit's port-scoped website storage.
+- (NSString *)guestDirectory {
+    NSString *root = NSProcessInfo.processInfo.environment[@"WORDPAPER_DATA_DIR"];
+    if (!root.length) root = [NSHomeDirectory() stringByAppendingPathComponent:@".wordpaper"];
+    return [root stringByAppendingPathComponent:@"guest"];
+}
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message
+                 replyHandler:(void (^)(id, NSString *))reply {
+    NSURL *url = message.frameInfo.request.URL;
+    NSDictionary *body = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
+    NSString *op = body[@"op"];
+    if (![message.name isEqual:@"wordPaperGuest"] || !message.frameInfo.mainFrame || ![self isWorkspace:url] ||
+        ![@[@"/", @"/index.html", @"/login", @"/login.html", @"/guest"] containsObject:url.path] ||
+        (![url.path isEqual:@"/guest"] && ![op isEqual:@"select"])) {
+        reply(nil, @"游客存储仅限本机游客工作区使用。"); return;
+    }
+    NSString *dir = [self guestDirectory];
+    dispatch_async(self.guestQueue, ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSError *error = nil;
+        id result = nil;
+        NSArray *keys = @[@"settings", @"uiTheme", @"customWords", @"knownWords", @"reminders", @"engine",
+            @"review", @"seeded", @"moduleLayout", @"hiddenModules", @"petMemoryCursor", @"petSyncCursor",
+            @"dragHint", @"dailyPlan", @"learningActivity"];
+        NSString *marker = [dir stringByAppendingPathComponent:@"active"];
+        if ([op isEqual:@"select"] && [body[@"active"] isEqual:@NO] && ![fm fileExistsAtPath:marker]) {
+            result = @YES;
+        } else if ([fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error]) {
+            if ([op isEqual:@"select"] && [body[@"active"] isKindOfClass:NSNumber.class]) {
+                if ([body[@"active"] boolValue]) [NSData.data writeToFile:marker options:NSDataWritingAtomic error:&error];
+                else if ([fm fileExistsAtPath:marker]) [fm removeItemAtPath:marker error:&error];
+                result = @YES;
+            } else if ([op isEqual:@"read"]) {
+                NSMutableDictionary *state = [NSMutableDictionary dictionary];
+                for (NSString *key in keys) {
+                    NSString *path = [dir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"json"]];
+                    if (![fm fileExistsAtPath:path]) continue;
+                    NSData *data = [NSData dataWithContentsOfFile:path options:0 error:&error];
+                    id value = data ? [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingFragmentsAllowed error:&error] : nil;
+                    if (!value) break;
+                    state[key] = value;
+                }
+                result = state;
+            } else if ([op isEqual:@"write"] && [keys containsObject:body[@"key"] ?: @""] && body[@"value"]) {
+                NSString *file = [body[@"key"] stringByAppendingPathExtension:@"json"];
+                NSData *data = [NSJSONSerialization dataWithJSONObject:body[@"value"] options:NSJSONWritingFragmentsAllowed error:&error];
+                if (data && [data writeToFile:[dir stringByAppendingPathComponent:file] options:NSDataWritingAtomic error:&error]) result = @YES;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || !result) reply(nil, @"无法访问本机游客数据，请检查磁盘空间和目录权限。");
+            else reply(result, nil);
+        });
+    });
 }
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
     if (!message.frameInfo.mainFrame || ![self isWorkspace:message.frameInfo.request.URL] || ![message.body isKindOfClass:NSString.class]) return;

@@ -1,6 +1,29 @@
 (function () {
   'use strict';
 
+  const guestButton = document.querySelector('#auth-guest');
+  const guestError = document.querySelector('#guest-error');
+  if (!location.search && !location.hash && GuestWorkspace.selected()) {
+    location.replace(GuestWorkspace.url());
+    return;
+  }
+  const next = new URLSearchParams(location.search).get('next');
+  if (location.hash === '#account' || (next && next !== '/' && next !== '/index.html')) {
+    document.querySelector('#guest-option').hidden = true;
+  }
+  guestButton.addEventListener('click', async () => {
+    guestButton.disabled = true;
+    guestError.hidden = true;
+    try {
+      await GuestWorkspace.enter();
+      location.replace(GuestWorkspace.url());
+    } catch (error) {
+      guestError.textContent = error.message;
+      guestError.hidden = false;
+      guestButton.disabled = false;
+    }
+  });
+
   const form = document.querySelector('#auth-form');
   const emailPanel = document.querySelector('#email-panel');
   const loginTab = document.querySelector('#tab-login');
@@ -37,7 +60,7 @@
   };
 
   function destination() {
-    const value = new URLSearchParams(location.search).get('next') || '/';
+    const value = next || (location.hash === '#account' ? '/#account' : '/');
     if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/';
     try {
       const parsed = new URL(value, location.origin);
@@ -149,7 +172,7 @@
     const pairCard = document.querySelector('#pair-card');
     const pairSection = document.querySelector('#pair-section');
     if (paired) {
-      // 已连接主账号:本地注册/登录/OAuth 全部让位,只留「继续」。
+      // 已连接的工作区作为主入口，游客可在本机单独使用。
       emailPanel.style.display = 'none';
       const stack = document.querySelector('.provider-stack');
       if (stack) stack.style.display = 'none';
@@ -158,6 +181,7 @@
       const note = document.querySelector('.migration-note');
       if (note) note.style.display = 'none';
       pairCard.hidden = false;
+      pairCard.after(document.querySelector('#guest-option'));
       document.querySelector('#pair-identity').textContent = paired.username + ' @ ' + paired.url.replace(/^https?:\/\//, '');
       document.querySelector('#pair-status').textContent =
         paired.status === 'ok' ? '与主账号连接正常,数据实时同步。'
@@ -202,7 +226,7 @@
     pairButton.textContent = '正在连接并同步…';
     try {
       await postPlain('/api/pair', { url: url, identifier: identifier, password: password });
-      location.replace(destination());
+      location.replace(await GuestWorkspace.accountURL(destination()));
     } catch (error) {
       showError(error.message, false);
       pairButton.disabled = false;
@@ -214,7 +238,7 @@
     showError('', false);
     try {
       await postPlain('/api/auth/resume');
-      location.replace(destination());
+      location.replace(await GuestWorkspace.accountURL(destination()));
     } catch (error) {
       showError(error.message, false);
     }
@@ -230,13 +254,14 @@
     }
   });
 
-  providerButtons.forEach(button => button.addEventListener('click', function () {
+  providerButtons.forEach(button => button.addEventListener('click', async function () {
     if (button.disabled) return;
     const provider = button.dataset.provider;
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
     providerStatus.textContent = `正在连接 ${providerNames[provider]}…`;
-    location.assign(`/api/auth/${provider}/start?next=${encodeURIComponent(destination())}`);
+    const accountDestination = await GuestWorkspace.accountURL(destination());
+    location.assign(`/api/auth/${provider}/start?next=${encodeURIComponent(accountDestination)}`);
   }));
 
   function startCodeCountdown(seconds) {
@@ -316,7 +341,7 @@
       const body = await response.json().catch(function () { return {}; });
       if (!response.ok) throw new Error(body.error || '操作失败，请稍后重试');
       authStatus.textContent = '登录成功，正在恢复数据…';
-      location.replace(destination());
+      location.replace(await GuestWorkspace.accountURL(destination()));
     } catch (error) {
       showError(error.message, true);
       form.setAttribute('aria-busy', 'false');

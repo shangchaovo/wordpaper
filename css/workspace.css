@@ -1,3 +1,9 @@
+@media (min-width: 841px) {
+  [data-workspace="guest"] .workspace-preferences { display: none; }
+}
+[data-workspace="guest"] #workspace-settings-panel,
+[data-workspace="guest"] [data-account-only] { display: none !important; }
+
 /* Workbench layout. The preview, its tools and both side panels share one grid. */
 :root .app .workbench {
   max-width: 1920px;
