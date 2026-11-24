@@ -10,7 +10,7 @@ Variants (uploaded to GitHub Releases, linked from the site's download modal):
 
 CFBundleExecutable is a UNIVERSAL (arm64+x86_64) Cocoa + WKWebView app.
 It owns a native workspace window and starts MacOS/launcher.sh for local
-services. Google/WeChat authorization opens the system browser; a private
+services. Google/GitHub authorization opens the system browser; a private
 device grant connects the App to the shared account server.
 
 DMG window is dressed like a real installer: assets/dmg-background.png baked
@@ -187,7 +187,7 @@ trap release_start_lock EXIT
 trap 'exit 0' INT TERM
 
 # ── 主服务 + 伴侣 ─────────────────────────────────────────────
-export HOST="${HOST:-127.0.0.1}"
+export HOST="127.0.0.1"
 # 端口挑选:优先用户显式 PORT;否则从 8770 起找可绑定的(macOS AirPlay/sharingd
 # 常驻占 8770,IPv6/IPv4 都会被拒)。8771 保留给伴侣。launcher 选定后,server 仍是
 # fail-fast 绑定语义(不匹配就起不来,不会静默漂移)。
@@ -215,15 +215,26 @@ PYPORT
 # 端口粘滞:上次选过的口存 ~/.wordpaper/port.json,下次优先复用 — 浏览器书签/已开
 # 标签页的 localhost:PORT 在重启后仍然有效(否则每次自动换口,老标签页会 refused)。
 wordpaper_up() {
-  curl -fsS -m 3 "http://127.0.0.1:$1/healthz" 2>/dev/null | /usr/bin/python3 -c 'import sys,json
+  curl --noproxy '*' -fsS -m 3 "http://127.0.0.1:$1/healthz" 2>/dev/null | /usr/bin/python3 -c 'import sys,json
 try:
-    d=json.load(sys.stdin); sys.exit(0 if d.get("ok") is True and d.get("mode") == "local" and "version" in d else 1)
-except Exception: sys.exit(1)'
+    d=json.load(sys.stdin)
+    valid=d.get("ok") is True and d.get("mode") == "local" and "version" in d
+    sys.exit(0 if valid and (sys.argv[1] != "cloud" or d.get("desktopCloud") is True) else 1)
+except Exception: sys.exit(1)' "${2:-any}"
+}
+# Keep the port when upgrading our own bundle. A separate development or
+# self-hosted server must not supply the desktop login screen.
+previous_bundle_up() {
+  local pid
+  for pid in $(lsof -nP -ti4TCP@127.0.0.1:"$1" -sTCP:LISTEN 2>/dev/null); do
+    if lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -Fxq "n$RES"; then return 0; fi
+  done
+  return 1
 }
 PORT_FILE="$APP_STATE/port.json"
 if [ -z "${PORT:-}" ]; then
   SAVED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("port",""))' "$PORT_FILE" 2>/dev/null || true)"
-  if [ -n "$SAVED" ] && { wordpaper_up "$SAVED" || [ "$SAVED" = "$(pick_port "$SAVED")" ]; }; then
+  if [ -n "$SAVED" ] && { wordpaper_up "$SAVED" cloud || previous_bundle_up "$SAVED" || [ "$SAVED" = "$(pick_port "$SAVED")" ]; }; then
     export PORT="$SAVED"
   else
     PICKED="$(pick_port 8770)"
@@ -235,7 +246,8 @@ if [ -z "${PORT:-}" ]; then
   fi
   python3 -c 'import json,sys,os; os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); json.dump({"port": int(sys.argv[2])}, open(sys.argv[1], "w"))' "$PORT_FILE" "$PORT" 2>/dev/null || true
 fi
-export WORDPAPER_MODE="${WORDPAPER_MODE:-local}"
+export WORDPAPER_MODE=local
+export WORDPAPER_DESKTOP_CLOUD=1
 export WORDPAPER_DATA_DIR="${WORDPAPER_DATA_DIR:-$HOME/.wordpaper}"
 export WORDPAPER_COMPANION_ENABLED=1
 export WORDPAPER_WEB_ORIGIN="http://localhost:$PORT"
@@ -266,7 +278,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 
-server_up() { wordpaper_up "$PORT"; }
+server_up() { wordpaper_up "$PORT" cloud; }
 companion_up() { curl -fsS -m 3 "http://127.0.0.1:$COMP_PORT/status.json" >/dev/null 2>&1; }
 register_native_workspace() {
   [ "${WORDPAPER_NATIVE_UI:-0}" = "1" ] || return 0
@@ -308,13 +320,19 @@ stop_old_bundle_chain() {
       bundle_process "$p" && kill "$p" 2>/dev/null
     done
   done
-  for _ in $(seq 1 40); do server_up || break; sleep 0.25; done
 }
-if server_up; then
+if wordpaper_up "$PORT"; then
   RUNNING_VER="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
   MY_VER="$(cat "$RES/VERSION" 2>/dev/null)"
-  if [ -n "$MY_VER" ] && [ "$RUNNING_VER" != "$MY_VER" ]; then
-    stop_old_bundle_chain
+  if ! server_up || [ "$RUNNING_VER" != "$MY_VER" ]; then
+    if previous_bundle_up "$PORT"; then
+      stop_old_bundle_chain
+      for _ in $(seq 1 40); do wordpaper_up "$PORT" || break; sleep 0.25; done
+    fi
+    if wordpaper_up "$PORT"; then
+      wp_alert "这个端口正由其他版本的 WordPaper 使用。请关闭该服务或让 App 自动选择端口。"
+      exit 1
+    fi
   fi
 fi
 
@@ -450,9 +468,8 @@ README_COMMON = """每日壁纸 WordPaper · Mac 桌面伴侣
   • 工作区在独立的 WordPaper 窗口打开，Dock、⌘Q、关闭/重新显示窗口均按 Mac App 使用。
   • 词卡「记忆本」与菜单「控制面板」会唤回同一个 App 窗口；升级到此版请完整替换应用程序里的 WordPaper。
   • 完整安装此版后，应用内更新会同时更新主窗口程序，并在成功后自动重新打开 App；更新失败会保留当前服务。
-  • 使用同步账号：填写账号服务器 HTTPS 地址，选择 Google、微信或原账号；在系统浏览器核对连接码并授权后，App 自动打开同步工作区。
-  • 没有服务器时可继续使用本机账号；跨电脑同步需要先部署账号服务器。
-  • 数据保存在 ~/.wordpaper ,删掉 App 也不会丢。
+  • 在登录页选择 Google、GitHub 或原云账号，在系统浏览器核对账号和连接码并允许同步。
+  • 两台 Mac 登录同一个 WordPaper 云账号即可同步。选择「以游客身份继续」会将学习记录保存在本机。
   • 已经在运行时再次双击图标，会回到 WordPaper 窗口。关闭窗口不退出，⌘Q 退出。
 
 退出:点菜单栏「词」图标 → 「退出 WordPaper」。(主服务与桌面小词灵

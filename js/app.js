@@ -3451,6 +3451,11 @@
     trigger.hidden = false;
     const status = $('#account-status');
     const cancelGoogle = $('#account-google-cancel');
+    $('#account-connect-cloud').addEventListener('click', async event => {
+      event.preventDefault();
+      if (!await Store.flush()) { say('还有正在保存的改动，请稍后再试。', true); return; }
+      location.assign($('#account-connect-cloud').href);
+    });
     const say = (message, error = false) => { status.textContent = message; status.dataset.error = String(error); };
     const callbackErrors = {
       identity_in_use: '这个第三方账号已绑定其他 WordPaper 账号。请先在原账号中解除绑定，再回来重试。',

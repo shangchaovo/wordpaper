@@ -4852,14 +4852,20 @@ function openSrsDb() {
 /* Use the account last selected through the authenticated local server. */
 function activeUserId(db) {
   try {
-    if (CFG.srsUserId) {
-      const row = db.prepare('SELECT id FROM users WHERE id=?').get(CFG.srsUserId);
-      return row ? row.id : null;
+    let candidate = CFG.srsUserId;
+    if (!candidate) {
+      candidate = db.prepare('SELECT user_id FROM sessions WHERE expires_at>? ORDER BY created_at DESC LIMIT 1').get(Date.now())?.user_id;
+      if (!candidate) {
+        const users = db.prepare('SELECT id FROM users LIMIT 2').all();
+        if (users.length === 1) candidate = users[0].id;
+      }
     }
-    const active = db.prepare('SELECT user_id FROM sessions WHERE expires_at>? ORDER BY created_at DESC LIMIT 1').get(Date.now());
-    if (active) return active.user_id;
-    const users = db.prepare('SELECT id FROM users LIMIT 2').all();
-    return users.length === 1 ? users[0].id : null;
+    if (!candidate) return null;
+    // A cached quiz or old session may still name a former desktop mirror.
+    // Only the actively paired mirror can drive account-bound desktop work.
+    const selected = db.prepare(`SELECT id FROM users WHERE id=?
+      AND NOT EXISTS(SELECT 1 FROM app_meta WHERE key='desktop_inactive_mirror:' || users.id)`).get(candidate);
+    return selected?.id || null;
   } catch { return null; }
 }
 let patrickIdleCache = { at: 0, value: null };
@@ -4970,6 +4976,10 @@ function writeReviewState(db, userId, all, namespace = 'review') {
   try {
     // Can be called inside answerQuiz's read/modify/write transaction.
     db.exec('SAVEPOINT quiz_review_write');
+    if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get('desktop_inactive_mirror:' + userId)) {
+      db.exec('RELEASE quiz_review_write');
+      return false;
+    }
     const json = JSON.stringify(all);
     const now = Date.now();
     const existing = db.prepare('SELECT revision, value_json FROM user_state WHERE user_id=? AND namespace=?').get(userId, namespace);
