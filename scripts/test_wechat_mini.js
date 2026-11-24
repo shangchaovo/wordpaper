@@ -111,7 +111,8 @@ async function exercise(connect, name) {
     assert.equal(api.reminder(a).status, 'scheduled');
     assert.equal(api.authenticate(linked.token).userId, a);
     ts = due;
-    await Promise.all([api.runDue(), api.runDue(), api.runDue()]);
+    const wakeId = db.prepare('SELECT job_id FROM mini_reminders WHERE user_id=?').get(a).job_id;
+    await Promise.all([api.wakeReminder(String(a), 'WordPaper-Job ' + wakeId), api.runDue(), api.runDue()]);
     assert.equal(sent.length, 1);
     assert.equal(tokenRequests, 1);
     assert.equal(sent[0].touser, 'openid-wechat-a');

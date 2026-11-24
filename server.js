@@ -129,6 +129,18 @@ function mirroring() { return MODE === 'local' && upstream.isPaired(); }
 const miniDevtools = MODE === 'local' && HOST === '127.0.0.1' && process.env.WORDPAPER_MINI_DEVTOOLS === '1';
 const miniLearning = require('./lib/mini-learning').createMiniLearning(storage);
 const miniWechat = storage.createWechatMini({devtools:miniDevtools, getSchedules:id => miniLearning.schedules(id)});
+// Desktop review changes can create the first future reservation while the
+// phone is closed. Coalesce by account and finish the save response first.
+const changedSchedules = new Set();
+function onDesktopScheduleChanged(userId) {
+  if (MODE !== 'public' || !miniWechat.config().templateId || changedSchedules.has(userId)) return;
+  changedSchedules.add(userId);
+  setImmediate(() => {
+    changedSchedules.delete(userId);
+    try { miniWechat.afterLearning(userId); }
+    catch { console.error('[wechat-mini] 复习预约将在下一次调度时重新核对。'); }
+  });
+}
 const miniVoice = require('./lib/mini-voice').createMiniVoice({storage,learning:miniLearning,dataDir:DATA_DIR,allowPrivate:miniDevtools});
 const miniSentence = require('./lib/mini-sentence').createMiniSentence({storage,learning:miniLearning,allowPrivate:miniDevtools});
 const handleMini = require('./lib/mini-routes').createMiniRoutes({
@@ -1729,6 +1741,7 @@ async function handle(req, res) {
       result.value = await backgroundObjects.expand(session.user.id, result.value);
     }
     if (result.conflict) { json(res, 409, result); return; }
+    if (namespace === 'review') onDesktopScheduleChanged(session.user.id);
     json(res, 200, result);
     return;
   }
@@ -1891,6 +1904,7 @@ function normalizeImportedReview(payload) {
       const rev = Number(current.revisions && current.revisions.review) || 0;
       const result = mirroring() ? await upstream.pushState('review', review, rev) : storage.putState(session.user.id, 'review', review, rev);
       if (result.conflict || result.kind === 'conflict') { json(res, 409, { error: '数据刚刚在别处被修改，请重试' }); return; }
+      onDesktopScheduleChanged(session.user.id);
     }
     json(res, 200, {
       ok: true, dryRun, imported: total,
