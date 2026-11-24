@@ -18,6 +18,7 @@ const { freePort, startMockProvider, startApp, stopApp, startFlow, callback, coo
     const browserOrigin = `http://localhost:${port}`;
     app = await startApp(port, dataDir, `http://127.0.0.1:${mockPort}`, process.argv.includes('--browser') ? {
       WORDPAPER_GOOGLE_REDIRECT_URI: browserOrigin + '/api/auth/google/callback',
+      WORDPAPER_GITHUB_REDIRECT_URI: browserOrigin + '/api/auth/github/callback',
       WORDPAPER_WECHAT_REDIRECT_URI: browserOrigin + '/api/auth/wechat/callback',
     } : {});
     // A different site from the mock provider exercises real SameSite cookie
@@ -169,6 +170,18 @@ const { freePort, startMockProvider, startApp, stopApp, startFlow, callback, coo
     const passwordStillWorks = await passwordLogin('legacy-account');
     assert.equal(passwordStillWorks.user.id, a.user.id);
     assert.deepEqual((await api('/api/state', passwordStillWorks)).body.state, original);
+    await finish(passwordStillWorks, 'github', 'link', 'github-code-a');
+    const viaGitHub = await oauthLogin('github', 'github-code-renamed');
+    assert.equal(viaGitHub.user.id, a.user.id);
+    assert.deepEqual((await api('/api/state', viaGitHub)).body.state, original);
+    const githubOnly = await oauthLogin('github', 'github-code-b');
+    await finish(passwordStillWorks, 'github', 'replace', 'github-code-b', 'accountError=identity_in_use');
+    assert.equal((await api('/api/account/github/unlink', githubOnly, {})).body.code, 'last_login_method');
+    db.prepare('UPDATE sessions SET authenticated_at = 0 WHERE user_id = ?').run(githubOnly.user.id);
+    await finish(githubOnly, 'github', 'reauth', 'github-code-a', 'accountError=binding_changed');
+    await finish(githubOnly, 'github', 'reauth', 'github-code-b', 'accountSuccess=verified');
+    assert.equal((await api('/api/account/github/unlink', passwordStillWorks, {})).response.status, 200);
+    assert.equal((await api('/api/session', viaGitHub)).response.status, 401);
     console.log('PASS account link/replace/unlink, preserved data and password, conflicts, callback replay/cancellation/expiry, reauthentication, last-method guard, session revocation and restart persistence');
   } finally {
     if (db) db.close();

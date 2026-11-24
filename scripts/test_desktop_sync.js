@@ -45,7 +45,7 @@ const { normalizeUrl } = require('../lib/upstream');
       apps.push(await startApp(await freePort(), path.join(root, String(apps.length)), mockBase, { WORDPAPER_MODE: mode, WORDPAPER_COMPANION_ENABLED: '0' }));
     }
     const emailOnly = await startApp(await freePort(), path.join(root, 'email-only'), mockBase, {
-      WORDPAPER_GOOGLE_CLIENT_SECRET: '', WORDPAPER_WECHAT_APP_SECRET: '',
+      WORDPAPER_GOOGLE_CLIENT_SECRET: '', WORDPAPER_GITHUB_CLIENT_SECRET: '', WORDPAPER_WECHAT_APP_SECRET: '',
     });
     apps.push(emailOnly);
     const [cloud, desk1, desk2] = apps;
@@ -85,7 +85,8 @@ const { normalizeUrl } = require('../lib/upstream');
     const unsupported = await api(desk1, '/api/desktop/start', { url: previewOrigin, provider: 'wechat' });
     assert.equal(unsupported.response.status, 502);
     assert.match(unsupported.error, /未提供 WordPaper 账号同步/);
-    for (const [provider, label] of [['google', 'Google 登录'], ['wechat', '微信登录']]) {
+    assert.equal((await api(desk1, '/api/auth/providers')).github.enabled, false, 'local service exposed the hosted GitHub login');
+    for (const [provider, label] of [['google', 'Google 登录'], ['github', 'GitHub 登录'], ['wechat', '微信登录']]) {
       const unavailable = await api(desk1, '/api/desktop/start', { url: emailOnly.base, provider });
       assert.equal(unavailable.response.status, 503);
       assert.ok(unavailable.error.includes(label));
@@ -197,7 +198,10 @@ const { normalizeUrl } = require('../lib/upstream');
     assert.equal((await api(desk2, '/api/desktop/open', {}, cancelAccount)).response.status, 410);
     assert.equal((await api(desk2, '/api/desktop/poll', {}, cancelAccount)).response.status, 410);
     // WeChat can independently authorize a desktop, using the same protocol.
-    await connect(desk2, 'wechat', second.local);
+    const wechat = await connect(desk2, 'wechat', second.local);
+    const github = await connect(desk2, 'github', wechat.local);
+    assert.equal(github.account.user.username, 'github-user-a');
+    assert.equal(github.local.user.username, github.account.user.username);
 
     // Unpair removes only the cloud shadow; existing local data/account survives.
     assert.equal((await api(desk1, '/api/unpair', {}, first.local)).response.status, 200);
@@ -206,7 +210,7 @@ const { normalizeUrl } = require('../lib/upstream');
     const db = new DatabaseSync(path.join(root, '0', 'wordpaper.sqlite'));
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM device_flows WHERE user_id IS NOT NULL').get().n, 0);
     db.close();
-    console.log('PASS desktop device approval, private verifier/replay/cancel guards, Google and WeChat, two Apps + web sync, local-account isolation and unpair preservation');
+    console.log('PASS desktop device approval, private verifier/replay/cancel guards, Google, GitHub and WeChat, two Apps + web sync, local-account isolation and unpair preservation');
   } finally {
     for (const app of apps) await stopApp(app.child).catch(() => {});
     await new Promise(resolve => preview.close(resolve));

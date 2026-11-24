@@ -25,5 +25,7 @@ services:
         sync: false
       - key: WORDPAPER_GOOGLE_REDIRECT_URI
         sync: false
+      # GitHub 登录为可选功能。在服务的 Environment 中添加
+      # WORDPAPER_GITHUB_CLIENT_ID、WORDPAPER_GITHUB_CLIENT_SECRET 和 WORDPAPER_GITHUB_REDIRECT_URI。
       - key: TRUST_PROXY
         value: '1'

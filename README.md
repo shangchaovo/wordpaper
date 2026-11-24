@@ -6,7 +6,7 @@
 
 ![WordPaper：一抬眼，就能复习。12 本词书、3 类学习指标与 8 轮复习排期。](docs/screenshots/v2.6.7/01-overview.png)
 
-**新版 2.6.7：[下载 Mac App](https://github.com/shangchaovo/wordpaper/releases/tag/companion-v2.6.7) · [完整图文介绍与更新说明](docs/releases/v2.6.7.md)**
+**[下载最新版 Mac App](https://github.com/shangchaovo/wordpaper/releases/latest) · [打开云端账号](https://wordpaper-api.onrender.com/) · [更新日志](CHANGELOG.md)**
 
 | 想做什么 | WordPaper 怎么帮你 |
 | --- | --- |
@@ -66,7 +66,7 @@ Mac 版以独立 WordPaper.app 窗口呈现，可从 Dock 打开、关闭窗口�
 
 状态栏页面位于 `assets/`，供 2.6.2 起的更新器复制。源码开发可使用 `.venv-tts`。`lib/tts_edge.py` 保存微软语音的 WordBoundary 时间点，按音色、语速和文本缓存；自定义接口的 MP3 按账号、地址、模型、声音和文本缓存。返回时间点的音频支持逐词高亮，启用「减少动态效果」后使用静态姿态。`npm run test:speech` 覆盖账号隔离、自定义接口、朗读顺序、连点换题、原生播放与浏览器试听。
 
-账号和学习数据保存在账号服务器的数据库。自托管默认使用 SQLite，公网服务可连接 Supabase PostgreSQL。换电脑登录同一个账号时，复习进度、自定义词库和布局会随账号同步。WordPaper 提供 Google 和邮箱登录，已有账号可在「账号绑定」里连接 Google。
+账号和学习数据保存在账号服务器的数据库。自托管默认使用 SQLite，公网服务可连接 Supabase PostgreSQL。换电脑登录同一个账号时，复习进度、自定义词库和布局会随账号同步。云端支持 Google、GitHub 和账号密码登录。已有账号可在「账号绑定」里添加已启用的登录方式。
 
 现在是单入口、多用户，结构大概是这样：
 
@@ -79,7 +79,7 @@ Mac 桌面伴侣（可选）── 127.0.0.1:8771，仅在用户自己的 Mac �
 
 ## 桌面 App 与云端账号
 
-桌面窗口使用 macOS Cocoa + WKWebView；本机 Node 服务是 App 内部实现，日常使用不需要开终端、输入 localhost 或把浏览器当主窗口。安装包不包含 Google Client Secret、微信 AppSecret 或 `.env`。
+桌面窗口使用 macOS Cocoa + WKWebView；本机 Node 服务是 App 内部实现，日常使用不需要开终端、输入 localhost 或把浏览器当主窗口。第三方平台的服务端密钥保存在账号服务器。
 
 **本机账号使用 Google 登录**。在 Google Auth Platform 创建「桌面应用」OAuth 客户端，把下载的 JSON 放在 App 数据目录 `~/.wordpaper/google-desktop.json`，并限制为当前用户可读（`chmod 600`）。使用自定义 `WORDPAPER_DATA_DIR` 时放在该目录。先在本机 App 登录原账号，从「账号绑定」验证身份并绑定 Google。之后可在登录页选择「使用 Google 登录本机账号」，词库、提醒和复习记录仍归属原本机账号。授权在系统浏览器完成，回调使用临时本机端口，当前入口只用于直接在这台 Mac 使用的账号。
 
@@ -88,10 +88,10 @@ Mac 桌面伴侣（可选）── 127.0.0.1:8771，仅在用户自己的 Mac �
 **跨电脑同步**需要单独连接账号服务器。
 
 1. 从 DMG 安装并打开 WordPaper.app。没有同步服务器时，可以继续使用原本机账号。
-2. 部署账号服务器后，在 App 登录页的「跨设备同步」填入它的 HTTPS 地址，选择 Google 或「邮箱 / 原账号登录」。每台设备首次配置一次，之后记住地址。
+2. 部署账号服务器后，在 App 登录页的「跨设备同步」填入它的 HTTPS 地址，选择 Google、GitHub 或「邮箱 / 原账号登录」。每台设备首次配置一次，之后记住地址。
 3. App 打开系统浏览器完成平台授权（避免在嵌入式 WebView 内登录 Google），浏览器显示当前账号与连接码。核对与 App 相同后，点「允许这台 App 同步」。
 4. App 自动进入同步工作区；网页和不同电脑的 App 使用同一云端账号。前台每 30 秒及窗口重新获得焦点时拉取变化，正在编辑的输入框、弹窗、拖动和待保存内容会暂缓被远端刷新。离线写入先落本机 SQLite，恢复连接后按原 revision 补传。顶部显示待同步、需重新验证或冲突状态。
-5. 绑定或换绑 Google，在 App 的「账号绑定 → 打开账号中心」统一管理。会话失效时从登录页重新授权。
+5. 绑定或换绑 Google、GitHub，在 App 的「账号绑定 → 打开账号中心」统一管理。会话失效时从登录页重新授权。
 
 桌面授权使用 10 分钟有效的一次性设备码、浏览器明确确认和仅本机服务持有的 SHA-256 verifier；会话令牌通过服务器之间的请求交付，不放进浏览器回跳 URL。每台 App 持有独立云端会话。同步副本按服务器地址和云端账号 ID 区分，不复用同名的本机账号；断开连接不会删除原本机账号。
 
@@ -144,7 +144,7 @@ chmod +x scripts/install_macos_service.sh
 
 在卫星机的登录页展开「这台是我的另一台电脑？连接到主账号 →」，填主账号所在电脑的地址和账号密码即可。配对后：本地注册/登录入口让位给「继续」；壁纸、小词灵、记忆本全部照常在本机运行。「断开连接」会删除本机同步副本，不影响主账号。
 
-**旧的密码配对仍支持私有网络**；需要跨网络的 Google/微信同步时，使用上述长期在线的 HTTPS 账号服务器：
+**旧的密码配对仍支持私有网络**；需要跨网络的第三方登录和同步时，使用上述长期在线的 HTTPS 账号服务器：
 
 - **同一 Wi-Fi / 局域网**：`http://主机名.local:8770`（如 `http://mininn.local:8770`）或局域网 IP `http://192.168.x.x:8770`。
 - **异地 / 不同网络**：用主力机的 Tailscale 地址 `http://100.x.x.x:8770`（两台都装 Tailscale 后，走加密私有网络，不暴露公网）。
@@ -177,11 +177,11 @@ chmod +x scripts/install_macos_service.sh
 - localStorage 只是按账号分区的本地缓存；服务器数据库才是跨电脑恢复的权威数据源。
 - 登录后可点顶栏“备份”，或访问 `/api/export` 下载当前账号的 JSON 备份。
 
-## Google 与邮箱登录
+## Google、GitHub 与邮箱登录
 
 已有账号可使用密码登录，在「账号绑定」中验证身份并绑定 Google。Google 授权使用 Authorization Code + PKCE，请求 `openid email profile`。云端按 Google 的 `sub` 查找业务账号。新设备连接后使用原账号的词库、提醒和复习记录。
 
-更换或解除绑定需要最近 10 分钟内的验证。更换时先完成新 Google 身份的授权；解除时需要保留另一种可用的登录方式。邮箱注册使用 6 位验证码，旧用户名仍可用于密码登录。登录页和账号中心仅显示 Google 与账号密码相关的操作。
+更换或解除绑定需要最近 10 分钟内的验证。更换时先完成新身份的授权。解除时需要保留另一种可用的登录方式。邮箱注册使用 6 位验证码，旧用户名仍可用于密码登录。
 
 Google Cloud 需要创建 Web application 类型 OAuth 客户端，并登记完全一致的回调：
 
@@ -192,6 +192,10 @@ https://你的域名/api/auth/google/callback
 参见 [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) 与 [Web Server OAuth 指南](https://developers.google.com/identity/protocols/oauth2/web-server)。
 
 Google 配置使用 `WORDPAPER_GOOGLE_CLIENT_ID`、`WORDPAPER_GOOGLE_CLIENT_SECRET`、`WORDPAPER_GOOGLE_REDIRECT_URI`。`redirect_uri_mismatch` 表示需要在 Google Auth Platform 的「客户端」中登记该回调地址。开发环境可单独登记 `http://localhost:8770/api/auth/google/callback`，并从 `http://localhost:8770` 访问。测试模式下，将需要参与测试的账号加入测试用户列表。正式发布前按控制台要求完成品牌、受众及发布设置。
+
+要启用 GitHub，使用个人 GitHub 账号进入 Settings → Developer settings → OAuth Apps，新建 WordPaper 应用。Homepage URL 填写实际账号服务的 HTTPS 网址，Authorization callback URL 填写同一网址下的 `/api/auth/github/callback`。将 Client ID、Client secret 和完整回调地址分别存入账号服务的 `WORDPAPER_GITHUB_CLIENT_ID`、`WORDPAPER_GITHUB_CLIENT_SECRET`、`WORDPAPER_GITHUB_REDIRECT_URI` 环境变量并重启服务。可通过 `/api/auth/providers` 的 `github.enabled` 核对结果。[GitHub 注册流程](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) · [GitHub 授权流程](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)
+
+已有词库的用户应先用原有方式登录，再打开「账号绑定」添加 GitHub。首次直接使用一个未绑定的 GitHub 身份登录会创建独立工作区。WordPaper 使用 GitHub 的数字用户 ID 识别账号，改名后仍可登录原工作区。在 Mac 上使用「跨设备同步」连接同一账号服务，按提示在系统浏览器完成授权。
 
 主站 Google 回调与 `WORDPAPER_PUBLIC_ORIGIN` 使用同一站点。桌面 App 在系统浏览器中授权，随后用连接码确认设备。
 
@@ -232,7 +236,7 @@ WORDPAPER_PUBLIC_ORIGIN=https://wordpaper.example.com
 TRUST_PROXY=1
 ```
 
-如需第二个域名，在 `WORDPAPER_ADDITIONAL_PUBLIC_ORIGINS` 中填写完整 HTTPS origin，多个地址用逗号分隔。主域名继续使用 `WORDPAPER_PUBLIC_ORIGIN`，显式配置的 OAuth 回调也保留主域名。在同一 Google 客户端为每个入口登记各自的 `/api/auth/google/callback`。多域部署的 HTTPS 代理须保留浏览器请求的 `Host`。浏览器登录、设备确认和写入校验都使用发起请求的入口，每个入口分别保存登录 Cookie。
+如需第二个域名，在 `WORDPAPER_ADDITIONAL_PUBLIC_ORIGINS` 中填写完整 HTTPS origin，多个地址用逗号分隔。主域名继续使用 `WORDPAPER_PUBLIC_ORIGIN`，显式配置的 OAuth 回调也保留主域名。为每个启用的入口在 Google 客户端和 GitHub OAuth App 分别登记该域名下的 `/api/auth/google/callback` 和 `/api/auth/github/callback`。多域部署的 HTTPS 代理须保留浏览器请求的 `Host`。浏览器登录、设备确认和写入校验都使用发起请求的入口，每个入口分别保存登录 Cookie。
 
 `TRUST_PROXY=1` 表示只信任一跳受控反向代理：代理必须覆盖或追加 `X-Forwarded-For / Proto / Host`，应用端口必须像 Compose 默认值一样只绑定 `127.0.0.1`，防火墙也不能允许公网绕过代理直连 8770。服务取右侧最后一跳客户端地址，客户端伪造在左侧的 X-Forwarded-For 不会绕过登录与验证码限流。
 

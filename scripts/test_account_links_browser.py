@@ -23,6 +23,7 @@ with sync_playwright() as p:
     page.route('https://cdn.jsdelivr.net/**', lambda route: route.abort())
     page.goto(BASE + '/login.html', wait_until='networkidle')
     expect(page.get_by_role('button', name='使用 Google 继续')).to_be_enabled()
+    expect(page.get_by_role('button', name='使用 GitHub 继续')).to_be_enabled()
     expect(page.locator('#auth-wechat')).to_have_count(0)
     expect(page.get_by_text('微信')).to_have_count(0)
     assert '账号绑定' in page.locator('.card-heading').inner_text()
@@ -51,6 +52,9 @@ with sync_playwright() as p:
     assert page.evaluate('Store.getReminders()[0].text') == '绑定前的提醒'
     expect(dialog.locator('[data-provider="wechat"]')).to_have_count(0)
     expect(dialog.get_by_text('微信')).to_have_count(0)
+    github = dialog.locator('[data-provider="github"]')
+    github.get_by_role('button', name='绑定 GitHub', exact=True).click()
+    expect(github.locator('.account-provider-state')).to_have_text('已绑定', timeout=15000)
     page.screenshot(path=str(OUT / 'account-desktop.png'), full_page=True)
     page.set_viewport_size({'width': 390, 'height': 844})
     bounds = dialog.bounding_box()
@@ -83,6 +87,8 @@ with sync_playwright() as p:
     expect(page.locator('#account-password-form')).to_be_visible()
     expect(dialog.locator('[data-provider="google"]').get_by_role('button', name='更换绑定')).to_be_disabled()
     expect(dialog.get_by_text('微信')).to_have_count(0)
+    expect(dialog.get_by_role('button', name='用已绑定的 GitHub 验证')).to_be_enabled()
+    expect(github.get_by_role('button', name='更换绑定')).to_be_disabled()
     page.unroute('**/api/account', account_with_legacy_wechat)
     page.locator('#account-password').fill('browser-link-password')
     page.locator('#account-password-form').get_by_role('button', name='验证', exact=True).click()
@@ -104,6 +110,21 @@ with sync_playwright() as p:
     dialog.locator('[data-provider="google"]').get_by_role('button', name='解除绑定').click()
     expect(page.locator('#account-status')).to_contain_text('已解除绑定')
     expect(dialog.locator('[data-provider="google"]')).to_contain_text('尚未绑定')
+    page.keyboard.press('Escape')
+
+    page.locator('#btn-logout').click()
+    page.get_by_role('button', name='使用 GitHub 继续').click()
+    page.wait_for_url(BASE + '/', wait_until='domcontentloaded')
+    page.wait_for_function('window.Store && Store.currentUser()')
+    assert page.evaluate('Store.currentUser().id') == user['id']
+    assert page.evaluate('Store.getReminders()[0].text') == '绑定前的提醒'
+    with sqlite3.connect(DATABASE) as db:
+        db.execute('UPDATE sessions SET authenticated_at = 0 WHERE user_id = ?', (user['id'],))
+    page.locator('#btn-account').click()
+    dialog.get_by_role('button', name='用已绑定的 GitHub 验证').click()
+    expect(page.locator('#account-status')).to_contain_text('身份已验证', timeout=15000)
+    github.get_by_role('button', name='解除绑定').click()
+    expect(github.locator('.account-provider-state')).to_have_text('尚未绑定')
     page.keyboard.press('Escape')
 
     # Exercise the local Google UI contract while the fixture manages the
@@ -176,17 +197,18 @@ with sync_playwright() as p:
     context.close()
 
     # Legacy provider metadata must not add login actions to an email-only UI.
-    for wechat_enabled in (False, True):
+    for wechat_enabled, github_enabled in [(False, False), (True, False), (True, True)]:
         ctx = browser.new_context()
         tab = ctx.new_page()
-        tab.route('**/api/auth/providers', lambda route, request, w=wechat_enabled: route.fulfill(json={
-            'google': {'enabled': False}, 'wechat': {'enabled': w},
+        tab.route('**/api/auth/providers', lambda route, request, w=wechat_enabled, g=github_enabled: route.fulfill(json={
+            'google': {'enabled': False}, 'wechat': {'enabled': w}, 'github': {'enabled': g},
             'email': {'enabled': True, 'registrationEnabled': True}, 'paired': None, 'pairingAllowed': False,
         }))
         tab.goto(BASE + '/login.html', wait_until='networkidle')
         expect(tab.locator('#auth-google')).not_to_be_visible()
         expect(tab.locator('#auth-wechat')).to_have_count(0)
-        expect(tab.locator('.auth-divider')).not_to_be_visible()
+        expect(tab.locator('#auth-github')).to_be_visible(visible=github_enabled)
+        expect(tab.locator('.auth-divider')).to_be_visible(visible=github_enabled)
         ctx.close()
     browser.close()
-print('PASS browser: Google web and local login, account binding, original data, focus and mobile layout, no WeChat entry points')
+print('PASS browser: Google/GitHub web login, local Google login, account binding and reauthentication, original data, focus and mobile layout, no WeChat entry points')

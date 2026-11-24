@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
@@ -58,7 +59,7 @@ async function startMockProvider(port, exchanges) {
   };
   const server = http.createServer(async (req, res) => {
     const parsed = new URL(req.url, `http://127.0.0.1:${port}`);
-    const authorize = /^\/(google|wechat)\/authorize$/.exec(parsed.pathname);
+    const authorize = /^\/(google|github|wechat)\/authorize$/.exec(parsed.pathname);
     if (authorize) {
       const redirect = new URL(parsed.searchParams.get('redirect_uri'));
       redirect.searchParams.set('state', parsed.searchParams.get('state'));
@@ -92,6 +93,27 @@ async function startMockProvider(port, exchanges) {
     if (parsed.pathname === '/google/userinfo') {
       const code = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
       responseJson(res, googleProfiles[code] || googleProfiles['google-code-a']);
+      return;
+    }
+    if (parsed.pathname === '/github/token' && req.method === 'POST') {
+      const form = new URLSearchParams(await requestBody(req));
+      assert.equal(form.get('client_id'), 'github-client-test');
+      assert.equal(form.get('client_secret'), 'github-secret-test');
+      assert.equal(req.headers.accept, 'application/json');
+      const code = form.get('code');
+      exchanges.push({ provider: 'github', code, verifier: form.get('code_verifier'), redirectUri: form.get('redirect_uri') });
+      responseJson(res, { access_token: code, token_type: 'bearer', scope: '' });
+      return;
+    }
+    if (parsed.pathname === '/github/userinfo') {
+      const code = String(req.headers.authorization || '').replace(/^Bearer /, '');
+      const profiles = {
+        'github-code-a': { id: 101, login: 'github-user-a', email: 'mail.user@example.test' },
+        'github-code-b': { id: 102, login: 'github-user-b' },
+        'github-code-renamed': { id: 101, login: 'renamed-user', email: null },
+        'github-code-invalid': { login: 'github-user-a' },
+      };
+      responseJson(res, profiles[code] || {});
       return;
     }
     if (parsed.pathname === '/wechat/token') {
@@ -141,6 +163,12 @@ async function startApp(port, dataDir, mockBase, overrides = {}) {
       WORDPAPER_GOOGLE_CLIENT_ID: 'google-client-test',
       WORDPAPER_GOOGLE_CLIENT_SECRET: 'google-secret-test',
       WORDPAPER_GOOGLE_REDIRECT_URI: base + '/api/auth/google/callback',
+      WORDPAPER_GITHUB_CLIENT_ID: 'github-client-test',
+      WORDPAPER_GITHUB_CLIENT_SECRET: 'github-secret-test',
+      WORDPAPER_GITHUB_REDIRECT_URI: base + '/api/auth/github/callback',
+      WORDPAPER_TEST_GITHUB_AUTHORIZATION_ENDPOINT: mockBase + '/github/authorize',
+      WORDPAPER_TEST_GITHUB_TOKEN_ENDPOINT: mockBase + '/github/token',
+      WORDPAPER_TEST_GITHUB_USERINFO_ENDPOINT: mockBase + '/github/userinfo',
       WORDPAPER_WECHAT_APP_ID: 'wechat-app-test',
       WORDPAPER_WECHAT_APP_SECRET: 'wechat-secret-test',
       WORDPAPER_WECHAT_REDIRECT_URI: base + '/api/auth/wechat/callback',
@@ -233,16 +261,16 @@ if (require.main === module) (async function main() {
     const discovery = await fetch(base + '/api/auth/providers');
     assert.equal(discovery.status, 200);
     assert.deepEqual(await discovery.json(), {
-      email: { enabled: true, registrationEnabled: true }, google: { enabled: true }, wechat: { enabled: true },
+      email: { enabled: true, registrationEnabled: true }, google: { enabled: true }, github: { enabled: true }, wechat: { enabled: true },
       paired: null, pairingAllowed: false,
     });
 
     // An alias cannot start a flow whose callback uses a different browser origin.
     const alias = `http://localhost:${appPort}`;
-    const aliasHeaders = { 'X-Forwarded-Host': new URL(alias).host };
+    const aliasHeaders = { 'X-Forwarded-Host': new URL(alias).host, 'X-Forwarded-For': '192.0.2.7' };
     const aliasDiscovery = await (await fetch(base + '/api/auth/providers', { headers: aliasHeaders })).json();
     const deviceNext = '/connect.html?code=ABCDEF-012345';
-    for (const provider of ['google', 'wechat']) {
+    for (const provider of ['google', 'github', 'wechat']) {
       assert.equal(aliasDiscovery[provider].enabled, false);
       const start = await fetch(base + `/api/auth/${provider}/start?next=${encodeURIComponent(deviceNext)}`, {
         headers: aliasHeaders, redirect: 'manual',
@@ -433,6 +461,25 @@ if (require.main === module) (async function main() {
     const persistedSession = await (await fetch(app.base + '/api/session', { headers: { Cookie: persistedCookie } })).json();
     assert.equal(persistedSession.user.id, googleSession.user.id, 'provider identity changed after restart');
 
+    const github = await startFlow(base, 'github', '/');
+    assert.equal(github.authorization.searchParams.get('client_id'), 'github-client-test');
+    assert.equal(github.authorization.searchParams.has('client_secret'), false);
+    assert.equal(github.authorization.searchParams.has('scope'), false);
+    assert.equal(github.authorization.searchParams.get('code_challenge_method'), 'S256');
+    const githubResult = await callback(base, 'github', github, 'github-code-a');
+    const exchange = exchanges.at(-1);
+    assert.equal(exchange.provider, 'github');
+    assert.equal(createHash('sha256').update(exchange.verifier).digest('base64url'), github.authorization.searchParams.get('code_challenge'));
+    const githubSession = await (await fetch(base + '/api/session', { headers: { Cookie: cookieValue(githubResult, 'wp_session') } })).json();
+    assert.equal(githubSession.user.username, 'github-user-a');
+    assert.notEqual(githubSession.user.id, mail.body.user.id, 'GitHub public email matched an existing WordPaper account');
+    const renamed = await callback(base, 'github', await startFlow(base, 'github', '/'), 'github-code-renamed');
+    const renamedSession = await (await fetch(base + '/api/session', { headers: { Cookie: cookieValue(renamed, 'wp_session') } })).json();
+    assert.equal(renamedSession.user.id, githubSession.user.id);
+    const invalid = await callback(base, 'github', await startFlow(base, 'github', '/'), 'github-code-invalid');
+    assert.match(invalid.headers.get('location'), /oauth_failed/);
+    assert.equal(cookieValue(invalid, 'wp_session'), '');
+
     const providerErrorFlow = await startFlow(base, 'google', connectPath);
     const providerError = await fetch(`${base}/api/auth/google/callback?state=${providerErrorFlow.state}&error=temporarily_unavailable`, {
       headers: { Cookie: providerErrorFlow.flowCookie }, redirect: 'manual',
@@ -441,7 +488,7 @@ if (require.main === module) (async function main() {
 
     assert.ok(exchanges.some(entry => entry.provider === 'google'));
     assert.ok(exchanges.some(entry => entry.provider === 'wechat'));
-    console.log('PASS email login, Google PKCE, WeChat website OAuth, state binding/replay/mix-up checks, session rotation, identity isolation, and restart persistence');
+    console.log('PASS email login, Google and GitHub PKCE, stable GitHub ID, WeChat website OAuth, state binding/replay/mix-up checks, session rotation, identity isolation, and restart persistence');
   } finally {
     if (app) await stopApp(app.child).catch(() => {});
     await close(mock).catch(() => {});

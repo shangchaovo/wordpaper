@@ -6,7 +6,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
   <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png?v=20261022">
   <title>登录 · WordPaper</title>
-  <link rel="stylesheet" href="/css/auth.css?v=20261122-google">
+  <link rel="stylesheet" href="/css/auth.css?v=20261123-github">
 </head>
 <body class="auth-page">
   <main class="auth-shell">
@@ -20,7 +20,7 @@
     <section class="auth-card">
       <header class="card-heading">
         <h2>登录 WordPaper</h2>
-        <p id="auth-intro-help">已有账号可按原方式登录，再在「账号绑定」连接 Google。</p>
+        <p id="auth-intro-help">已有账号请先按原方式登录，再到「账号绑定」添加登录方式。</p>
       </header>
 
       <section id="desktop-local-google" class="desktop-sync" hidden aria-label="本机 Google 登录">
@@ -33,15 +33,20 @@
         <button id="desktop-local-google-cancel" class="pair-unpair" type="button" hidden>取消授权</button>
       </section>
       <div class="provider-stack" aria-label="第三方账号登录">
-        <button id="auth-google" class="provider-button provider-button-google" type="button" data-provider="google" disabled aria-disabled="true" style="display:none">
+        <button id="auth-google" class="provider-button provider-button-google" type="button" data-provider="google" disabled hidden>
           <span class="provider-mark google" aria-hidden="true">G</span>
-          <span class="provider-copy"><strong>使用 Google 继续</strong><small data-provider-state>正在检查可用性…</small></span>
+          <span class="provider-copy"><strong>使用 Google 继续</strong><small>首次使用将自动创建账号</small></span>
+          <span class="provider-arrow" aria-hidden="true">›</span>
+        </button>
+        <button id="auth-github" class="provider-button" type="button" data-provider="github" disabled hidden>
+          <span class="provider-mark github" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></span>
+          <span class="provider-copy"><strong>使用 GitHub 继续</strong><small>首次使用将自动创建账号</small></span>
           <span class="provider-arrow" aria-hidden="true">›</span>
         </button>
       </div>
       <p id="provider-status" class="sr-only" role="status" aria-live="polite"></p>
 
-      <div class="auth-divider"><span>或使用邮箱</span></div>
+      <div class="auth-divider" hidden><span>或使用邮箱</span></div>
 
       <div id="email-panel" class="email-panel" role="tabpanel" aria-labelledby="tab-login">
         <div class="auth-tabs" role="tablist" aria-label="邮箱账号操作">
@@ -95,6 +100,7 @@
           <input id="desktop-origin" type="url" placeholder="https://你的账号服务器域名" autocomplete="url" required>
           <div class="desktop-login-buttons">
             <button class="submit-auth" type="button" data-cloud-provider="google">Google 登录</button>
+            <button class="send-code-button" type="button" data-cloud-provider="github">GitHub 登录</button>
             <button class="send-code-button" type="button" data-cloud-provider="email">邮箱 / 原账号登录</button>
           </div>
           <p id="desktop-sync-status" role="status" aria-live="polite"></p>
@@ -129,7 +135,7 @@
 
     </section>
   </main>
-  <script src="/js/auth.js?v=20261122-google"></script>
+  <script src="/js/auth.js?v=20261123-github"></script>
   <script src="/js/local-google.js?v=20261123-local-google"></script>
   <script src="/js/desktop-auth.js?v=20261122-glass"></script>
 </body>

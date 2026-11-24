@@ -69,6 +69,9 @@ with sync_playwright() as p:
     expect(account.locator('#account-dialog')).to_be_visible()
     expect(account.locator('#account-identity')).to_contain_text(remote_session['user']['username'])
     expect(account.locator('#account-dialog').get_by_text('微信')).to_have_count(0)
+    github = account.locator('#account-dialog [data-provider="github"]')
+    github.get_by_role('button', name='绑定 GitHub', exact=True).click()
+    expect(github.locator('.account-provider-state')).to_have_text('已绑定', timeout=15000)
     assert account.url.startswith(CLOUD + '/')
     expect(app.locator('#account-dialog')).to_be_visible()
     # A Mac's default browser can have a different session from its WKWebView.
@@ -98,6 +101,8 @@ with sync_playwright() as p:
     reconnect = desktop.new_page()
     reconnect.route('**/api/desktop/open', lambda route: route.fulfill(status=503, json={'error': '系统浏览器未能打开'}))
     reconnect.goto(BASE + '/login.html?sync=1')
+    expect(reconnect.locator('#auth-github')).to_be_hidden()
+    expect(reconnect.locator('[data-cloud-provider="github"]')).to_be_visible()
     reconnect.locator('#desktop-origin').fill(CLOUD)
     reconnect.locator('[data-cloud-provider="email"]').click()
     fallback = reconnect.get_by_role('textbox', name='浏览器授权地址')
@@ -117,8 +122,8 @@ with sync_playwright() as p:
     assert context.request.get(CLOUD + '/api/session').status == 401
     app.goto(BASE + '/login.html?sync=1', wait_until='domcontentloaded')
     expect(app.locator('#desktop-origin')).to_have_value(CLOUD)
-    with context.expect_event('request', predicate=lambda request: urlsplit(request.url).path == '/google/authorize'):
-        connect_desktop(context, app, 'Google 登录')
+    with context.expect_event('request', predicate=lambda request: urlsplit(request.url).path == '/github/authorize'):
+        connect_desktop(context, app, 'GitHub 登录')
     assert context.request.get(CLOUD + '/api/session').json()['user']['id'] == remote_session['user']['id']
     local_session = context.request.get(BASE + '/api/session').json()
     assert local_session['mirrored'] and local_session['user']['id'] == original_local_user['id']
@@ -185,4 +190,4 @@ with sync_playwright() as p:
     outage.close()
     assert not errors, errors
     browser.close()
-print('PASS Google desktop handoff to the same account, cloud changes and account center, no WeChat entry points')
+print('PASS Google and GitHub desktop handoff to the same account, cloud changes and account center, no WeChat entry points')

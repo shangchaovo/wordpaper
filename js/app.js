@@ -3403,6 +3403,7 @@
       oauth_failed: '授权未完成，原有绑定保持不变，请稍后重试。',
     };
     let busy = false;
+    const providerNames = new Map([['google', 'Google'], ['github', 'GitHub']]);
     let googleAttempt = null;
     async function request(url, body) {
       const response = await fetch(url, body === undefined ? { cache: 'no-store' } : {
@@ -3471,19 +3472,24 @@
       $('#account-password-form').hidden = !data.hasPassword;
       const verify = $('#account-verify-providers');
       verify.replaceChildren();
-      data.providers.filter(provider => provider.provider === 'google').forEach(provider => {
+      data.providers.forEach(provider => {
+        const name = providerNames.get(provider.provider);
+        if (!name) return;
+        if (provider.provider === 'github' && !provider.enabled && !provider.bound) return;
         if (provider.bound && provider.enabled) {
-          button('用已绑定的 Google 验证', verify, () => act(provider, 'reauth'));
+          button(`用已绑定的 ${name} 验证`, verify, () => act(provider, 'reauth'));
         }
         const row = document.createElement('section'); row.className = 'account-provider';
         row.dataset.provider = provider.provider;
         row.dataset.available = String(provider.enabled);
         const mark = document.createElement('span'); mark.className = 'account-provider-mark';
         mark.setAttribute('aria-hidden', 'true');
-        mark.textContent = 'G';
+        if (provider.provider === 'github') {
+          mark.innerHTML = '<svg class="ic" width="20" height="20"><use href="#i-github"/></svg>';
+        } else mark.textContent = 'G';
         const copy = document.createElement('div'); copy.className = 'account-provider-copy';
         const heading = document.createElement('div'); heading.className = 'account-provider-heading';
-        const title = document.createElement('strong'); title.textContent = 'Google';
+        const title = document.createElement('strong'); title.textContent = name;
         const state = document.createElement('span'); state.className = 'account-provider-state';
         state.dataset.bound = String(provider.bound);
         state.textContent = provider.bound ? '已绑定' : provider.enabled ? '尚未绑定' : '暂未开放';
@@ -3497,7 +3503,7 @@
           copy.appendChild(note);
         }
         const actions = document.createElement('div'); actions.className = 'account-actions';
-        const bind = button(provider.bound ? '更换绑定' : '绑定 Google', actions, () => act(provider, provider.bound ? 'replace' : 'link'), !provider.enabled || data.reauthRequired);
+        const bind = button(provider.bound ? '更换绑定' : `绑定 ${name}`, actions, () => act(provider, provider.bound ? 'replace' : 'link'), !provider.enabled || data.reauthRequired);
         if (!provider.bound) bind.classList.add('account-bind-action');
         if (provider.bound) {
           const unlink = button('解除绑定', actions, () => act(provider, 'unlink'), !provider.canUnlink || data.reauthRequired);
@@ -3540,14 +3546,15 @@
     }
     function act(provider, action) {
       if (busy) return;
-      if (action === 'unlink' && !window.confirm(`解除 Google（${provider.label}）绑定？之后请使用其他已绑定方式或原密码登录。`)) return;
-      if (action === 'replace' && !window.confirm(`更换 Google 绑定？新账号授权成功后才会替换「${provider.label}」，所有数据保留。`)) return;
-      const localGoogle = provider.localDesktop && action !== 'unlink';
+      const name = providerNames.get(provider.provider);
+      if (action === 'unlink' && !window.confirm(`解除 ${name}（${provider.label}）绑定？之后请使用其他已绑定方式或原密码登录。`)) return;
+      if (action === 'replace' && !window.confirm(`更换 ${name} 绑定？新账号授权成功后才会替换「${provider.label}」，所有数据保留。`)) return;
+      const localGoogle = provider.provider === 'google' && provider.localDesktop && action !== 'unlink';
       run(async () => {
         if (!await Store.flush()) throw new Error('当前改动尚未同步，请稍后再试');
         if (localGoogle) { await authorizeLocalGoogle(action); return; }
         say(action === 'unlink' ? '正在解除绑定…' : '正在准备授权…');
-        const data = await request(`/api/account/google/${action}`, {});
+        const data = await request(`/api/account/${provider.provider}/${action}`, {});
         if (data.authorizationUrl) location.assign(data.authorizationUrl);
         else say('已解除绑定，账号数据已保留。');
       }, localGoogle);
