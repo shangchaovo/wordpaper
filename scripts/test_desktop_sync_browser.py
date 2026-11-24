@@ -36,8 +36,8 @@ def connect_desktop(context, app, selector, *, legacy=False, saved_reminders=Non
     app.wait_for_url((LEGACY if legacy else BASE) + '/', wait_until='domcontentloaded', timeout=20000)
     app.bring_to_front()
     # Foreground synchronization starts once the first workspace render is ready.
-    app.wait_for_function("!document.hidden && document.querySelector('#srs-grace-table')?.textContent.length > 0")
-    app.wait_for_function('async () => await Store.flush()')
+    expect(app.locator('#srs-grace-table')).to_contain_text('宽限', timeout=20000)
+    expect(app.locator('#sync-status')).to_have_text('已同步', timeout=20000)
 
 
 with sync_playwright() as p:
