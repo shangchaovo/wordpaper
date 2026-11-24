@@ -126,6 +126,16 @@ if (MODE === 'local') {
   upstream.startBackground();
 }
 function mirroring() { return MODE === 'local' && upstream.isPaired(); }
+const miniDevtools = MODE === 'local' && HOST === '127.0.0.1' && process.env.WORDPAPER_MINI_DEVTOOLS === '1';
+const miniLearning = require('./lib/mini-learning').createMiniLearning(storage);
+const miniWechat = storage.createWechatMini({devtools:miniDevtools, getSchedules:id => miniLearning.schedules(id)});
+const miniVoice = require('./lib/mini-voice').createMiniVoice({storage,learning:miniLearning,dataDir:DATA_DIR,allowPrivate:miniDevtools});
+const miniSentence = require('./lib/mini-sentence').createMiniSentence({storage,learning:miniLearning,allowPrivate:miniDevtools});
+const handleMini = require('./lib/mini-routes').createMiniRoutes({
+  storage, learning:miniLearning, voices:miniVoice, sentence:miniSentence, mini:miniWechat, devtools:miniDevtools, mirroring, upstream,
+  allowDevRequest:req => isLoopbackRequest(req) && req.headers.host === '127.0.0.1:' + PORT,
+  desktopSession:requireSession, requireCsrf, readJson, json, clientIp,
+});
 const handleModel = require('./lib/model-routes').createModelRoutes({
   storage, upstream, mirroring, mode: MODE, requireSession, requireCsrf, readJson, json,
 });
@@ -593,12 +603,15 @@ function newSession(req, res, user, allowLegacyImport, sameSite, localGoogle = f
 const authAttempts = new Map();
 const AUTH_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_ATTEMPT_LIMIT = 30;
-function authRateAllowed(req) {
+function clientIp(req) {
   // With one trusted reverse-proxy hop, the proxy-appended rightmost address is
   // authoritative; client-supplied values can only appear to its left.
   const forwardedCandidate = lastForwardedValue(req, 'x-forwarded-for');
   const forwarded = net.isIP(forwardedCandidate) ? forwardedCandidate : '';
-  const key = forwarded || String(req.socket.remoteAddress || 'unknown');
+  return forwarded || String(req.socket.remoteAddress || 'unknown');
+}
+function authRateAllowed(req) {
+  const key = clientIp(req);
   if (storage.claimAuthAttempt) return storage.claimAuthAttempt(tokenHash(key), AUTH_WINDOW_MS, AUTH_ATTEMPT_LIMIT);
   const now = Date.now();
   let entry = authAttempts.get(key);
@@ -1066,7 +1079,7 @@ function notifySpeechChange(userId) {
 }
 
 function speechSettingsAvailable(req) {
-  return MODE === 'local' && isSameMachineRequest(req);
+  return (MODE === 'local' && isSameMachineRequest(req)) || (MODE === 'public' && miniWechat.config().loginAvailable);
 }
 
 async function handleSpeechSettings(req, res, preview) {
@@ -1083,15 +1096,15 @@ async function handleSpeechSettings(req, res, preview) {
     else {
       const fields = await readJson(req);
       const provider = require('./lib/speech-provider');
-      const config = provider.normalizeSpeech(fields, fields?.apiKey ? null : storage.speech.get(id));
+      const config = provider.normalizeSpeech(fields, fields?.apiKey ? null : storage.speech.get(id), MODE === 'local');
       if (preview) {
-        const audio = await provider.generateSpeech(config, require('./lib/speech').SAMPLE);
+        const audio = await provider.generateSpeech(config, require('./lib/speech').SAMPLE, {allowPrivate: MODE === 'local'});
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': audio.length, 'Cache-Control': 'no-store' });
         return res.end(audio);
       }
       result = storage.speech.save(id, config);
     }
-    notifySpeechChange(id);
+    if (MODE === 'local') notifySpeechChange(id);
     json(res, 200, result);
   } catch (error) {
     json(res, error.status || 500, { error: error.status ? error.message : '无法读取或保存语音设置。' });
@@ -1419,6 +1432,10 @@ async function handle(req, res) {
   const parsed = new URL(req.url, 'http://wordpaper.invalid');
   const pathname = parsed.pathname;
 
+  if (pathname.startsWith('/api/mini/') || pathname === '/api/account/mini' || pathname.startsWith('/api/account/mini/')) {
+    return handleMini(req, res, parsed);
+  }
+
   if (pathname === '/healthz' && req.method === 'GET') {
     let database = {};
     if (databaseUrl) {
@@ -1658,16 +1675,23 @@ async function handle(req, res) {
     if (!session) { json(res, 401, { error: '请先登录' }); return; }
     const paired = mirroring();
     let known;
+    let stamps;
     const header = req.headers['x-wordpaper-revisions'];
-    if (!paired && header) {
+    const stampHeader = req.headers['x-wordpaper-updated-at'];
+    if (paired && stampHeader) {
+      try { stamps = JSON.parse(stampHeader); } catch {}
+      if (!stamps || typeof stamps !== 'object' || Array.isArray(stamps) || Object.keys(stamps).length > 100) {
+        json(res, 400, { error: '同步时间戳无效' }); return;
+      }
+    }
+    if ((!paired || stamps) && header) {
       try { known = JSON.parse(header); } catch {}
       if (!known || typeof known !== 'object' || Array.isArray(known) || Object.keys(known).length > 100) {
         json(res, 400, { error: '同步版本无效' }); return;
       }
     }
-    // Provisional SQLite revisions can collide with canonical revisions after
-    // offline writes settle. The loopback hop always sends the local snapshot.
-    const snapshot = paired ? await upstream.mirroredState() : storage.getState(session.user.id, known);
+    const options = { passive: Boolean(known) && req.headers['x-wordpaper-passive'] === '1', knownUpdatedAt: stamps };
+    const snapshot = paired ? await upstream.mirroredState(known, options) : storage.getState(session.user.id, known, options);
     await expandBackground(session.user.id, snapshot);
     json(res, 200, { user: session.user, ...snapshot, ...(known ? { partial: true } : {}),
       ...(paired ? { upstream: upstream.status(), pending: upstream.pendingCount(), conflictCount: storage.mirrorConflicts(session.user.id, true) } : {}) });
@@ -2030,7 +2054,9 @@ function listenForPairedMacs() {
   } catch (error) { console.error('[sync] Tailscale configuration:', error.message); }
 }
 
+let stopMiniWorker;
 server.on('listening', () => {
+  if(MODE === 'public' && miniWechat.config().templateId) stopMiniWorker = miniWechat.startWorker();
   listenForPairedMacs();
   const maintainReviews = () => {
     try { storage.reconcileReviews(desktopCloud && (id => id !== upstream.localUserId() && desktopCloud.inactiveAccount(id))); } catch (error) { console.error('[review] overdue policy:', error.message); }
@@ -2074,6 +2100,7 @@ function hardExit(code) {
 function shutdown() {
   if (closing) return;
   closing = true;
+  if(stopMiniWorker) stopMiniWorker();
   localGoogleAuth.close();
   clearTimeout(syncRetry);
   const listeners = syncServer?.listening ? [server, syncServer] : [server];

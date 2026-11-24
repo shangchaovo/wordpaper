@@ -1,16 +1,18 @@
 /* review.js — 单词级艾宾浩斯记忆记录。
  * 每个被点击「记住」的单词都有独立阶段、下次到期时间与学习事件；
  * 20分钟 / 1小时 / 9小时 / 1天 / 2天 / 3天 / 6天 / 12天后再出现。 */
-(function () {
+(function (createReview) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = createReview;
+  else window.Review = createReview(window, () => Date.now());
+})(function (context, nowMs) {
   'use strict';
 
-  var INTERVALS_MIN = window.SrsPolicy.INTERVALS_MIN;
-  function nowMs() { return Date.now(); }
+  var INTERVALS_MIN = context.SrsPolicy.INTERVALS_MIN;
   function wordKey(w) { return (w && w.word ? String(w.word) : '') + '|' + (w && w.meaning ? String(w.meaning) : ''); }
   function groupKeyFor(words) { return (words || []).map(wordKey).sort().join(';;'); }
 
   function getLib(lib) {
-    var all = window.Store.getReview();
+    var all = context.Store.getReview();
     var L = all[lib];
     if (!L || typeof L !== 'object') L = { cursor: 0, groups: {}, words: {} };
     if (!L.groups) L.groups = {};
@@ -32,7 +34,7 @@
     });
     return L;
   }
-  function saveLib(lib, L) { var all = window.Store.getReview(); all[lib] = L; window.Store.saveReview(all); }
+  function saveLib(lib, L) { var all = context.Store.getReview(); all[lib] = L; context.Store.saveReview(all); }
   function currentGroupKey(sel) { return sel && sel.words && sel.words.length ? groupKeyFor(sel.words) : ''; }
 
   function activeWords(lib) {
@@ -56,7 +58,7 @@
     var action = 'seen';
     if (!item) {
       item = L.words[key] = { word: word, learnedAt: t, stage: 0, due: t + INTERVALS_MIN[0] * 60000, learnedCount: 1, reviewCount: 0, successCount: 0, failCount: 0, events: [{ at: t, type: 'learn' }] };
-      window.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
+      context.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
       action = 'learn';
     } else {
       // 快照补偿、断线重放与重复请求都必须真正幂等，不增长计数或事件历史。
@@ -83,7 +85,7 @@
     if (grade == null) grade = 'remembered';
     var L = getLib(lib), key = wordKey(word), t = nowMs(), item = L.words[key];
     if (!item) return { action: 'missing', item: null };
-    window.SrsPolicy.applyItem(item, t);
+    context.SrsPolicy.applyItem(item, t);
     if (item.stage >= INTERVALS_MIN.length) return { action: 'mastered', item: item };
     if (!item.due || item.due > t) return { action: 'early', item: item };
     if (grade !== 'remembered' && grade !== 'fuzzy' && grade !== 'forgot') grade = 'remembered';
@@ -95,7 +97,7 @@
       // 模糊:不前进也不归零,保持当前档,缩短一点再来一次(档位间隔的一半,最少 20 分钟)
       var stageNow = Math.max(0, Math.min(INTERVALS_MIN.length - 1, Number(item.stage) || 0));
       var wait = Math.max(INTERVALS_MIN[0], Math.round(INTERVALS_MIN[stageNow] / 2));
-      window.SrsPolicy.scheduled(item, t, wait);
+      context.SrsPolicy.scheduled(item, t, wait);
       item.fuzzyCount = (item.fuzzyCount || 0) + 1;
       item.events.push({ at: t, type: 'fuzzy' }); item.events = item.events.slice(-64);
       item.lastSeenAt = t;
@@ -106,7 +108,7 @@
     if (grade === 'remembered') {
       item.stage = Math.min((Number(item.stage) || 0) + 1, INTERVALS_MIN.length);
       item.successCount = (item.successCount || 0) + 1;
-      window.SrsPolicy.scheduled(item, t, item.stage < INTERVALS_MIN.length ? INTERVALS_MIN[item.stage] : null);
+      context.SrsPolicy.scheduled(item, t, item.stage < INTERVALS_MIN.length ? INTERVALS_MIN[item.stage] : null);
       item.events.push({ at: t, type: item.due ? 'review-pass' : 'mastered' }); item.events = item.events.slice(-64);
       item.lastSeenAt = t;
       item.lastUndo = { snapshot: snapshot, activityId: opts && opts.activityId, action: item.due ? 'review' : 'mastered', at: t };
@@ -115,7 +117,7 @@
     }
     item.stage = 0;
     item.failCount = (item.failCount || 0) + 1;
-    window.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
+    context.SrsPolicy.scheduled(item, t, INTERVALS_MIN[0]);
     item.events.push({ at: t, type: 'forgot' }); item.events = item.events.slice(-64);
     item.lastSeenAt = t;
     item.lastUndo = { snapshot: snapshot, activityId: opts && opts.activityId, action: 'forgot', at: t };
@@ -178,12 +180,12 @@
     return Object.keys(L.words).map(function (key) { return L.words[key]; }).filter(Boolean)
       .sort(function (a, b) { return (b.lastSeenAt || b.learnedAt || 0) - (a.lastSeenAt || a.learnedAt || 0); }).slice(0, limit || 4);
   }
-  function reset(lib) { var all = window.Store.getReview(); delete all[lib]; window.Store.saveReview(all); }
+  function reset(lib) { var all = context.Store.getReview(); delete all[lib]; context.Store.saveReview(all); }
 
-  window.Review = { INTERVALS_MIN: INTERVALS_MIN, wordKey: wordKey, groupKeyFor: groupKeyFor, currentGroupKey: currentGroupKey,
+  return { INTERVALS_MIN: INTERVALS_MIN, wordKey: wordKey, groupKeyFor: groupKeyFor, currentGroupKey: currentGroupKey,
     getLib: getLib, getWord: getWord, allWords: allWords, masteredWords: masteredWords,
     activeWords: activeWords, dueWords: dueWords, soonestDue: soonestDue,
     rememberWord: rememberWord, rememberWords: rememberWords, reviewWord: reviewWord, markPetQuiz: markPetQuiz,
     undoReview: undoReview, canUndo: canUndo,
     stats: stats, recentWords: recentWords, reset: reset };
-})();
+});

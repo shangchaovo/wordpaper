@@ -524,7 +524,7 @@ if (window.GuestWorkspace?.selected()) {
     <datalist id="speech-voices"><option value="coral"></option><option value="marin"></option><option value="cedar"></option><option value="alloy"></option><option value="nova"></option><option value="onyx"></option><option value="sage"></option><option value="shimmer"></option></datalist>
     <label for="speech-key">API Key</label>
     <input id="speech-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
-    <p class="hint">朗读由 AI 合成。密钥按账号加密保存在这台 Mac，试听和朗读按所选服务的价格计费。</p>
+    <p class="hint">朗读由 AI 合成。密钥由当前 WordPaper 服务按账号加密保存，试听和朗读按所选服务的价格计费。</p>
     <p id="speech-status" class="account-status" role="status" aria-live="polite"></p>
     <audio id="speech-audio" controls hidden aria-label="语音试听"></audio>
     <div class="account-actions">
@@ -586,6 +586,16 @@ if (window.GuestWorkspace?.selected()) {
       </div>
     </form>
     <div id="account-verify-providers" class="account-actions"></div>
+  </section>
+  <section id="mini-account" class="account-provider" hidden>
+    <h3>微信小程序</h3>
+    <p id="mini-description" class="hint"></p>
+    <div class="account-actions">
+      <button id="mini-issue" class="btn" type="button">生成小程序配对码</button>
+      <button id="mini-unlink" class="btn" type="button" hidden>解除小程序绑定</button>
+      <button id="mini-speech" class="btn" type="button" hidden>同步本机 AI 语音到云账号</button>
+    </div>
+    <output id="mini-code" aria-live="polite"></output>
   </section>
   <div id="account-providers" class="account-providers"></div>
   <footer class="account-glass-footer">

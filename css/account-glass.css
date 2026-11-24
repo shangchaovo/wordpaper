@@ -223,3 +223,7 @@
     backdrop-filter: none !important;
   }
 }
+
+#mini-account h3 { margin: 0 0 6px; }
+#mini-code { display:block; margin-top:9px; font-size:16px; font-weight:600; font-variant-numeric: tabular-nums; }
+#mini-code:empty { display:none; }
