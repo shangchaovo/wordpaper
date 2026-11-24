@@ -37,13 +37,16 @@ async function main() {
     app = await startApp(await freePort(), dir, 'http://127.0.0.1:' + mockPort, {
       TRUST_PROXY: '1', WORDPAPER_PUBLIC_ORIGIN: primary, WORDPAPER_ADDITIONAL_PUBLIC_ORIGINS: alternate,
       WORDPAPER_GOOGLE_REDIRECT_URI: primary + '/api/auth/google/callback',
+      WORDPAPER_GITHUB_REDIRECT_URI: primary + '/api/auth/github/callback',
     });
     const { base } = app;
     const accounts = new Map();
     for (const site of [primary, alternate]) {
       const other = site === primary ? alternate : primary;
       const provider = await request(base, site, '/api/auth/providers');
-      assert.equal((await provider.json()).google.enabled, true);
+      const available = await provider.json();
+      assert.equal(available.google.enabled, true);
+      assert.equal(available.github.enabled, true);
       const next = '/connect.html?code=123456-ABCDEF';
       const start = await request(base, site, '/api/auth/google/start?next=' + encodeURIComponent(next));
       assert.equal(start.status, 302);
@@ -65,6 +68,25 @@ async function main() {
       accounts.set(site, { userId: session.user.id, headers: { Cookie: cookie, 'X-CSRF-Token': session.csrfToken } });
     }
     assert.equal(accounts.get(primary).userId, accounts.get(alternate).userId);
+    const githubUsers = [];
+    for (const site of [primary, alternate]) {
+      const start = await request(base, site, '/api/auth/github/start');
+      const params = new URL(start.headers.get('location')).searchParams;
+      const callback = '/api/auth/github/callback';
+      assert.equal(params.get('redirect_uri'), site + callback);
+      const flowCookie = cookieValue(start, '__Host-wp_oauth_flow');
+      const route = callback + '?code=github-code-a&state=' + params.get('state');
+      const other = site === primary ? alternate : primary;
+      const wrongSite = await request(base, other, route, { headers: { Cookie: flowCookie } });
+      assert.match(wrongSite.headers.get('location'), /authError=oauth_expired/);
+      const done = await request(base, site, route, { headers: { Cookie: flowCookie } });
+      assert.equal(done.headers.get('location'), '/');
+      const cookie = cookieValue(done, '__Host-wp_session');
+      const session = await (await request(base, site, '/api/session', { headers: { Cookie: cookie } })).json();
+      assert.equal(session.user.username, 'github-user-a');
+      githubUsers.push(session.user.id);
+    }
+    assert.equal(githubUsers[0], githubUsers[1]);
     for (const site of [primary, alternate]) {
       const other = site === primary ? alternate : primary;
       const verifier = crypto.randomBytes(32).toString('base64url');
@@ -92,7 +114,7 @@ async function main() {
     })).status, 421);
     assert.equal((await request(base, alternate, '/api/auth/providers', { headers: { 'X-Forwarded-Proto': 'http' } })).status, 421);
     assert.equal((await fetch(base + '/healthz')).status, 200);
-    console.log('PASS dual public origins: Google, same account, host-bound callbacks/CSRF/device approvals, host validation, private health probe');
+    console.log('PASS dual public origins: Google and GitHub, same account, host-bound callbacks/CSRF/device approvals, host validation, private health probe');
   } finally {
     if (app) await stopApp(app.child);
     await new Promise(resolve => mock.close(resolve));

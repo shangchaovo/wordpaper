@@ -47,6 +47,10 @@ const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const GOOGLE_CLIENT_ID = String(process.env.WORDPAPER_GOOGLE_CLIENT_ID || '').trim();
 const GOOGLE_CLIENT_SECRET = String(process.env.WORDPAPER_GOOGLE_CLIENT_SECRET || '').trim();
 const GOOGLE_REDIRECT_URI = String(process.env.WORDPAPER_GOOGLE_REDIRECT_URI || '').trim();
+const GITHUB_CLIENT_ID = String(process.env.WORDPAPER_GITHUB_CLIENT_ID || '').trim();
+const GITHUB_CLIENT_SECRET = String(process.env.WORDPAPER_GITHUB_CLIENT_SECRET || '').trim();
+const GITHUB_REDIRECT_URI = String(process.env.WORDPAPER_GITHUB_REDIRECT_URI || '').trim();
+const OAUTH_NAMES = { google: 'Google', github: 'GitHub', wechat: '微信' };
 const WECHAT_APP_ID = String(process.env.WORDPAPER_WECHAT_APP_ID || '').trim();
 const WECHAT_APP_SECRET = String(process.env.WORDPAPER_WECHAT_APP_SECRET || '').trim();
 const WECHAT_REDIRECT_URI = String(process.env.WORDPAPER_WECHAT_REDIRECT_URI || '').trim();
@@ -69,6 +73,9 @@ function providerEndpoint(envName, fallback) {
 const GOOGLE_AUTHORIZATION_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GOOGLE_AUTHORIZATION_ENDPOINT', 'https://accounts.google.com/o/oauth2/v2/auth');
 const GOOGLE_TOKEN_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GOOGLE_TOKEN_ENDPOINT', 'https://oauth2.googleapis.com/token');
 const GOOGLE_USERINFO_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GOOGLE_USERINFO_ENDPOINT', 'https://openidconnect.googleapis.com/v1/userinfo');
+const GITHUB_AUTHORIZATION_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GITHUB_AUTHORIZATION_ENDPOINT', 'https://github.com/login/oauth/authorize');
+const GITHUB_TOKEN_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GITHUB_TOKEN_ENDPOINT', 'https://github.com/login/oauth/access_token');
+const GITHUB_USERINFO_ENDPOINT = providerEndpoint('WORDPAPER_TEST_GITHUB_USERINFO_ENDPOINT', 'https://api.github.com/user');
 const WECHAT_AUTHORIZATION_ENDPOINT = providerEndpoint('WORDPAPER_TEST_WECHAT_AUTHORIZATION_ENDPOINT', 'https://open.weixin.qq.com/connect/qrconnect');
 const WECHAT_TOKEN_ENDPOINT = providerEndpoint('WORDPAPER_TEST_WECHAT_TOKEN_ENDPOINT', 'https://api.weixin.qq.com/sns/oauth2/access_token');
 const WECHAT_USERINFO_ENDPOINT = providerEndpoint('WORDPAPER_TEST_WECHAT_USERINFO_ENDPOINT', 'https://api.weixin.qq.com/sns/userinfo');
@@ -614,6 +621,7 @@ function oauthRedirectUri(req, provider) {
   if (mirroring()) return '';
   let configured;
   if (provider === 'google' && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) configured = GOOGLE_REDIRECT_URI;
+  else if (provider === 'github' && MODE === 'public' && GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET) configured = GITHUB_REDIRECT_URI;
   else if (provider === 'wechat' && WECHAT_APP_ID && WECHAT_APP_SECRET) configured = WECHAT_REDIRECT_URI;
   else return '';
   const production = process.env.NODE_ENV === 'production';
@@ -656,16 +664,21 @@ function oauthFailure(res, code, flow) {
   redirect(res, `/login.html?${query}`);
 }
 
-function googleAuthorizationUrl(clientId, redirectUri, state, codeVerifier) {
-  const authorization = new URL(GOOGLE_AUTHORIZATION_ENDPOINT);
+function pkceAuthorizationUrl(endpoint, clientId, redirectUri, state, codeVerifier) {
+  const authorization = new URL(endpoint);
   authorization.searchParams.set('client_id', clientId);
   authorization.searchParams.set('redirect_uri', redirectUri);
-  authorization.searchParams.set('response_type', 'code');
-  authorization.searchParams.set('scope', 'openid email profile');
   authorization.searchParams.set('state', state);
   authorization.searchParams.set('code_challenge', crypto.createHash('sha256').update(codeVerifier).digest('base64url'));
   authorization.searchParams.set('code_challenge_method', 'S256');
   authorization.searchParams.set('prompt', 'select_account');
+  return authorization;
+}
+
+function googleAuthorizationUrl(clientId, redirectUri, state, codeVerifier) {
+  const authorization = pkceAuthorizationUrl(GOOGLE_AUTHORIZATION_ENDPOINT, clientId, redirectUri, state, codeVerifier);
+  authorization.searchParams.set('response_type', 'code');
+  authorization.searchParams.set('scope', 'openid email profile');
   return authorization.toString();
 }
 
@@ -673,7 +686,7 @@ function oauthStart(req, res, parsed, provider, accountFlow) {
   const nextPath = accountFlow ? '/#account' : safeNextPath(parsed.searchParams.get('next'));
   const redirectUri = oauthRedirectUri(req, provider);
   if (!redirectUri) {
-    if (accountFlow) json(res, 503, { error: `${provider === 'google' ? 'Google' : '微信'}登录尚未配置完成` });
+    if (accountFlow) json(res, 503, { error: `${OAUTH_NAMES[provider]}登录尚未配置完成` });
     else oauthFailure(res, `${provider}_not_configured`, { purpose: 'login', nextPath });
     return;
   }
@@ -684,7 +697,7 @@ function oauthStart(req, res, parsed, provider, accountFlow) {
 
   const state = crypto.randomBytes(32).toString('base64url');
   const binding = crypto.randomBytes(32).toString('base64url');
-  const codeVerifier = provider === 'google' ? crypto.randomBytes(48).toString('base64url') : '';
+  const codeVerifier = provider === 'wechat' ? '' : crypto.randomBytes(48).toString('base64url');
   const initiatingSession = requestSession(req);
   storage.createOAuthFlow(
     tokenHash(state), tokenHash(binding), provider, codeVerifier,
@@ -701,13 +714,20 @@ function oauthStart(req, res, parsed, provider, accountFlow) {
     appendSetCookies(res, [sessionCookie(req, token, Math.max(1, Math.floor((initiatingSession.expiresAt - Date.now()) / 1000)), 'Lax')]);
   }
 
+  let authorizationUrl;
   if (provider === 'google') {
-    const authorizationUrl = googleAuthorizationUrl(GOOGLE_CLIENT_ID, redirectUri, state, codeVerifier);
-    if (accountFlow) json(res, 200, { authorizationUrl });
-    else redirect(res, authorizationUrl);
-    return;
+    authorizationUrl = googleAuthorizationUrl(GOOGLE_CLIENT_ID, redirectUri, state, codeVerifier);
+  } else if (provider === 'github') {
+    // GET /user exposes the durable GitHub account ID without extra OAuth scopes.
+    authorizationUrl = pkceAuthorizationUrl(GITHUB_AUTHORIZATION_ENDPOINT, GITHUB_CLIENT_ID, redirectUri, state, codeVerifier).href;
+  } else {
+    authorizationUrl = wechatAuthorizationUrl(redirectUri, state);
   }
+  if (accountFlow) json(res, 200, { authorizationUrl });
+  else redirect(res, authorizationUrl);
+}
 
+function wechatAuthorizationUrl(redirectUri, state) {
   const authorization = new URL(WECHAT_AUTHORIZATION_ENDPOINT);
   authorization.searchParams.set('appid', WECHAT_APP_ID);
   authorization.searchParams.set('redirect_uri', redirectUri);
@@ -715,8 +735,7 @@ function oauthStart(req, res, parsed, provider, accountFlow) {
   authorization.searchParams.set('scope', 'snsapi_login');
   authorization.searchParams.set('state', state);
   authorization.hash = 'wechat_redirect';
-  if (accountFlow) json(res, 200, { authorizationUrl: authorization.toString() });
-  else redirect(res, authorization.toString());
+  return authorization.toString();
 }
 
 async function providerJson(url, options) {
@@ -791,6 +810,25 @@ async function googleIdentity(code, flow, desktopClient, requestJson = providerJ
   };
 }
 
+async function githubIdentity(code, flow) {
+  const token = await providerJson(GITHUB_TOKEN_ENDPOINT, {
+    method: 'POST', redirect: 'error',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams({
+      client_id: GITHUB_CLIENT_ID, client_secret: GITHUB_CLIENT_SECRET,
+      redirect_uri: flow.redirectUri, code, code_verifier: flow.codeVerifier,
+    }).toString(),
+  });
+  const accessToken = usableAccessToken(token.access_token);
+  if (!accessToken || String(token.token_type).toLowerCase() !== 'bearer') throw new Error('GitHub did not return a bearer token');
+  const profile = await providerJson(GITHUB_USERINFO_ENDPOINT, {
+    redirect: 'error',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'WordPaper', 'X-GitHub-Api-Version': '2026-03-10' },
+  });
+  if (!Number.isSafeInteger(profile.id) || profile.id <= 0) throw new Error('GitHub identity is missing a valid account ID');
+  return { subject: String(profile.id), profile: { displayName: profile.login || 'GitHub 用户' } };
+}
+
 async function wechatIdentity(code, flow) {
   const tokenUrl = new URL(WECHAT_TOKEN_ENDPOINT);
   tokenUrl.searchParams.set('appid', WECHAT_APP_ID);
@@ -857,7 +895,8 @@ async function oauthCallback(req, res, parsed, provider) {
       return session;
     };
     if (flow.purpose !== 'login') boundSession();
-    const identity = provider === 'google' ? await googleIdentity(code, flow) : await wechatIdentity(code, flow);
+    const readIdentity = { google: googleIdentity, github: githubIdentity, wechat: wechatIdentity }[provider];
+    const identity = await readIdentity(code, flow);
     if (flow.purpose !== 'login') {
       const session = boundSession();
       if (flow.purpose === 'reauth') {
@@ -911,7 +950,7 @@ async function handleAccount(req, res, parsed) {
     return;
   }
   const credentials = storage.accountCredentials(session.user.id);
-  const enabledProviders = ['google', 'wechat'].filter(provider => oauthProviderConfigured(req, provider));
+  const enabledProviders = Object.keys(OAUTH_NAMES).filter(provider => oauthProviderConfigured(req, provider));
   const localGoogle = localGoogleAuth.enabled(req);
   const accountGoogle = localGoogle || (localGoogleOrigin(req) && credentials.identities.some(row => row.provider === LOCAL_GOOGLE_PROVIDER))
     ? LOCAL_GOOGLE_PROVIDER : 'google';
@@ -920,13 +959,13 @@ async function handleAccount(req, res, parsed) {
   if (parsed.pathname === '/api/account' && req.method === 'GET') {
     json(res, 200, {
       user: session.user, hasPassword: Boolean(credentials.passwordHash), reauthRequired: reauthRequired(),
-      providers: ['google', 'wechat'].map(provider => {
+      providers: Object.keys(OAUTH_NAMES).map(provider => {
         const accountProvider = provider === 'google' ? accountGoogle : provider;
         const identity = credentials.identities.find(row => row.provider === accountProvider);
         return {
           provider, enabled: enabledProviders.includes(accountProvider), bound: Boolean(identity),
           ...(accountProvider === LOCAL_GOOGLE_PROVIDER ? { localDesktop: true } : {}),
-          label: identity ? identity.email || identity.display_name || (provider === 'google' ? 'Google 账号' : '微信账号') : '',
+          label: identity ? identity.email || identity.display_name || OAUTH_NAMES[provider] + '账号' : '',
           canUnlink: Boolean(identity && (credentials.passwordHash || credentials.identities.some(row => row.provider !== accountProvider && enabledProviders.includes(row.provider)))),
         };
       }),
@@ -946,7 +985,7 @@ async function handleAccount(req, res, parsed) {
     json(res, 200, { ok: true });
     return;
   }
-  const match = /^\/api\/account\/(google|wechat)\/(link|replace|unlink|reauth)$/.exec(parsed.pathname);
+  const match = /^\/api\/account\/(google|github|wechat)\/(link|replace|unlink|reauth)$/.exec(parsed.pathname);
   if (!match) { json(res, 404, { error: 'Not Found' }); return; }
   const [, provider, purpose] = match;
   const accountProvider = provider === 'google' ? accountGoogle : provider;
@@ -1224,6 +1263,7 @@ async function handleAuth(req, res, parsed) {
     json(res, 200, {
       email: { enabled: true, registrationEnabled: emailRegistrationEnabled(req) },
       google: { enabled: oauthProviderConfigured(req, 'google') },
+      github: { enabled: oauthProviderConfigured(req, 'github') },
       wechat: { enabled: oauthProviderConfigured(req, 'wechat') },
       ...(localGoogleAuth.enabled(req) ? { localGoogle: { enabled: true } } : {}),
       pairingAllowed: MODE === 'local' && isLoopbackRequest(req),
@@ -1305,7 +1345,7 @@ async function handleAuth(req, res, parsed) {
     return true;
   }
 
-  const oauthMatch = /^\/api\/auth\/(google|wechat)\/(start|callback)$/.exec(pathname);
+  const oauthMatch = /^\/api\/auth\/(google|github|wechat)\/(start|callback)$/.exec(pathname);
   if (oauthMatch) {
     if (mirroring()) { json(res, 403, { error: '请在主账号所在的网站使用第三方登录' }); return true; }
     if (req.method !== 'GET') { text(res, 405, 'Method Not Allowed'); return true; }

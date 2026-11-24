@@ -20,14 +20,16 @@
   const errorBox = document.querySelector('#auth-error');
   const authStatus = document.querySelector('#auth-status');
   const providerStatus = document.querySelector('#provider-status');
-  const googleButton = document.querySelector('#auth-google');
+  const providerButtons = Array.from(document.querySelectorAll('.provider-stack [data-provider]'));
+  const providerNames = { google: 'Google', github: 'GitHub' };
   let mode = 'login';
   let emailRegistrationEnabled = null;
   let codeTimer = 0;
 
   const oauthErrors = {
-    google_not_configured: 'Google 登录尚未配置，请暂时使用邮箱登录。',
-    wechat_not_configured: '该登录方式未启用，请使用 Google 或邮箱登录。',
+    google_not_configured: '此服务器尚未开通 Google 登录，请选择其他登录方式。',
+    github_not_configured: '此服务器尚未开通 GitHub 登录，请选择其他登录方式。',
+    wechat_not_configured: '该登录方式未启用，请选择其他登录方式。',
     oauth_cancelled: '你取消了授权，可以重新尝试或改用邮箱。',
     oauth_expired: '登录请求已过期或不是从当前浏览器发起，请重新尝试。',
     oauth_failed: '第三方登录暂时失败，请稍后重试。',
@@ -168,13 +170,13 @@
     }
     if (providers.pairingAllowed) pairSection.hidden = false;
 
-    const enabled = Boolean(providers.google?.enabled);
-    googleButton.style.display = enabled ? '' : 'none';
-    googleButton.disabled = !enabled;
-    googleButton.setAttribute('aria-disabled', String(!enabled));
-    googleButton.querySelector('[data-provider-state]').textContent = enabled ? '首次使用将自动创建账号' : '';
-    const divider = document.querySelector('.auth-divider');
-    if (divider) divider.style.display = enabled ? '' : 'none';
+    const desktopHandoff = window.WordPaperDesktop && providers.pairingAllowed;
+    providerButtons.forEach(button => {
+      const enabled = !desktopHandoff && Boolean(providers[button.dataset.provider]?.enabled);
+      button.hidden = !enabled;
+      button.disabled = !enabled;
+    });
+    document.querySelector('.auth-divider').hidden = !providerButtons.some(button => !button.hidden);
   }
 
   // ── 配对 / 继续 / 断开 ──────────────────────────────────
@@ -228,13 +230,14 @@
     }
   });
 
-  googleButton.addEventListener('click', function () {
-    if (googleButton.disabled) return;
-    googleButton.disabled = true;
-    googleButton.setAttribute('aria-busy', 'true');
-    providerStatus.textContent = '正在连接 Google…';
-    location.assign(`/api/auth/google/start?next=${encodeURIComponent(destination())}`);
-  });
+  providerButtons.forEach(button => button.addEventListener('click', function () {
+    if (button.disabled) return;
+    const provider = button.dataset.provider;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    providerStatus.textContent = `正在连接 ${providerNames[provider]}…`;
+    location.assign(`/api/auth/${provider}/start?next=${encodeURIComponent(destination())}`);
+  }));
 
   function startCodeCountdown(seconds) {
     clearInterval(codeTimer);

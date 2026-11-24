@@ -116,7 +116,7 @@ function rawStatus(port, requestPath) {
     assert.equal(unauthenticated.status, 401);
     const providers = await (await fetch(base + '/api/auth/providers')).json();
     assert.deepEqual(providers, {
-      email: { enabled: true, registrationEnabled: true }, google: { enabled: false }, wechat: { enabled: false },
+      email: { enabled: true, registrationEnabled: true }, google: { enabled: false }, github: { enabled: false }, wechat: { enabled: false },
       paired: null, pairingAllowed: false,
     });
 
